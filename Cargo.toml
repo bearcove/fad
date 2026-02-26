@@ -1,0 +1,13 @@
+[package]
+name = "fad"
+version = "0.1.0"
+edition = "2024"
+authors = ["Amos Wenger <amos@bearcove.eu>"]
+description = "Fast deserialization in Rust, based on facet reflection"
+repository = "https://github.com/bearcove/fad"
+license = "MIT OR Apache-2.0"
+keywords = ["deserialization", "facet", "reflection", "fast"]
+categories = ["encoding", "data-structures"]
+readme = "README.md"
+
+[dependencies]
