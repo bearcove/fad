@@ -110,28 +110,46 @@ compiler can call to generate IR.
 
 ## A way too trivial case
 
+The compiler walks the shape tree at JIT-compile time and emits IR for each
+node. The recursion is in the host (Rust) code — the emitted code is flat.
+
 ```rust
-fn compile_deser(shape: &Shape) -> Program {
-    let code = Code::new();
-    
-    if shape.is_struct() {
-        fmt.emit_begin_object(&mut code);
-        
-        let field_set = shape.field_set();
-        let floop = code.loop();
-        fmt.emit_peek_is_end_object();
-        fmt.emit_if_true_break_loop(floop);
-        
-        let key = fmt.emit_read_key();
-        let entry = field_set.get_entry(key); // fixme: emit code that does this, don't do it at compile time
-        // if no entry, error out (unnown field)
-        if entry {
-            let value = fmt.emit_read_value(); // erm that depends on the type of the entry? how does recursion work?
-            field_set.set(value);
+fn compile_deser(shape: &Shape, fmt: &dyn Format, code: &mut Code) {
+    match shape.kind() {
+        ShapeKind::Struct(fields) => {
+            fmt.emit_expect_begin_object(code);
+            // `build_field_dispatch` runs at JIT-compile time: all field names
+            // are known statically, so we bake in a trie/phf over them.
+            let dispatch = build_field_dispatch(fields);
+            fmt.emit_field_loop(code, dispatch, |code, field| {
+                // `field` is known at JIT-compile time; recurse into its shape.
+                compile_deser(field.shape, fmt, code);
+                emit_store(code, field.offset); // write result into struct slot
+            });
+            emit_assert_all_required_set(code, fields); // checks stack-allocated bitset
+            fmt.emit_expect_end_object(code);
         }
-        
-        field_set.emit_assert_all_set(&mut code);
+        ShapeKind::Primitive(p) => fmt.emit_read_primitive(code, p),
+        ShapeKind::Sequence(elem) => {
+            fmt.emit_begin_array(code);
+            fmt.emit_array_loop(code, |code| compile_deser(elem.shape, fmt, code));
+            fmt.emit_end_array(code);
+        }
+        // ...
     }
-    code
 }
 ```
+
+Key points:
+
+- **Field dispatch** happens in the emitted code against a runtime key, but the
+  dispatch table (trie, perfect hash, or sorted array) is built at JIT-compile
+  time from the known field names. The host never does a runtime key lookup.
+
+- **Required-field tracking** uses a stack-allocated bitset sized
+  `ceil(field_count / 64)` bits, allocated at emitted-function entry.
+  `emit_assert_all_required_set` checks it before the function returns.
+
+- **Error handling** TBD: options are two-register return (clean), a caller-
+  provided error-slot pointer (simple), or setjmp/longjmp (fast happy path,
+  ugly). Pick one before implementing.
