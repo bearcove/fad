@@ -1504,3 +1504,250 @@ loop:
 
 JSON sets are arrays (there's no set literal in JSON). Postcard sets are
 length-prefixed sequences of `K`.
+
+## Serialization
+
+Serialization is the mirror of deserialization: walk a fully-constructed Rust
+value and emit bytes. It's simpler in several ways:
+
+- **No dispatch**: the value exists, its variant is known, its fields are
+  populated. There's no "which field is this key?" question.
+- **No bitsets**: every field is present (or is `Option::None`, which we can
+  check via vtable).
+- **No chunk chains**: output goes to a growable byte buffer, not into
+  a fixed-layout struct.
+- **No partial construction or drop safety**: the input value is borrowed,
+  not mutated.
+
+### Calling convention
+
+Serializer functions take `inp` (pointer to the value being serialized) and
+`ctx` (pointer to a `SerContext`):
+
+```rust
+#[repr(C)]
+struct SerContext {
+    // Output buffer — a growable byte vec.
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_cap: usize,
+
+    // Error reporting — same pattern as deserialization.
+    error: ErrorSlot,
+
+    // Format-specific state (e.g., JSON indentation depth).
+    format_state: *mut u8,
+}
+```
+
+The output buffer is a `Vec<u8>` in disguise (ptr, len, cap). Emitted code
+writes bytes by storing to `out_ptr + out_len` and incrementing `out_len`.
+When `out_len` would exceed `out_cap`, the emitted code calls an intrinsic
+to grow the buffer (the same way `Vec::push` would, but via an explicit
+intrinsic call so the emitted code doesn't need to inline growth logic).
+
+Register assignment mirrors deserialization: `inp` in the first argument
+register, `ctx` in the second. The output pointer + length can be cached in
+callee-saved registers for the hot path (writing bytes is the most frequent
+operation).
+
+### Struct serialization
+
+For JSON, struct serialization emits each field in declaration order —
+no need for the trie or the field loop, just a straight sequence:
+
+```
+ser_Friend:
+    emit_byte('{')
+    emit_quoted_key("age")
+    emit_byte(':')
+    ser_u32(inp + offset_of(age))
+    emit_byte(',')
+    emit_quoted_key("name")
+    emit_byte(':')
+    ser_String(inp + offset_of(name))
+    emit_byte('}')
+    ret
+```
+
+The key strings (`"age"`, `"name"`) are baked into the emitted code as
+immediate byte sequences — they're known at JIT-compile time. For small
+keys, the emitted code writes them inline (a few `mov` + `str`
+instructions). For longer keys, it calls `memcpy` from a constant pool.
+
+For postcard, struct serialization is even simpler — just serialize each
+field in order, no keys, no delimiters:
+
+```
+ser_Friend:
+    ser_u32(inp + offset_of(age))
+    ser_String(inp + offset_of(name))
+    ret
+```
+
+### Enum serialization
+
+The emitted code reads the enum's discriminant (or calls the vtable for
+Option/Result), then branches to the right variant's serializer.
+
+For JSON externally tagged:
+
+```
+ser_Animal:
+    variant = read_enum_discriminant(inp)
+    switch variant:
+        case 0:  ; Cat
+            emit_quoted_string("Cat")
+            ret
+        case 1:  ; Dog
+            emit_byte('{')
+            emit_quoted_key("Dog")
+            emit_byte(':')
+            ser_Dog_fields(inp)
+            emit_byte('}')
+            ret
+        case 2:  ; Parrot
+            emit_byte('{')
+            emit_quoted_key("Parrot")
+            emit_byte(':')
+            ser_String(inp + offset_of(Parrot::0))
+            emit_byte('}')
+            ret
+```
+
+For postcard:
+
+```
+ser_Animal:
+    variant = read_enum_discriminant(inp)
+    emit_varint(variant)
+    switch variant:
+        case 0: ret                              ; Cat — no payload
+        case 1:                                  ; Dog
+            ser_String(inp + offset_of(Dog::name))
+            ser_bool(inp + offset_of(Dog::good_boy))
+            ret
+        case 2:                                  ; Parrot
+            ser_String(inp + offset_of(Parrot::0))
+            ret
+```
+
+### Option serialization
+
+For JSON, `Option<T>` fields that are `None` are simply omitted from the
+output. The emitted code checks `vtable.is_some(inp + field_offset)` and
+conditionally emits the key + value. This means the comma logic needs to
+handle the case where a field is skipped — the emitted code tracks whether
+a comma is needed before the next field:
+
+```
+ser_struct_with_optional_age:
+    emit_byte('{')
+    need_comma = false
+    ; age: Option<u32>
+    if vtable_option_is_some(inp + offset_of(age)):
+        if need_comma: emit_byte(',')
+        emit_quoted_key("age")
+        emit_byte(':')
+        value_ptr = vtable_option_get_value(inp + offset_of(age))
+        ser_u32(value_ptr)
+        need_comma = true
+    ; name: String (always present)
+    if need_comma: emit_byte(',')
+    emit_quoted_key("name")
+    emit_byte(':')
+    ser_String(inp + offset_of(name))
+    emit_byte('}')
+    ret
+```
+
+For postcard, `Option<T>` emits `0x00` for None or `0x01` + value for Some:
+
+```
+    if vtable_option_is_some(inp + offset_of(age)):
+        emit_byte(0x01)
+        value_ptr = vtable_option_get_value(inp + offset_of(age))
+        ser_u32(value_ptr)
+    else:
+        emit_byte(0x00)
+```
+
+### Sequence serialization
+
+For JSON, the emitted code emits `[`, then iterates the Vec's elements
+(ptr, len are read from known offsets — Vec layout is verified at
+JIT-compile time), serializes each element with commas between, then `]`.
+
+```
+ser_Vec_Friend:
+    emit_byte('[')
+    ptr = load(inp + VEC_PTR_OFFSET)
+    len = load(inp + VEC_LEN_OFFSET)
+    i = 0
+loop:
+    if i >= len: break
+    if i > 0: emit_byte(',')
+    ser_Friend(ptr + i * size_of(Friend), ctx)
+    check_error
+    i += 1
+    goto loop
+    emit_byte(']')
+    ret
+```
+
+For postcard, emit the length as a varint, then each element with no
+delimiters.
+
+### Map serialization
+
+For JSON, maps are objects. The emitted code iterates via vtable (maps are
+opaque — no known memory layout for iteration). The vtable provides an
+iterator that yields `(K_ptr, V_ptr)` pairs:
+
+```
+ser_HashMap_String_u32:
+    emit_byte('{')
+    iter = call vtable_map_iter(inp)
+    first = true
+loop:
+    entry = call vtable_map_iter_next(iter)
+    if entry == null: break
+    if !first: emit_byte(',')
+    first = false
+    ser_String_as_key(entry.key_ptr)    ; emit as quoted JSON key
+    emit_byte(':')
+    ser_u32(entry.value_ptr)
+    check_error
+    goto loop
+    emit_byte('}')
+    ret
+```
+
+For postcard, emit the length as a varint, then each `(K, V)` pair.
+
+### Output buffer growth
+
+The output buffer starts at a reasonable size (e.g., 256 bytes or a
+caller-provided hint). When the emitted code needs to write N bytes and
+`out_len + N > out_cap`, it calls an intrinsic:
+
+```rust
+extern "C" fn intrinsic_grow_output(ctx: *mut SerContext, additional: usize);
+```
+
+This reallocates the buffer (doubling or adding `additional`, whichever is
+larger), updates `out_ptr`, `out_cap` in the context, and returns. The
+emitted code reloads the cached output pointer after the call.
+
+For small writes (single bytes, short keys), the emitted code can check
+capacity inline and only call the intrinsic on the slow path. For large
+writes (memcpy of a string body), the intrinsic handles the capacity check
+internally.
+
+### Compile-time optimizations
+
+Since field names and delimiters are known at JIT-compile time, the
+serializer can precompute combined byte sequences. For example, `,"name":`
+(comma + key + colon) is 8 bytes and can be written as a single 8-byte
+store instruction on 64-bit platforms. The compiler merges adjacent constant
+byte sequences into the fewest possible store instructions.
