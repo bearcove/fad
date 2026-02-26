@@ -434,6 +434,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-json"
+version = "0.43.2"
+dependencies = [
+ "facet",
+ "facet-core",
+ "facet-format",
+ "facet-reflect",
+ "memchr",
+]
+
+[[package]]
 name = "facet-macro-parse"
 version = "0.43.2"
 dependencies = [
@@ -527,6 +538,7 @@ dependencies = [
  "dynasmrt",
  "facet",
  "facet-format",
+ "facet-json",
  "facet-postcard",
  "postcard",
  "serde",

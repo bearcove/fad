@@ -24,10 +24,20 @@ struct FriendFacet {
 
 static JSON_INPUT: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
 
-// ── Cached compiled deserializer (compilation cost amortized) ───────────────
+// ── Cached compiled deserializers (compilation cost amortized) ───────────────
 
 static FAD_DESER: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(FriendFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FACET_JSON_JIT_HANDLE: LazyLock<
+    facet_format::jit::CompiledFormatDeserializer<
+        FriendFacet,
+        facet_json::JsonParser<'static>,
+    >,
+> = LazyLock::new(|| {
+    facet_format::jit::get_format_deserializer()
+        .expect("FriendFacet should be Tier-2 compatible")
 });
 
 // ── Benchmarks ──────────────────────────────────────────────────────────────
@@ -40,6 +50,24 @@ mod flat_struct {
     fn serde_json(bencher: Bencher) {
         bencher.bench(|| {
             black_box(serde_json::from_slice::<FriendSerde>(black_box(JSON_INPUT)).unwrap())
+        });
+    }
+
+    /// facet-json tier-0 (reflection-based, no JIT)
+    #[divan::bench]
+    fn facet_json_tier0(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(facet_json::from_slice::<FriendFacet>(black_box(JSON_INPUT)).unwrap())
+        });
+    }
+
+    /// facet-json tier-2 JIT (Cranelift-compiled, cached handle)
+    #[divan::bench]
+    fn facet_json_jit2(bencher: Bencher) {
+        let handle = &*FACET_JSON_JIT_HANDLE;
+        bencher.bench(|| {
+            let mut parser = facet_json::JsonParser::new(black_box(JSON_INPUT));
+            black_box(handle.deserialize(&mut parser).unwrap())
         });
     }
 
