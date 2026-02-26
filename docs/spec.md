@@ -93,25 +93,58 @@ have no 'name' (they're not maps, they're known lists of fields, conceptually):
 postcard is non-self-describing.
 
 fad should be able to combine shape intelligence with format intelligence to
-generate "IR" (intermediate representation) that can be either interpreted or
-lowered to aarch64 or x86_64 machine code, via [dynasmrt](https://crates.io/crates/dynasmrt).
+generate machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
 
-## What should that IR look like??
+## No IR
 
-Do we get raw pointers or not? How close to assembly is it? How many intrinsics
-(implemented as Rust functions, called from the machine code) do we allow ourselves?
+An earlier design considered an intermediate representation: the compiler
+would emit IR opcodes, and a separate pass would lower them to aarch64 or
+x86_64. This adds a layer of indirection that doesn't pay for itself.
+
+The shapes fad deals with — structs, enums, sequences, scalars — map
+directly to simple code patterns: loops, branches, calls to intrinsic
+functions. There is no optimization pass that benefits from an abstract
+representation. No constant folding, no register allocation across basic
+blocks, no instruction scheduling. The "optimizations" are all at the shape
+level (building a trie at JIT-compile time, choosing a dispatch strategy for
+untagged enums) and happen in Rust before any code is emitted.
+
+Instead, the compiler and format crates work with a thin wrapper around
+dynasmrt's `Assembler`. Format trait methods like `emit_field_loop` directly
+emit machine instructions — real `mov`, `cmp`, `b.eq`, `call` — for the
+target architecture. The Rust structs that drive compilation (shapes, field
+info, variant info, dispatch tables) *are* the intermediate representation.
+
+This means:
+
+- **Two backends** (aarch64, x86_64) behind `#[cfg(target_arch)]`. Format
+  crates must emit for both. In practice the patterns are identical —
+  "load byte, compare, branch" — just spelled differently.
+
+- **No interpreter**. The emitted code is always native. This keeps the
+  runtime simple and the hot path fast.
+
+- **dynasmrt handles the hard parts**: label management, relocation, memory
+  protection (RW→RX), cache flushing on aarch64. fad doesn't need its own
+  code buffer abstraction.
+
+- **Intrinsics are Rust functions** called from emitted code via the
+  platform's C calling convention. Things like "allocate a Vec", "grow a
+  String", "report an error" are too complex to emit inline. The emitted
+  code calls into them the same way C code calls libc.
 
 For simplification, we'll assume that:
 
   * All inputs are `&[u8]` and they are a complete document (no streaming)
-  
+
 The format struct like `FadJson` above must implement a trait that the fad
-compiler can call to generate IR.
+compiler can call to emit machine code.
 
-## A way too trivial case
+## The compiler
 
-The compiler walks the shape tree at JIT-compile time and emits IR for each
-node. The recursion is in the host (Rust) code — the emitted code is flat.
+The compiler walks the shape tree at JIT-compile time and emits machine code
+for each node. The recursion is in the host (Rust) code — the emitted code
+is flat.
 
 ```rust
 fn compile_deser(shape: &Shape, fmt: &dyn Format, code: &mut Code) {
@@ -853,3 +886,379 @@ deser_Animal:
 
 No buffering, no trial deserialization, no O(variants) retries. The dispatch
 is a peek + trie, same cost structure as externally tagged enums.
+
+## Calling convention
+
+Every emitted deserializer function has the same signature at the machine
+level. The caller provides three things:
+
+1. **`out`** — pointer to the output slot (e.g., `*mut Friend`). The callee
+   writes deserialized fields at known offsets from this pointer.
+
+2. **`ctx`** — pointer to a `DeserContext` struct that lives on the caller's
+   (Rust) stack. This carries the input cursor, error state, and
+   format-specific scratch space. Passed by pointer so all emitted functions
+   share the same context without copying.
+
+3. **Return** — emitted functions return void. They signal errors by writing
+   to the context's error slot and branching to an error exit path. The
+   top-level entry point checks the error slot after the emitted code returns.
+
+### DeserContext
+
+```rust
+#[repr(C)]
+struct DeserContext {
+    // Input cursor — all emitted code reads/advances these.
+    input_ptr: *const u8,     // current position
+    input_end: *const u8,     // one past the last byte
+
+    // Error reporting — set by emitted code or intrinsics on failure.
+    error: ErrorSlot,
+
+    // Format-specific scratch space — opaque to the compiler,
+    // used by format intrinsics (e.g., JSON key buffering).
+    format_state: *mut u8,
+}
+
+#[repr(C)]
+struct ErrorSlot {
+    code: u32,                // 0 = no error, nonzero = error kind
+    offset: u32,              // byte offset in input where error occurred
+    // Optional: pointer to a heap-allocated error message,
+    // written by intrinsics that can afford the allocation.
+    detail: *const u8,
+    detail_len: usize,
+}
+```
+
+The context is `#[repr(C)]` so emitted code can access fields at known
+offsets. The emitted code loads `ctx.input_ptr` into a register, does its
+work, and stores the updated position back before calling an intrinsic or
+returning.
+
+### Register assignment
+
+On aarch64:
+
+| Register | Role |
+|----------|------|
+| `x0`     | `out` — pointer to output slot |
+| `x1`     | `ctx` — pointer to `DeserContext` |
+| `x19`    | cached `input_ptr` (callee-saved) |
+| `x20`    | cached `input_end` (callee-saved) |
+
+On x86_64:
+
+| Register | Role |
+|----------|------|
+| `rdi`    | `out` — pointer to output slot |
+| `rsi`    | `ctx` — pointer to `DeserContext` |
+| `r12`    | cached `input_ptr` (callee-saved) |
+| `r13`    | cached `input_end` (callee-saved) |
+
+`out` and `ctx` follow the platform's C calling convention for the first two
+arguments. This means emitted functions can be called directly from Rust
+`extern "C"` code with no thunk.
+
+The input cursor is cached in callee-saved registers for the hot path —
+advancing through input bytes is the most frequent operation and must not
+require a load/store to `ctx` on every byte. On function entry, the emitted
+code loads `ctx.input_ptr` and `ctx.input_end` into the cached registers.
+Before calling an intrinsic (which might read or advance the cursor), the
+emitted code stores the cached `input_ptr` back to `ctx`. After the
+intrinsic returns, it reloads.
+
+### Calling intrinsics
+
+Intrinsics are regular Rust functions with `extern "C"` ABI. They receive
+`ctx` as their first argument (so they can read/advance the cursor, report
+errors) plus whatever other arguments they need.
+
+```rust
+// Example: allocate a chunk for sequence building (see "Sequence construction").
+extern "C" fn intrinsic_chunk_alloc(ctx: *mut DeserContext, elem_size: usize, elem_align: usize, capacity: usize) -> *mut u8;
+
+// Example: finalize a chunk chain into a Vec<T>.
+extern "C" fn intrinsic_chunk_finalize_vec(ctx: *mut DeserContext, chain: *mut ChunkChain, vec_out: *mut u8, elem_size: usize);
+
+// Example: read a JSON quoted string into a scratch buffer.
+extern "C" fn intrinsic_json_read_string(ctx: *mut DeserContext) -> StringRef;
+```
+
+The emitted code calls these with a normal `call` instruction to an absolute
+address (the function pointer is baked into the emitted code at JIT-compile
+time as an immediate or a pc-relative load from a constant pool).
+
+### Calling between emitted functions
+
+When `deser_Node` calls `deser_Vec_Node`, it's a direct call between two
+emitted functions. Both use the same convention: `out` in the first argument
+register, `ctx` in the second. The caller sets `out` to the address of the
+field being deserialized (e.g., `out + offset_of(Node::children)`), keeps
+`ctx` as-is, and emits a `call` (or `bl` on aarch64). On return, the caller
+reloads the cached input cursor from `ctx` in case the callee advanced it.
+
+## Error handling
+
+Errors are signaled through the context, not through return values. This
+keeps the happy path free of branch-on-return-value overhead.
+
+### The error slot approach
+
+When an emitted function or intrinsic encounters an error:
+
+1. Write the error code and input offset to `ctx.error`.
+2. Branch to the function's error exit label.
+
+The error exit label is emitted at the end of each function. It restores
+callee-saved registers, stores the cached `input_ptr` back to `ctx`, and
+returns. The caller then checks `ctx.error.code != 0` and propagates — the
+same way, by branching to its own error exit.
+
+```
+deser_Friend:
+    ; prologue: save callee-saved regs, load cached cursor
+    ldr x19, [x1, #CTX_INPUT_PTR]
+    ldr x20, [x1, #CTX_INPUT_END]
+    ...
+    ; call intrinsic (e.g., expect '{')
+    str x19, [x1, #CTX_INPUT_PTR]       ; flush cursor
+    bl intrinsic_json_expect_lbrace
+    ldr x19, [x1, #CTX_INPUT_PTR]       ; reload cursor
+    ldr w8, [x1, #CTX_ERROR_CODE]       ; check error
+    cbnz w8, .Lerror_exit                ; propagate if set
+    ...
+.Lerror_exit:
+    ; store cursor back, restore callee-saved regs, ret
+    str x19, [x1, #CTX_INPUT_PTR]
+    ; restore x19, x20 from stack
+    ret
+```
+
+### Why not setjmp/longjmp?
+
+setjmp/longjmp would make the happy path slightly faster (no error checks
+after each intrinsic call) but:
+
+- longjmp skips destructors. If the emitted code has partially constructed
+  a value (some fields written, others not), longjmp leaves it in a state
+  that can't be safely dropped.
+- setjmp has its own cost (saving all registers), and it's called on every
+  top-level entry.
+- It's harder to provide good error messages (offset, context) when you
+  longjmp past everything.
+
+The error-slot approach pays ~1 `cbnz` per intrinsic call on the happy path.
+That's one cycle, almost always correctly predicted as not-taken.
+
+### Why not two-register return?
+
+Returning `(value, error)` in two registers is clean but doesn't compose:
+the emitted functions write into `out` by pointer, they don't "return" the
+deserialized value. And error propagation would still require a branch after
+every call — same cost as the error slot, but now the error state is split
+between return registers and the context instead of living in one place.
+
+## Format context and scratch space
+
+Format crates sometimes need runtime state that isn't just the input cursor.
+JSON needs to:
+
+- Buffer raw values (adjacently tagged enums with data-before-type).
+- Buffer key-value pairs (internally tagged enums with tag-not-first).
+- Hold a decoded string temporarily (untagged enum string dispatch).
+
+This state lives in the `format_state` pointer inside `DeserContext`. Each
+format crate defines its own state struct:
+
+```rust
+// For JSON:
+#[repr(C)]
+struct JsonState {
+    // Arena for temporary allocations (buffered values, strings).
+    // Bump-allocated, reset after each top-level deserialization.
+    arena_base: *mut u8,
+    arena_ptr: *mut u8,
+    arena_end: *mut u8,
+
+    // Scratch buffer for key scanning (untagged struct disambiguation).
+    key_buf: *mut u8,
+    key_buf_len: usize,
+    key_buf_cap: usize,
+}
+
+// For postcard: no state needed — postcard is stateless.
+// format_state can be null.
+```
+
+### Arena allocation
+
+The arena is bump-allocated: intrinsics call `arena_alloc(ctx, size, align)`
+which advances `arena_ptr` and returns the old pointer. If the arena is
+exhausted, the intrinsic grows it (realloc the backing allocation). The arena
+is reset (ptr = base) after each top-level `deser.call()` — all temporary
+allocations are freed in bulk.
+
+This is cheap enough that buffering a JSON value for later replay (adjacently
+tagged, internally tagged) is not a performance concern. The buffered data is
+just the raw bytes plus a small index of key offsets — no parsing, no
+intermediate `Value` type.
+
+### Who allocates the context?
+
+The Rust entry point — the safe wrapper around `deser.call()` — allocates
+`DeserContext` on the stack, initializes the input cursor from the `&[u8]`
+argument, zero-initializes the error slot, and sets `format_state` to point
+to a format-specific state struct (also stack-allocated, or heap-allocated
+for the arena backing). Then it calls the emitted function with `out` and
+`ctx`.
+
+```rust
+impl CompiledDeser {
+    pub fn call(&self, out: &mut MaybeUninit<T>, input: &[u8]) -> Result<(), DeserError> {
+        let mut json_state = JsonState::new();    // stack + small heap alloc for arena
+        let mut ctx = DeserContext {
+            input_ptr: input.as_ptr(),
+            input_end: input.as_ptr().add(input.len()),
+            error: ErrorSlot::default(),
+            format_state: &mut json_state as *mut _ as *mut u8,
+        };
+        unsafe {
+            (self.fn_ptr)(out as *mut _ as *mut u8, &mut ctx);
+        }
+        if ctx.error.code != 0 {
+            Err(DeserError::from_slot(&ctx.error, input))
+        } else {
+            Ok(())
+        }
+    }
+}
+```
+
+Postcard passes a null `format_state` (or a zero-sized struct pointer).
+If a format needs no scratch space, it pays no allocation cost.
+
+## Sequence construction
+
+Deserializing `Vec<T>`, `HashSet<T>`, or any variable-length collection
+requires constructing elements in memory before knowing the final count (for
+JSON) or after reading a length prefix that may not be exact (for postcard).
+
+### The problem with Vec::push
+
+The naive approach — allocate a `Vec<T>`, push elements one at a time — has
+a fatal flaw for JIT-emitted code: `Vec::push` may reallocate, which
+invalidates all pointers into the Vec's buffer. If we're constructing
+element N in-place (writing its fields directly to the buffer at a known
+offset) and a reallocation moves the buffer, we're writing to freed memory.
+
+We could work around this by always finishing one element before starting the
+next. But that forces an extra copy if elements are complex (structs with
+many fields) and prevents future optimizations like prefetching.
+
+### Chunk chains
+
+Instead, fad uses a **chunk chain**: a linked list of fixed-size buffers.
+Elements are constructed in-place in the current chunk. When a chunk fills
+up, a new one is allocated and linked. No existing chunk ever moves.
+
+```rust
+#[repr(C)]
+struct ChunkChain {
+    // Current chunk — elements are written here.
+    current: *mut u8,
+    current_len: usize,     // elements written so far in this chunk
+    current_cap: usize,     // element capacity of this chunk
+
+    // Linked list of full chunks (newest first).
+    full_chunks: *mut FullChunk,
+    total_len: usize,       // total elements across all chunks
+}
+
+#[repr(C)]
+struct FullChunk {
+    next: *mut FullChunk,
+    data: *mut u8,
+    len: usize,             // always == capacity (chunk was full)
+    cap: usize,
+}
+```
+
+### How the emitted code uses it
+
+For `Vec<Friend>` deserialization:
+
+```
+deser_Vec_Friend:
+    ; Allocate the chain (on the format arena or heap).
+    ; size_hint comes from the format: postcard gives exact count,
+    ; JSON gives 0 (unknown).
+    call intrinsic_chain_new(ctx, size_of(Friend), align_of(Friend), size_hint)
+
+    ; chain_ptr is in a callee-saved register or spilled to stack.
+loop:
+    ; Format-specific: check for end of array.
+    ; (JSON: skip_whitespace, break if ']')
+    ; (postcard: decrement remaining count, break if 0)
+
+    ; Get a slot to write into. If current chunk is full, this
+    ; allocates a new chunk — but never moves existing ones.
+    slot = call intrinsic_chain_next_slot(ctx, chain_ptr, size_of(Friend), align_of(Friend))
+
+    ; Deserialize the element in-place at `slot`.
+    ; `slot` stays valid for the entire element's construction.
+    call deser_Friend(slot, ctx)
+    check_error
+
+    ; Mark the slot as committed (increment current_len).
+    call intrinsic_chain_commit(ctx, chain_ptr)
+
+    goto loop
+
+    ; Finalize: build the Vec from the chain.
+    call intrinsic_chain_to_vec(ctx, chain_ptr, out, size_of(Friend), align_of(Friend))
+    ret
+```
+
+### Finalization
+
+`intrinsic_chain_to_vec` builds the final `Vec<T>` from the chain:
+
+- **One chunk (common case)**: The chunk's buffer *is* the Vec's buffer.
+  Transfer ownership directly — set the Vec's pointer, length, and capacity
+  from the chunk. No copy. This requires that the chunk was allocated with
+  the same allocator and layout that Vec expects, which the intrinsic
+  ensures (using `alloc::alloc::alloc` with the right layout, and checking
+  at JIT-compile time that Vec's layout is `{ptr, len, cap}`).
+
+- **Multiple chunks**: Allocate a single buffer of `total_len` capacity,
+  `memcpy` each chunk's data into it in order, build the Vec from that.
+  This is one copy of the total data — the same cost as if we'd known the
+  size upfront and allocated once.
+
+### Why not a size hint + single allocation?
+
+Postcard *does* give an exact element count (length-prefixed). In that case
+the chain is initialized with a single chunk of exactly the right capacity,
+and finalization is always the zero-copy one-chunk path.
+
+JSON doesn't know the count upfront. A heuristic size hint (e.g., based on
+remaining input bytes) could over-allocate. The chunk chain avoids guessing:
+start with a reasonable chunk size (e.g., 16 elements), double on each new
+chunk, and pay at most one copy at the end.
+
+### Drop safety
+
+If deserialization fails mid-array (error on element N), the chain contains
+N-1 fully constructed elements and possibly a partially constructed Nth. The
+error path must:
+
+1. Drop the N-1 complete elements (by calling their drop glue in order).
+2. Drop any partially constructed fields of element N.
+3. Free the chain's buffers.
+
+The chain tracks `current_len` (committed elements) separately from the
+write cursor, so it knows exactly how many elements to drop. The partially
+constructed element is handled by the same partial-drop mechanism used for
+structs (a bitset of which fields were written — see error handling).
