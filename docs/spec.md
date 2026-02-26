@@ -1262,3 +1262,245 @@ The chain tracks `current_len` (committed elements) separately from the
 write cursor, so it knows exactly how many elements to drop. The partially
 constructed element is handled by the same partial-drop mechanism used for
 structs (a bitset of which fields were written — see error handling).
+
+## Option, Result, and opaque types
+
+`Option<T>` and `Result<T, E>` look like enums, but fad cannot treat them as
+regular enums. Their memory layout is not predictable from the variant
+definitions alone — the compiler applies niche optimization
+(`Option<NonZeroU32>` is 4 bytes, `Option<&T>` uses null as `None`, etc.).
+You cannot write a discriminant byte at a known offset and a payload next to
+it. The layout depends on `T` in ways that only `rustc` knows.
+
+facet handles this correctly: `Option<T>` and `Result<T, E>` get their own
+`Def` variants (`Def::Option`, `Def::Result`) with dedicated vtables:
+
+```rust
+// OptionVTable — all operations go through these function pointers.
+struct OptionVTable {
+    is_some:      fn(option: PtrConst) -> bool,
+    get_value:    fn(option: PtrConst) -> Option<PtrConst>,
+    init_some:    fn(option: PtrUninit, value: PtrMut) -> PtrMut,
+    init_none:    fn(option: PtrUninit) -> PtrMut,
+    replace_with: fn(option: PtrMut, value: Option<PtrMut>),
+}
+
+// ResultVTable — similar pattern.
+struct ResultVTable {
+    is_ok:    fn(result: PtrConst) -> bool,
+    get_ok:   fn(result: PtrConst) -> Option<PtrConst>,
+    get_err:  fn(result: PtrConst) -> Option<PtrConst>,
+    init_ok:  fn(result: PtrUninit, value: PtrMut) -> PtrMut,
+    init_err: fn(result: PtrUninit, value: PtrMut) -> PtrMut,
+}
+```
+
+These vtable functions are monomorphized per `T` at `const`-eval time. They
+know the exact layout (including niche optimization) because they're compiled
+by `rustc` for the concrete type. fad calls them as intrinsics — it cannot
+inline their logic into emitted code because the logic depends on `T`.
+
+### How fad deserializes Option<T>
+
+For JSON, `Option<T>` fields have two behaviors:
+
+- **Field absent from the object**: the field's bit in the required-field
+  bitset is never set. After the field loop, the emitted code calls
+  `vtable.init_none(out + field_offset)` for any unset optional fields.
+
+- **Field present with value**: deserialize the inner `T` into a temporary
+  slot, then call `vtable.init_some(out + field_offset, &temp)`.
+
+- **Field present with `null`**: call `vtable.init_none(out + field_offset)`.
+
+```
+; In the JSON field loop, after dispatching to the "age" field
+; (which is Option<u32>):
+    skip_whitespace()
+    if peek() == 'n':
+        expect_null()
+        call vtable_option_init_none(out + offset_of(age))
+    else:
+        deser_u32(&temp)
+        call vtable_option_init_some(out + offset_of(age), &temp)
+    bitset |= 0b01  ; mark as seen (so we don't init_none again)
+```
+
+After the field loop:
+
+```
+    ; For each optional field whose bit is NOT set:
+    if !(bitset & 0b01):
+        call vtable_option_init_none(out + offset_of(age))
+```
+
+For postcard, `Option<T>` is encoded as a `0x00` (None) or `0x01` followed
+by the value (Some). The emitted code reads the tag byte, branches, and
+calls the vtable:
+
+```
+deser_Option_u32:
+    tag = read_byte()
+    if tag == 0:
+        call vtable_option_init_none(out)
+        ret
+    if tag == 1:
+        deser_u32(&temp)
+        call vtable_option_init_some(out, &temp)
+        ret
+    error("invalid option tag")
+```
+
+### How fad deserializes Result<T, E>
+
+Result is externally tagged in JSON (like a regular enum):
+
+```json
+{ "Ok": 42 }
+{ "Err": "something went wrong" }
+```
+
+The emitted code reads the variant key, deserializes the inner value into a
+temporary, and calls the vtable:
+
+```
+deser_Result_u32_String:
+    expect('{')
+    key = read_quoted_key()
+    expect_colon()
+    if key == "Ok":
+        deser_u32(&temp)
+        call vtable_result_init_ok(out, &temp)
+    elif key == "Err":
+        deser_String(&temp)
+        call vtable_result_init_err(out, &temp)
+    else:
+        error("expected Ok or Err")
+    expect('}')
+    ret
+```
+
+For postcard, Result is a varint tag (0 = Ok, 1 = Err) followed by the
+payload, same as any enum — but construction still goes through the vtable.
+
+### Why not just use the enum path?
+
+facet does expose Option and Result with `Type::User(UserType::Enum(...))`
+and tracks niche optimization via `EnumRepr::RustNPO`. In principle, fad
+could detect `RustNPO` and emit the right bit pattern directly.
+
+But that would mean fad has to understand every niche optimization strategy
+`rustc` uses — null pointers, `NonZero*` niches, bool niches, etc. — and
+get the bit patterns exactly right for every `T`. The vtable functions
+already do this correctly. The cost is one indirect call per Option/Result
+construction, which is negligible compared to the actual deserialization work.
+
+If profiling shows the vtable call is a bottleneck for some hot type (e.g.,
+`Vec<Option<u32>>` with millions of elements), fad could special-case known
+niche patterns. But that's an optimization, not the default path.
+
+### Default values
+
+`#[facet(default)]` on a field means: if the field is absent from the input,
+use `T::default()` instead of erroring. This is orthogonal to Option — a
+`String` field with `#[facet(default)]` gets `String::new()` if missing.
+
+The compiler checks at JIT-compile time whether a field has a default. If
+so, it's treated like an optional field for the required-field bitset: its
+bit is not required. After the field loop, if the bit is unset, the emitted
+code calls an intrinsic that invokes `T::default()` and writes the result:
+
+```
+    ; After the JSON field loop, for a field with #[facet(default)]:
+    if !(bitset & 0b10):
+        call intrinsic_write_default(out + offset_of(name), default_fn_ptr)
+```
+
+`default_fn_ptr` is the address of a function that constructs the default
+value — baked into the emitted code at JIT-compile time from the shape's
+metadata.
+
+For postcard, defaults don't apply: all fields are always present in the
+wire format (postcard is non-self-describing, there's no concept of "absent
+field").
+
+## Maps and sets
+
+`HashMap<K, V>`, `BTreeMap<K, V>`, `HashSet<T>`, `BTreeSet<T>` — these are
+opaque collection types, same as `Vec`. fad can't construct them by writing
+to memory at known offsets. It must go through vtable functions that facet
+provides.
+
+The deserialization strategy is the same as sequences: build a chunk chain
+of flat entries, then finalize into the collection via vtable.
+
+### Maps
+
+A map is a sequence of `(K, V)` entries. The chunk chain holds entries laid
+out as `[K, padding, V]` with alignment determined by `max(align_of(K),
+align_of(V))`. The entry stride is computed at JIT-compile time.
+
+For JSON, maps are objects — keys are always strings in the wire format, but
+`K` might be `String`, `u32`, `Cow<str>`, an enum, etc. The format crate
+reads the quoted key, and the compiler emits code to deserialize it into the
+key slot:
+
+```
+deser_HashMap_String_u32:
+    expect('{')
+    call intrinsic_chain_new(ctx, entry_size, entry_align, 0)
+loop:
+    skip_whitespace()
+    if peek() == '}': break
+    slot = call intrinsic_chain_next_slot(ctx, chain_ptr, entry_size, entry_align)
+    ; Deserialize the key (always a JSON string, parsed into K).
+    deser_String(slot + key_offset, ctx)
+    check_error
+    expect_colon()
+    ; Deserialize the value.
+    deser_u32(slot + value_offset, ctx)
+    check_error
+    call intrinsic_chain_commit(ctx, chain_ptr)
+    skip_comma()
+    goto loop
+    expect('}')
+    ; Finalize: build the HashMap from the flat (K, V) entries.
+    call intrinsic_chain_to_map(ctx, chain_ptr, out, map_vtable)
+    ret
+```
+
+`intrinsic_chain_to_map` iterates the committed entries and calls the map's
+vtable insert function for each `(K, V)` pair. The vtable function handles
+hashing (for HashMap) or ordering (for BTreeMap). If there's only one chunk,
+entries are read directly from it; if multiple, they're walked in chunk order.
+
+For postcard, maps are length-prefixed sequences of `(K, V)` pairs — no
+keys-as-strings, just `K` then `V` in order. The chain gets an exact
+capacity from the length prefix.
+
+### Sets
+
+Sets are the same as maps but with entries of just `K` (no value). The chunk
+chain holds `K` entries. Finalization calls a set-specific vtable insert.
+
+```
+deser_HashSet_String:
+    ; JSON: expect an array of values.
+    expect('[')
+    call intrinsic_chain_new(ctx, elem_size, elem_align, 0)
+loop:
+    skip_whitespace()
+    if peek() == ']': break
+    slot = call intrinsic_chain_next_slot(ctx, chain_ptr, elem_size, elem_align)
+    deser_String(slot, ctx)
+    check_error
+    call intrinsic_chain_commit(ctx, chain_ptr)
+    skip_comma()
+    goto loop
+    expect(']')
+    call intrinsic_chain_to_set(ctx, chain_ptr, out, set_vtable)
+    ret
+```
+
+JSON sets are arrays (there's no set literal in JSON). Postcard sets are
+length-prefixed sequences of `K`.
