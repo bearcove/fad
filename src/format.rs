@@ -1,0 +1,36 @@
+use crate::arch::EmitCtx;
+
+// [impl shape-format.format-trait]
+
+/// Information about a struct field needed during code emission.
+pub struct FieldEmitInfo {
+    /// Byte offset of this field within the output struct.
+    pub offset: usize,
+    /// The facet shape of this field.
+    pub shape: &'static facet::Shape,
+    /// The field name (for formats that use named fields).
+    pub name: &'static str,
+}
+
+/// A wire format that knows how to emit deserialization code.
+///
+/// Each method emits machine code into the `EmitCtx` that will, at runtime,
+/// read from the input buffer and write to the output struct.
+pub trait Format {
+    /// Emit code to deserialize all fields of a struct.
+    ///
+    /// The format controls field ordering. For postcard, this just iterates
+    /// fields in declaration order. For JSON, this would emit a key-dispatch loop.
+    fn emit_struct_fields(
+        &self,
+        ectx: &mut EmitCtx,
+        fields: &[FieldEmitInfo],
+        emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
+    );
+
+    /// Emit code to read a u32 scalar and write it to `out + offset`.
+    fn emit_read_u32(&self, ectx: &mut EmitCtx, offset: usize);
+
+    /// Emit code to read a String and write it to `out + offset`.
+    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize);
+}

@@ -11,3 +11,6 @@ categories = ["encoding", "data-structures"]
 readme = "README.md"
 
 [dependencies]
+facet = { path = "../facet/facet" }
+dynasmrt = "5"
+dynasm = "5"
