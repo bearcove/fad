@@ -153,3 +153,75 @@ Key points:
 - **Error handling** TBD: options are two-register return (clean), a caller-
   provided error-slot pointer (simple), or setjmp/longjmp (fast happy path,
   ugly). Pick one before implementing.
+
+## Recursive types
+
+Consider:
+
+```rust
+struct Node {
+    value: i32,
+    children: Vec<Node>,
+}
+```
+
+`Node` contains `Vec<Node>`, which contains `Node`. If `compile_deser` naively
+recurses into each field's shape, it loops forever at JIT-compile time — it
+never bottoms out.
+
+The fix is standard: track which shapes are currently being compiled, and
+treat a back-edge as a call instead of an inline.
+
+```rust
+fn compile_deser(
+    shape: &'static Shape,
+    fmt: &dyn Format,
+    cx: &mut CompileContext, // tracks in-progress and finished shapes
+) {
+    if let Some(func) = cx.finished.get(shape) {
+        // Already compiled: emit a direct call to the finished function.
+        emit_call(cx.code, func);
+        return;
+    }
+
+    if cx.in_progress.contains(shape) {
+        // Back-edge: emit a call via a forward reference; patch it later.
+        let fwd = cx.forward_ref(shape);
+        emit_call_fwd(cx.code, fwd);
+        return;
+    }
+
+    cx.in_progress.insert(shape);
+    let func_start = cx.code.current_offset();
+
+    match shape.kind() {
+        ShapeKind::Struct(fields) => {
+            fmt.emit_expect_begin_object(cx.code);
+            let dispatch = build_field_dispatch(fields);
+            fmt.emit_field_loop(cx.code, dispatch, |cx, field| {
+                compile_deser(field.shape, fmt, cx); // may emit a call, not an inline
+                emit_store(cx.code, field.offset);
+            });
+            emit_assert_all_required_set(cx.code, fields);
+            fmt.emit_expect_end_object(cx.code);
+        }
+        // ...
+    }
+
+    cx.in_progress.remove(shape);
+    let func = cx.code.finish_func(func_start);
+    cx.patch_forward_refs(shape, func); // fix up any calls emitted during back-edges
+    cx.finished.insert(shape, func);
+}
+```
+
+The result for `Node` is two emitted functions:
+
+- `deser_Node(out: *mut Node, input: &[u8])` — reads the struct, calls
+  `deser_Vec_Node` for the `children` field.
+- `deser_Vec_Node(out: *mut Vec<Node>, input: &[u8])` — allocates the vec,
+  loops, calls `deser_Node` for each element.
+
+They call each other exactly like hand-written Rust would. The forward-reference
+mechanism is only needed when a type directly or indirectly contains itself
+before its own compilation is done — mutual recursion is handled the same way.
