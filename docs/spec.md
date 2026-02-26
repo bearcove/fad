@@ -462,3 +462,394 @@ loop:
 No separate `deser_Metadata` call is emitted — the flattened fields are inlined
 into the parent's loop. For postcard, `collect_fields` similarly expands
 flattened fields in-order into the sequence, with adjusted offsets.
+
+## Enums
+
+```rust
+#[derive(Facet)]
+enum Animal {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+```
+
+Enums have three kinds of variants: unit (`Cat`), struct (`Dog`), and tuple
+(`Parrot`). The compiler knows all variants and their fields at JIT-compile
+time.
+
+### Postcard enums
+
+Postcard encodes enums as a varint discriminant followed by the variant's
+payload (if any), in field-declaration order — same as struct fields. The
+discriminant is the variant index (0, 1, 2, ...).
+
+Wire bytes for `Animal::Dog { name: "Rex", good_boy: true }`:
+
+```
+01              ; variant index 1 (Dog)
+03 52 65 78    ; name: length-prefixed "Rex"
+01              ; good_boy: true
+```
+
+Wire bytes for `Animal::Cat`:
+
+```
+00              ; variant index 0 (Cat), no payload
+```
+
+Wire bytes for `Animal::Parrot("Polly")`:
+
+```
+02                    ; variant index 2 (Parrot)
+05 50 6f 6c 6c 79    ; "Polly"
+```
+
+The emitted code reads the discriminant, branches to the right variant, then
+deserializes its fields in order — exactly like a postcard struct but
+preceded by a branch:
+
+```
+deser_Animal:
+    tag = read_varint()
+    switch tag:
+        case 0:                                ; Cat
+            set_enum_variant(out, 0)
+            ret                                ; no fields
+        case 1:                                ; Dog
+            set_enum_variant(out, 1)
+            deser_String(out + offset_of(Dog::name))
+            deser_bool(out + offset_of(Dog::good_boy))
+            ret
+        case 2:                                ; Parrot
+            set_enum_variant(out, 2)
+            deser_String(out + offset_of(Parrot::0))
+            ret
+        default:
+            error("unknown variant")
+```
+
+`set_enum_variant` writes the Rust discriminant value into the enum's tag
+slot (known offset and size from the shape). The payload offsets are relative
+to the enum's base address, known at JIT-compile time from each variant's
+layout.
+
+### JSON enums — externally tagged (default)
+
+The default JSON representation for enums is externally tagged: the variant
+name is the key of a single-key object.
+
+```json
+"Cat"
+```
+
+```json
+{ "Dog": { "name": "Rex", "good_boy": true } }
+```
+
+```json
+{ "Parrot": "Polly" }
+```
+
+Unit variants serialize as bare strings. Struct variants become
+`{ "VariantName": { fields... } }`. Tuple variants with a single field become
+`{ "VariantName": value }`.
+
+The emitted code for externally tagged enums:
+
+```
+deser_Animal:
+    skip_whitespace()
+    if peek() == '"':
+        ; Might be a unit variant as a bare string.
+        key = read_quoted_string()
+        switch key:             ; trie over variant names
+            case "Cat":
+                set_enum_variant(out, 0)
+                ret
+            default:
+                error("unknown variant")
+    expect('{')
+    skip_whitespace()
+    key = read_quoted_key()
+    expect_colon()
+    switch key:                 ; trie over variant names
+        case "Cat":
+            set_enum_variant(out, 0)
+            ; Cat might also appear as { "Cat": null } — accept both
+            skip_value()
+        case "Dog":
+            set_enum_variant(out, 1)
+            ; Dog is a struct variant — deserialize as object
+            deser_Dog_fields(out)
+        case "Parrot":
+            set_enum_variant(out, 2)
+            ; Parrot is a single-field tuple — deserialize the inner value
+            deser_String(out + offset_of(Parrot::0))
+        default:
+            error("unknown variant")
+    skip_whitespace()
+    expect('}')
+    ret
+```
+
+The trie over variant names is built at JIT-compile time, same as struct field
+dispatch. `deser_Dog_fields` is the same struct-body code as for a standalone
+struct (field loop, bitset, trie dispatch over `"name"` and `"good_boy"`).
+
+### JSON enums — adjacently tagged
+
+`#[facet(tag = "type", content = "data")]` (serde calls this adjacently tagged):
+
+```json
+{ "type": "Dog", "data": { "name": "Rex", "good_boy": true } }
+```
+
+The emitted code reads an object with exactly two known keys (`"type"` and
+`"data"`). Since JSON keys can arrive in any order, the emitter handles both
+orderings:
+
+```
+deser_Animal:
+    expect('{')
+    ; Read first key
+    first_key = read_quoted_key()
+    expect_colon()
+    if first_key == "type":
+        variant = read_quoted_string()    ; e.g. "Dog"
+        skip_comma()
+        expect_key("data")
+        expect_colon()
+        dispatch_variant(variant, out)    ; trie branch → deser payload
+    elif first_key == "data":
+        ; data arrived before type — must buffer or defer.
+        ; Option A: buffer the raw JSON value, read type, then parse.
+        raw = capture_raw_value()
+        skip_comma()
+        expect_key("type")
+        expect_colon()
+        variant = read_quoted_string()
+        dispatch_variant_from_raw(variant, out, raw)
+    else:
+        error("expected \"type\" or \"data\"")
+    skip_whitespace()
+    expect('}')
+    ret
+```
+
+The data-before-type case requires buffering the raw value. This is the price
+of supporting arbitrary key order in JSON. An alternative is to require
+type-first ordering and error otherwise — simpler emitted code, less
+compatible.
+
+### JSON enums — internally tagged
+
+`#[facet(tag = "type")]` (no `content`): the tag field lives alongside the
+variant's own fields.
+
+```json
+{ "type": "Dog", "name": "Rex", "good_boy": true }
+```
+
+This only works for struct variants (and unit variants). Tuple variants
+don't have named fields for the tag to sit alongside.
+
+The emitted code merges the tag key into the field dispatch trie:
+
+```
+deser_Animal:
+    expect('{')
+    bitset = 0b000         ; type, + variant fields
+    variant = UNSET
+loop:
+    skip_whitespace()
+    if peek() == '}': break
+    key = read_quoted_key()
+    expect_colon()
+    if key == "type":
+        variant_name = read_quoted_string()
+        bitset |= 0b001
+    else:
+        ; Can't dispatch to a field until we know the variant.
+        ; Two strategies:
+        ;   1. Require "type" to appear first (simple, fast).
+        ;   2. Buffer unknown keys, replay after "type" is known (flexible).
+        buffer_key_value(key)
+    skip_comma()
+    goto loop
+    ; After the loop, variant must be known.
+    assert variant != UNSET
+    switch variant_name:
+        case "Cat":
+            set_enum_variant(out, 0)
+        case "Dog":
+            set_enum_variant(out, 1)
+            replay_buffered_fields(out, Dog_field_trie)
+        ...
+    expect('}')
+    ret
+```
+
+Internally tagged enums are inherently awkward for a JIT compiler: you can't
+know which fields to expect until you've seen the tag, but the tag might not
+come first. Buffering is the general solution; requiring tag-first is the
+fast-path optimization.
+
+### JSON enums — untagged
+
+`#[facet(untagged)]`: no discriminant in the wire format at all. The
+deserializer must figure out which variant is present from the value itself.
+
+serde's approach is to buffer the entire value into an intermediate `Content`
+enum, then try deserializing each variant from it in order. This loses type
+fidelity (integers become `u64` or `i64`, etc.) and is O(variants) attempts.
+
+facet-solver takes a better approach that fad should follow: **analyze variant
+shapes at JIT-compile time to build a dispatch strategy, then resolve at
+runtime by peeking — not by trial deserialization.**
+
+#### Step 1: classify variants by expected value type
+
+At JIT-compile time, the compiler examines each variant's shape and buckets
+it by what JSON value type it expects:
+
+```rust
+enum ValueTypeBucket {
+    Bool,       // newtype wrapping bool
+    Integer,    // newtype wrapping u32, i64, etc.
+    Float,      // newtype wrapping f32, f64
+    String,     // newtype wrapping String, &str, char, unit variant
+    Array,      // newtype wrapping Vec<T>, tuple variant
+    Object,     // struct variant, newtype wrapping a struct or map
+    Null,       // unit variant (if represented as null)
+}
+```
+
+For our `Animal` example:
+
+| Variant    | Classification |
+|------------|---------------|
+| `Cat`      | String (or Null) |
+| `Dog { .. }` | Object |
+| `Parrot(String)` | String |
+
+#### Step 2: peek at the JSON value type
+
+The emitted code peeks at the first non-whitespace byte to determine the JSON
+value type — `{` means object, `"` means string, `[` means array, `t`/`f`
+means bool, `n` means null, digit/`-` means number. This is a single byte
+comparison, not a parse.
+
+```
+deser_Animal:
+    skip_whitespace()
+    b = peek()
+    switch b:
+        case '{':  goto object_variants
+        case '"':  goto string_variants
+        case 'n':  goto null_variants
+        default:   error("no variant matches this value type")
+```
+
+This eliminates entire categories of variants without touching the input.
+
+#### Step 3: disambiguate within a bucket
+
+Within a bucket, further discrimination depends on the bucket type:
+
+**Object bucket** — if there's only one struct variant (like `Dog`), emit its
+deserializer directly. If there are multiple struct variants, use a
+constraint-solver approach: scan the top-level keys without parsing values,
+and use an inverted index (field name → bitmask of candidate variants) to
+narrow down to exactly one variant. This is what facet-solver does with its
+`Solver` type.
+
+```
+object_variants:
+    ; Only Dog expects an object — emit directly.
+    set_enum_variant(out, 1)
+    deser_Dog_fields(out)
+    ret
+```
+
+If there were multiple struct variants, the emitted code would scan keys first:
+
+```
+object_variants:
+    save_pos = input_position()
+    candidates = 0b11          ; both StructA and StructB are candidates
+    ; Scan top-level keys at depth 1 only
+    expect('{')
+scan_loop:
+    skip_whitespace()
+    if peek() == '}': goto resolve
+    key = read_quoted_key()
+    expect_colon()
+    skip_value()               ; skip the value entirely — we only need keys
+    candidates &= key_to_candidates[key]   ; inverted index lookup
+    if popcount(candidates) == 1: goto resolve
+    skip_comma()
+    goto scan_loop
+resolve:
+    input_position = save_pos  ; rewind — now parse for real
+    switch candidates:
+        case 0b01: deser_StructA(out) ...
+        case 0b10: deser_StructB(out) ...
+        default: error("ambiguous or no variant matched")
+```
+
+The inverted index `key_to_candidates` is built at JIT-compile time from the
+known field names of all struct variants in the bucket. Each key maps to a
+bitmask of variants that contain that field. ANDing narrows the candidate set.
+Typically resolves after 1-2 keys.
+
+**String bucket** — if multiple variants expect strings (like `Cat` as a unit
+variant string and `Parrot(String)`), the compiler checks whether they can be
+distinguished. Unit variants have a fixed set of known string values; newtype
+string variants accept any string. So: read the string, check against the
+known unit variant names via trie, and fall through to the newtype variant if
+no name matches.
+
+```
+string_variants:
+    s = read_quoted_string()
+    switch s:                   ; trie over unit variant names
+        case "Cat":
+            set_enum_variant(out, 0)
+            ret
+    ; No unit variant matched — must be Parrot
+    set_enum_variant(out, 2)
+    store_string(out + offset_of(Parrot::0), s)
+    ret
+```
+
+**Scalar buckets** (bool, integer, float) — if only one variant wraps that
+scalar type, emit directly. If multiple variants wrap the same scalar type
+(e.g., two variants both wrapping `u32`), that's genuinely ambiguous and the
+compiler should error at JIT-compile time rather than guess.
+
+#### Full pseudocode for Animal
+
+```
+deser_Animal:
+    skip_whitespace()
+    b = peek()
+    if b == '{':
+        ; Only Dog expects an object
+        set_enum_variant(out, 1)
+        deser_Dog_fields(out)
+        ret
+    if b == '"':
+        s = read_quoted_string()
+        if s == "Cat":
+            set_enum_variant(out, 0)
+            ret
+        ; Fall through to Parrot
+        set_enum_variant(out, 2)
+        store_string(out + offset_of(Parrot::0), s)
+        ret
+    error("no variant matches this value type")
+```
+
+No buffering, no trial deserialization, no O(variants) retries. The dispatch
+is a peek + trie, same cost structure as externally tagged enums.
