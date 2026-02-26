@@ -7,33 +7,28 @@ serialization/deserialization code based on [facet] reflection.
 
 ## Context
 
-serde relies on proc macros to generate code that can serialize/deserialize Rust
-values. That code is generic, instantiated with a format crate (JSON, Serde, etc.),
-resulting in very fast ser/deser.
+r[context.facet-based]
+fad uses facet's reflection system (proc macros exposing type information: layout,
+fields, vtables) as the basis for all serialization and deserialization.
 
-facet relies on proc macros to expose type information (layout, fields, vtables etc.).
-That information is available at runtime for format crates to ser/deser (with the
-help of a layer like `facet-reflect`) arbitrary Rust values.
+r[context.jit]
+fad emits machine code at runtime via dynasmrt, caching compiled code per
+(type, format, direction) combination.
 
-a naive reflection-based approach (most facet-format crates) yields code that's 
-between 5-50x slower than the serde approach.
-
-facet-format-jit showed that emitting machine code at runtime, caching it per
-(type, format, direction) combination can be competitive or even faster than serde,
-while allowing (in theory) faster builds, and decoupling "deriving the trait" from
-"generating ser/deser code for it".
-
-however facet-format-jit was not built rigorously from the ground up for correctness,
-and should probably not used in any production Rust code — it is disabled by default
-for a reason.
-
-fast, facet-based, postcard & JSON de/ser would be extremely valuable for tools
-like the [roam](https://github.com/bearcove/roam) RPC framework, or the
-[moire](https://github.com/bearcove/moire) instrumentation framework.
-
-fad is an attempt at building JIT facet de/ser that isn't wildly unsafe or impractical.
+r[context.formats]
+fad targets at minimum JSON and postcard as format crates.
 
 ## API surface
+
+r[api.compile]
+fad exposes a `compile_deser` function that takes a `&'static Shape` and a format
+implementation, and returns a compiled deserializer.
+
+r[api.input]
+All inputs are `&[u8]` representing a complete document (no streaming).
+
+r[api.output]
+The compiled deserializer writes into a caller-provided `MaybeUninit<T>`.
 
 ```rust
 use facet::Facet;
@@ -58,8 +53,9 @@ let doc = unsafe { doc.assume_init() };
 
 ## Shape intelligence vs format intelligence
 
-The whole trick of fad is to put together what we know about a shape with what we know
-about a format.
+r[shape-format.combine]
+The compiler combines shape intelligence (field names, types, layouts, offsets) with
+format intelligence (wire encoding rules) to emit specialized machine code.
 
 For example, let's say our input shape is:
 
@@ -92,56 +88,47 @@ On the other hand, when it comes to
 have no 'name' (they're not maps, they're known lists of fields, conceptually):
 postcard is non-self-describing.
 
-fad should be able to combine shape intelligence with format intelligence to
-generate machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
+r[shape-format.dynasmrt]
+fad generates machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
 
 ## No IR
 
-An earlier design considered an intermediate representation: the compiler
-would emit IR opcodes, and a separate pass would lower them to aarch64 or
-x86_64. This adds a layer of indirection that doesn't pay for itself.
+r[no-ir.direct-emission]
+fad has no intermediate representation. The compiler and format crates emit
+machine instructions directly via dynasmrt's `Assembler`. Format trait methods
+like `emit_field_loop` produce real `mov`, `cmp`, `b.eq`, `call` instructions
+for the target architecture.
 
-The shapes fad deals with — structs, enums, sequences, scalars — map
-directly to simple code patterns: loops, branches, calls to intrinsic
-functions. There is no optimization pass that benefits from an abstract
-representation. No constant folding, no register allocation across basic
-blocks, no instruction scheduling. The "optimizations" are all at the shape
-level (building a trie at JIT-compile time, choosing a dispatch strategy for
-untagged enums) and happen in Rust before any code is emitted.
+r[no-ir.rust-structs-are-ir]
+The Rust structs that drive compilation (shapes, field info, variant info,
+dispatch tables) serve as the intermediate representation. All "optimizations"
+(trie construction, untagged enum dispatch strategy) happen in Rust at
+JIT-compile time before any code is emitted.
 
-Instead, the compiler and format crates work with a thin wrapper around
-dynasmrt's `Assembler`. Format trait methods like `emit_field_loop` directly
-emit machine instructions — real `mov`, `cmp`, `b.eq`, `call` — for the
-target architecture. The Rust structs that drive compilation (shapes, field
-info, variant info, dispatch tables) *are* the intermediate representation.
+r[no-ir.two-backends]
+fad supports two backends — aarch64 and x86_64 — selected via
+`#[cfg(target_arch)]`. Format crates must emit for both.
 
-This means:
+r[no-ir.no-interpreter]
+The emitted code is always native machine code. There is no interpreter
+fallback.
 
-- **Two backends** (aarch64, x86_64) behind `#[cfg(target_arch)]`. Format
-  crates must emit for both. In practice the patterns are identical —
-  "load byte, compare, branch" — just spelled differently.
+r[no-ir.dynasmrt]
+dynasmrt handles label management, relocation, memory protection (RW→RX),
+and cache flushing on aarch64.
 
-- **No interpreter**. The emitted code is always native. This keeps the
-  runtime simple and the hot path fast.
+r[no-ir.intrinsics]
+Operations too complex to emit inline (allocation, string growth, error
+reporting) are implemented as Rust functions with `extern "C"` ABI, called
+from emitted code via the platform's C calling convention.
 
-- **dynasmrt handles the hard parts**: label management, relocation, memory
-  protection (RW→RX), cache flushing on aarch64. fad doesn't need its own
-  code buffer abstraction.
-
-- **Intrinsics are Rust functions** called from emitted code via the
-  platform's C calling convention. Things like "allocate a Vec", "grow a
-  String", "report an error" are too complex to emit inline. The emitted
-  code calls into them the same way C code calls libc.
-
-For simplification, we'll assume that:
-
-  * All inputs are `&[u8]` and they are a complete document (no streaming)
-
-The format struct like `FadJson` above must implement a trait that the fad
-compiler can call to emit machine code.
+r[no-ir.format-trait]
+Format crates implement a trait that the fad compiler calls to emit machine
+code for format-specific operations.
 
 ## The compiler
 
+r[compiler.walk]
 The compiler walks the shape tree at JIT-compile time and emits machine code
 for each node. The recursion is in the host (Rust) code — the emitted code
 is flat.
@@ -175,19 +162,23 @@ fn compile_deser(shape: &Shape, fmt: &dyn Format, code: &mut Code) {
 
 Key points:
 
-- **Field dispatch** happens in the emitted code against a runtime key, but the
-  dispatch table (trie, perfect hash, or sorted array) is built at JIT-compile
-  time from the known field names. The host never does a runtime key lookup.
+r[compiler.field-dispatch]
+Field dispatch tables (trie, perfect hash, or sorted array) are built at
+JIT-compile time from the known field names. The emitted code dispatches
+runtime keys against these baked-in tables.
 
-- **Required-field tracking** uses a stack-allocated bitset sized
-  `ceil(field_count / 64)` bits, allocated at emitted-function entry.
-  `emit_assert_all_required_set` checks it before the function returns.
-
-- **Error handling** TBD: options are two-register return (clean), a caller-
-  provided error-slot pointer (simple), or setjmp/longjmp (fast happy path,
-  ugly). Pick one before implementing.
+r[compiler.required-fields]
+Required-field tracking uses a stack-allocated bitset sized
+`ceil(field_count / 64)` bits, allocated at emitted-function entry.
+The emitted code checks the bitset before the function returns.
 
 ## Recursive types
+
+r[compiler.recursive]
+When the compiler encounters a type that directly or indirectly contains itself,
+it emits a call via a forward reference instead of recursing infinitely.
+Forward references are patched to the correct address once the target function
+is compiled.
 
 Consider:
 
@@ -261,6 +252,11 @@ impl Compiler {
 }
 ```
 
+r[compiler.recursive.one-func-per-shape]
+Each unique shape produces at most one emitted function. If a shape has already
+been compiled, the compiler emits a direct call to the finished function.
+Mutual recursion is handled the same way as self-recursion.
+
 The result for `Node` is two emitted functions:
 
 - `deser_Node(out: *mut Node, input: &[u8])` — reads the struct, calls
@@ -268,19 +264,14 @@ The result for `Node` is two emitted functions:
 - `deser_Vec_Node(out: *mut Vec<Node>, input: &[u8])` — allocates the vec,
   loops, calls `deser_Node` for each element.
 
-They call each other exactly like hand-written Rust would. The forward-reference
-mechanism is only needed when a type directly or indirectly contains itself
-before its own compilation is done — mutual recursion is handled the same way.
+They call each other exactly like hand-written Rust would.
 
 ## emit_field_loop for postcard
 
-Postcard is non-self-describing: fields have no names in the wire format, they
-appear in declaration order, and there is no framing around a struct. There is
-nothing to dispatch on at runtime — the compiler already knows exactly which
-fields come in which order.
-
-So `emit_field_loop` for postcard ignores the `dispatch` table entirely and
-emits a straight sequence — one call per field, in order:
+r[deser.postcard.struct]
+For postcard, struct deserialization emits a straight sequence of field
+deserializers in declaration order — no keys, no framing, no dispatch, no
+loop. The dispatch table is ignored.
 
 ```rust
 impl Format for FadPostcard {
@@ -308,24 +299,25 @@ deser_Friend:
     ret
 ```
 
-No loop, no hash lookup, no bitset — postcard structs are always fully present
-or the input is truncated (an error). The required-field bitset from the JSON
-case is also unnecessary: if any field is missing the input simply runs out,
-which is caught by the primitive deserializers returning an error.
+r[deser.postcard.struct.no-bitset]
+Postcard structs require no required-field bitset. All fields are always
+present — if any field is missing, the input runs out and the primitive
+deserializer reports an error.
 
 ## emit_field_loop for JSON
 
-JSON is self-describing: fields arrive as `"key": value` pairs in arbitrary
-order, possibly with unknown keys, possibly with missing keys. The emitted code
-must:
-
+r[deser.json.struct]
+For JSON, struct deserialization emits a loop that reads `"key": value` pairs
+in arbitrary order. The emitted code must:
 1. Read a key from the input at runtime.
 2. Dispatch to the right field deserializer based on that key.
 3. Track which required fields have been seen (the bitset).
 4. Loop until `}`.
 
-`emit_field_loop` for JSON builds a compile-time dispatch structure from the
-known field names, then emits a runtime loop that uses it:
+r[deser.json.struct.trie]
+JSON field dispatch uses a compile-time trie built from known field names.
+The trie is baked into the emitted code as a branch tree — no heap allocation
+at runtime.
 
 ```rust
 impl Format for FadJson {
@@ -399,15 +391,16 @@ loop:
     ret
 ```
 
-The trie branch tree for `"age"` vs `"name"` is emitted as a sequence of
-byte comparisons baked into the code — no hash table, no string comparison
-function call on the hot path.
+r[deser.json.struct.unknown-keys]
+Unknown keys in JSON objects are skipped via a `skip_value` call. They do not
+cause an error.
 
 ## Flatten
 
-`#[facet(flatten)]` (like serde's `#[serde(flatten)]`) merges another struct's
-fields into the parent's key namespace. The flattened fields appear at the same
-level in the wire format, not nested under a key.
+r[deser.flatten]
+`#[facet(flatten)]` merges a nested struct's fields into the parent's key
+namespace. The flattened fields appear at the same level in the wire format,
+not nested under a key.
 
 ```rust
 #[derive(Facet)]
@@ -438,10 +431,15 @@ Not:
 
 ### How build_field_dispatch handles it
 
+r[deser.flatten.offset-accumulation]
 `build_field_dispatch` walks the struct's fields at JIT-compile time. When it
-encounters a flattened field, instead of adding the field itself to the trie, it
-recurses into the flattened shape and adds *its* fields — with offsets adjusted
-by the flattened field's own offset within the parent.
+encounters a flattened field, it recurses into the flattened shape and adds
+its fields with offsets adjusted by the flattened field's offset within the
+parent. The trie is built over the flat field list.
+
+r[deser.flatten.inline]
+No separate deserializer function is emitted for the flattened struct — its
+fields are inlined into the parent's field loop.
 
 ```rust
 fn build_field_dispatch(fields: &[FieldInfo]) -> FieldDispatch {
@@ -492,9 +490,8 @@ loop:
     ret
 ```
 
-No separate `deser_Metadata` call is emitted — the flattened fields are inlined
-into the parent's loop. For postcard, `collect_fields` similarly expands
-flattened fields in-order into the sequence, with adjusted offsets.
+For postcard, `collect_fields` similarly expands flattened fields in-order into
+the sequence, with adjusted offsets.
 
 ## Enums
 
@@ -507,15 +504,17 @@ enum Animal {
 }
 ```
 
+r[deser.enum.variant-kinds]
 Enums have three kinds of variants: unit (`Cat`), struct (`Dog`), and tuple
 (`Parrot`). The compiler knows all variants and their fields at JIT-compile
 time.
 
 ### Postcard enums
 
+r[deser.postcard.enum]
 Postcard encodes enums as a varint discriminant followed by the variant's
-payload (if any), in field-declaration order — same as struct fields. The
-discriminant is the variant index (0, 1, 2, ...).
+payload (if any), in field-declaration order. The discriminant is the variant
+index (0, 1, 2, ...).
 
 Wire bytes for `Animal::Dog { name: "Rex", good_boy: true }`:
 
@@ -538,9 +537,10 @@ Wire bytes for `Animal::Parrot("Polly")`:
 05 50 6f 6c 6c 79    ; "Polly"
 ```
 
-The emitted code reads the discriminant, branches to the right variant, then
-deserializes its fields in order — exactly like a postcard struct but
-preceded by a branch:
+r[deser.postcard.enum.dispatch]
+The emitted code reads the varint discriminant, branches to the right variant
+via a switch, then deserializes its fields in order. Unknown discriminant
+values are an error.
 
 ```
 deser_Animal:
@@ -562,6 +562,7 @@ deser_Animal:
             error("unknown variant")
 ```
 
+r[deser.enum.set-variant]
 `set_enum_variant` writes the Rust discriminant value into the enum's tag
 slot (known offset and size from the shape). The payload offsets are relative
 to the enum's base address, known at JIT-compile time from each variant's
@@ -569,6 +570,7 @@ layout.
 
 ### JSON enums — externally tagged (default)
 
+r[deser.json.enum.external]
 The default JSON representation for enums is externally tagged: the variant
 name is the key of a single-key object.
 
@@ -584,11 +586,18 @@ name is the key of a single-key object.
 { "Parrot": "Polly" }
 ```
 
-Unit variants serialize as bare strings. Struct variants become
-`{ "VariantName": { fields... } }`. Tuple variants with a single field become
-`{ "VariantName": value }`.
+r[deser.json.enum.external.unit-as-string]
+Unit variants serialize as bare strings.
 
-The emitted code for externally tagged enums:
+r[deser.json.enum.external.struct-variant]
+Struct variants become `{ "VariantName": { fields... } }`.
+
+r[deser.json.enum.external.tuple-variant]
+Tuple variants with a single field become `{ "VariantName": value }`.
+
+r[deser.json.enum.external.trie]
+Variant name dispatch uses a trie built at JIT-compile time, same as struct
+field dispatch.
 
 ```
 deser_Animal:
@@ -626,21 +635,23 @@ deser_Animal:
     ret
 ```
 
-The trie over variant names is built at JIT-compile time, same as struct field
-dispatch. `deser_Dog_fields` is the same struct-body code as for a standalone
+`deser_Dog_fields` is the same struct-body code as for a standalone
 struct (field loop, bitset, trie dispatch over `"name"` and `"good_boy"`).
 
 ### JSON enums — adjacently tagged
 
-`#[facet(tag = "type", content = "data")]` (serde calls this adjacently tagged):
+r[deser.json.enum.adjacent]
+`#[facet(tag = "type", content = "data")]` uses adjacently tagged encoding:
+the tag and content are sibling keys in an object.
 
 ```json
 { "type": "Dog", "data": { "name": "Rex", "good_boy": true } }
 ```
 
-The emitted code reads an object with exactly two known keys (`"type"` and
-`"data"`). Since JSON keys can arrive in any order, the emitter handles both
-orderings:
+r[deser.json.enum.adjacent.key-order]
+Since JSON keys can arrive in any order, the emitted code handles both
+type-first and data-first orderings. Data-before-type requires buffering the
+raw value.
 
 ```
 deser_Animal:
@@ -670,24 +681,28 @@ deser_Animal:
     ret
 ```
 
-The data-before-type case requires buffering the raw value. This is the price
-of supporting arbitrary key order in JSON. An alternative is to require
-type-first ordering and error otherwise — simpler emitted code, less
-compatible.
+The data-before-type case requires buffering the raw value into the format
+arena. An alternative is to require type-first ordering and error otherwise —
+simpler emitted code, less compatible.
 
 ### JSON enums — internally tagged
 
-`#[facet(tag = "type")]` (no `content`): the tag field lives alongside the
-variant's own fields.
+r[deser.json.enum.internal]
+`#[facet(tag = "type")]` (no `content`) uses internally tagged encoding: the
+tag field lives alongside the variant's own fields.
 
 ```json
 { "type": "Dog", "name": "Rex", "good_boy": true }
 ```
 
-This only works for struct variants (and unit variants). Tuple variants
-don't have named fields for the tag to sit alongside.
+r[deser.json.enum.internal.struct-only]
+Internally tagged encoding only works for struct variants and unit variants.
+Tuple variants are not supported with internal tagging.
 
-The emitted code merges the tag key into the field dispatch trie:
+r[deser.json.enum.internal.buffering]
+Because the tag key may not appear first, the emitted code buffers key-value
+pairs until the tag is seen, then replays them against the correct variant's
+field dispatch trie.
 
 ```
 deser_Animal:
@@ -724,27 +739,27 @@ loop:
 ```
 
 Internally tagged enums are inherently awkward for a JIT compiler: you can't
-know which fields to expect until you've seen the tag, but the tag might not
-come first. Buffering is the general solution; requiring tag-first is the
+know which fields to expect until you've seen the tag, but the tag might
+not come first. Buffering is the general solution; requiring tag-first is the
 fast-path optimization.
 
 ### JSON enums — untagged
 
-`#[facet(untagged)]`: no discriminant in the wire format at all. The
-deserializer must figure out which variant is present from the value itself.
+r[deser.json.enum.untagged]
+`#[facet(untagged)]` enums have no discriminant in the wire format. The
+deserializer determines the variant from the value itself.
 
-serde's approach is to buffer the entire value into an intermediate `Content`
-enum, then try deserializing each variant from it in order. This loses type
-fidelity (integers become `u64` or `i64`, etc.) and is O(variants) attempts.
-
-facet-solver takes a better approach that fad should follow: **analyze variant
-shapes at JIT-compile time to build a dispatch strategy, then resolve at
-runtime by peeking — not by trial deserialization.**
+r[deser.json.enum.untagged.no-trial]
+fad does NOT use trial deserialization. Instead, it analyzes variant shapes at
+JIT-compile time to build a dispatch strategy, then resolves at runtime by
+peeking at the value type.
 
 #### Step 1: classify variants by expected value type
 
+r[deser.json.enum.untagged.bucket]
 At JIT-compile time, the compiler examines each variant's shape and buckets
-it by what JSON value type it expects:
+it by the JSON value type it expects (bool, integer, float, string, array,
+object, null).
 
 ```rust
 enum ValueTypeBucket {
@@ -768,10 +783,11 @@ For our `Animal` example:
 
 #### Step 2: peek at the JSON value type
 
+r[deser.json.enum.untagged.peek]
 The emitted code peeks at the first non-whitespace byte to determine the JSON
-value type — `{` means object, `"` means string, `[` means array, `t`/`f`
-means bool, `n` means null, digit/`-` means number. This is a single byte
-comparison, not a parse.
+value type (`{` = object, `"` = string, `[` = array, `t`/`f` = bool, `n` =
+null, digit/`-` = number). This eliminates entire categories of variants
+without touching the input.
 
 ```
 deser_Animal:
@@ -784,18 +800,26 @@ deser_Animal:
         default:   error("no variant matches this value type")
 ```
 
-This eliminates entire categories of variants without touching the input.
-
 #### Step 3: disambiguate within a bucket
 
-Within a bucket, further discrimination depends on the bucket type:
+r[deser.json.enum.untagged.object-solver]
+If multiple struct variants fall in the object bucket, the emitted code scans
+top-level keys without parsing values, using an inverted index (field name →
+bitmask of candidate variants) to narrow down to exactly one variant. The
+inverted index is built at JIT-compile time.
+
+r[deser.json.enum.untagged.string-trie]
+If multiple variants fall in the string bucket, unit variants are checked first
+via a trie over their known names. If no unit variant matches, the value is
+passed to the newtype string variant.
+
+r[deser.json.enum.untagged.scalar-unique]
+If multiple variants wrap the same scalar type (e.g., two variants both
+wrapping `u32`), the compiler reports an error at JIT-compile time.
 
 **Object bucket** — if there's only one struct variant (like `Dog`), emit its
-deserializer directly. If there are multiple struct variants, use a
-constraint-solver approach: scan the top-level keys without parsing values,
-and use an inverted index (field name → bitmask of candidate variants) to
-narrow down to exactly one variant. This is what facet-solver does with its
-`Solver` type.
+deserializer directly. If there are multiple struct variants, use the
+constraint-solver approach described above.
 
 ```
 object_variants:
@@ -889,22 +913,29 @@ is a peek + trie, same cost structure as externally tagged enums.
 
 ## Calling convention
 
-Every emitted deserializer function has the same signature at the machine
-level. The caller provides three things:
+r[callconv.signature]
+Every emitted deserializer function has the same machine-level signature:
+`out` (pointer to the output slot) and `ctx` (pointer to a `DeserContext`).
 
-1. **`out`** — pointer to the output slot (e.g., `*mut Friend`). The callee
-   writes deserialized fields at known offsets from this pointer.
+r[callconv.out]
+`out` is a pointer to the output slot (e.g., `*mut Friend`). The callee
+writes deserialized fields at known offsets from this pointer.
 
-2. **`ctx`** — pointer to a `DeserContext` struct that lives on the caller's
-   (Rust) stack. This carries the input cursor, error state, and
-   format-specific scratch space. Passed by pointer so all emitted functions
-   share the same context without copying.
+r[callconv.ctx]
+`ctx` is a pointer to a `DeserContext` struct that lives on the caller's
+(Rust) stack. It carries the input cursor, error state, and format-specific
+scratch space. Passed by pointer so all emitted functions share the same
+context without copying.
 
-3. **Return** — emitted functions return void. They signal errors by writing
-   to the context's error slot and branching to an error exit path. The
-   top-level entry point checks the error slot after the emitted code returns.
+r[callconv.void-return]
+Emitted functions return void. Errors are signaled through the context's
+error slot, not through return values.
 
 ### DeserContext
+
+r[callconv.deser-context]
+`DeserContext` is `#[repr(C)]` so emitted code can access fields at known
+offsets.
 
 ```rust
 #[repr(C)]
@@ -932,14 +963,16 @@ struct ErrorSlot {
 }
 ```
 
-The context is `#[repr(C)]` so emitted code can access fields at known
-offsets. The emitted code loads `ctx.input_ptr` into a register, does its
-work, and stores the updated position back before calling an intrinsic or
-returning.
-
 ### Register assignment
 
-On aarch64:
+r[callconv.registers.c-abi]
+`out` and `ctx` are passed in the platform's C calling convention argument
+registers. Emitted functions can be called directly from Rust `extern "C"`
+code with no thunk.
+
+r[callconv.registers.aarch64]
+On aarch64: `x0` = `out`, `x1` = `ctx`, `x19` = cached `input_ptr`
+(callee-saved), `x20` = cached `input_end` (callee-saved).
 
 | Register | Role |
 |----------|------|
@@ -948,7 +981,9 @@ On aarch64:
 | `x19`    | cached `input_ptr` (callee-saved) |
 | `x20`    | cached `input_end` (callee-saved) |
 
-On x86_64:
+r[callconv.registers.x86-64]
+On x86_64: `rdi` = `out`, `rsi` = `ctx`, `r12` = cached `input_ptr`
+(callee-saved), `r13` = cached `input_end` (callee-saved).
 
 | Register | Role |
 |----------|------|
@@ -957,20 +992,15 @@ On x86_64:
 | `r12`    | cached `input_ptr` (callee-saved) |
 | `r13`    | cached `input_end` (callee-saved) |
 
-`out` and `ctx` follow the platform's C calling convention for the first two
-arguments. This means emitted functions can be called directly from Rust
-`extern "C"` code with no thunk.
-
-The input cursor is cached in callee-saved registers for the hot path —
-advancing through input bytes is the most frequent operation and must not
-require a load/store to `ctx` on every byte. On function entry, the emitted
-code loads `ctx.input_ptr` and `ctx.input_end` into the cached registers.
-Before calling an intrinsic (which might read or advance the cursor), the
-emitted code stores the cached `input_ptr` back to `ctx`. After the
-intrinsic returns, it reloads.
+r[callconv.cursor-caching]
+The input cursor (`input_ptr`, `input_end`) is cached in callee-saved
+registers. On function entry, the emitted code loads them from `ctx`. Before
+calling an intrinsic, the emitted code stores `input_ptr` back to `ctx`.
+After the intrinsic returns, it reloads.
 
 ### Calling intrinsics
 
+r[callconv.intrinsics]
 Intrinsics are regular Rust functions with `extern "C"` ABI. They receive
 `ctx` as their first argument (so they can read/advance the cursor, report
 errors) plus whatever other arguments they need.
@@ -986,35 +1016,36 @@ extern "C" fn intrinsic_chunk_finalize_vec(ctx: *mut DeserContext, chain: *mut C
 extern "C" fn intrinsic_json_read_string(ctx: *mut DeserContext) -> StringRef;
 ```
 
-The emitted code calls these with a normal `call` instruction to an absolute
-address (the function pointer is baked into the emitted code at JIT-compile
-time as an immediate or a pc-relative load from a constant pool).
+r[callconv.intrinsics.address]
+The emitted code calls intrinsics with a normal `call` instruction. The
+function pointer is baked into the emitted code at JIT-compile time as an
+immediate or a pc-relative load from a constant pool.
 
 ### Calling between emitted functions
 
-When `deser_Node` calls `deser_Vec_Node`, it's a direct call between two
-emitted functions. Both use the same convention: `out` in the first argument
-register, `ctx` in the second. The caller sets `out` to the address of the
-field being deserialized (e.g., `out + offset_of(Node::children)`), keeps
-`ctx` as-is, and emits a `call` (or `bl` on aarch64). On return, the caller
-reloads the cached input cursor from `ctx` in case the callee advanced it.
+r[callconv.inter-function]
+Calls between emitted functions use the same `(out, ctx)` convention. The
+caller sets `out` to the address of the field being deserialized (e.g.,
+`out + offset_of(Node::children)`), keeps `ctx` as-is, and emits a `call`
+(or `bl` on aarch64). On return, the caller reloads the cached input cursor
+from `ctx` in case the callee advanced it.
 
 ## Error handling
 
-Errors are signaled through the context, not through return values. This
-keeps the happy path free of branch-on-return-value overhead.
+r[error.slot]
+Errors are signaled through the context's error slot, not through return
+values. When an emitted function or intrinsic encounters an error, it writes
+the error code and input offset to `ctx.error` and branches to the function's
+error exit label.
 
-### The error slot approach
+r[error.exit-label]
+Each emitted function has an error exit label at its end. The error exit
+restores callee-saved registers, stores the cached `input_ptr` back to `ctx`,
+and returns.
 
-When an emitted function or intrinsic encounters an error:
-
-1. Write the error code and input offset to `ctx.error`.
-2. Branch to the function's error exit label.
-
-The error exit label is emitted at the end of each function. It restores
-callee-saved registers, stores the cached `input_ptr` back to `ctx`, and
-returns. The caller then checks `ctx.error.code != 0` and propagates — the
-same way, by branching to its own error exit.
+r[error.propagation]
+After each intrinsic call or inter-function call, the emitted code checks
+`ctx.error.code != 0` via `cbnz` and branches to its own error exit if set.
 
 ```
 deser_Friend:
@@ -1038,39 +1069,36 @@ deser_Friend:
 
 ### Why not setjmp/longjmp?
 
-setjmp/longjmp would make the happy path slightly faster (no error checks
-after each intrinsic call) but:
-
-- longjmp skips destructors. If the emitted code has partially constructed
-  a value (some fields written, others not), longjmp leaves it in a state
-  that can't be safely dropped.
-- setjmp has its own cost (saving all registers), and it's called on every
-  top-level entry.
-- It's harder to provide good error messages (offset, context) when you
-  longjmp past everything.
+r[error.no-longjmp]
+fad does not use setjmp/longjmp. longjmp skips destructors, leaving
+partially-constructed values in an undroppable state. setjmp has its own
+cost, and it makes error messages (offset, context) harder to produce.
 
 The error-slot approach pays ~1 `cbnz` per intrinsic call on the happy path.
 That's one cycle, almost always correctly predicted as not-taken.
 
 ### Why not two-register return?
 
-Returning `(value, error)` in two registers is clean but doesn't compose:
-the emitted functions write into `out` by pointer, they don't "return" the
-deserialized value. And error propagation would still require a branch after
-every call — same cost as the error slot, but now the error state is split
-between return registers and the context instead of living in one place.
+r[error.no-two-reg]
+fad does not use two-register return for errors. Emitted functions write into
+`out` by pointer — they don't "return" the deserialized value. Error
+propagation would still require a branch after every call, same cost as the
+error slot, but with error state split between return registers and the
+context.
 
 ## Format context and scratch space
 
-Format crates sometimes need runtime state that isn't just the input cursor.
-JSON needs to:
+r[format-state.pointer]
+Format-specific runtime state lives in the `format_state` pointer inside
+`DeserContext`. Each format crate defines its own `#[repr(C)]` state struct.
 
-- Buffer raw values (adjacently tagged enums with data-before-type).
-- Buffer key-value pairs (internally tagged enums with tag-not-first).
-- Hold a decoded string temporarily (untagged enum string dispatch).
+r[format-state.json]
+JSON's format state includes a bump-allocated arena for temporary allocations
+(buffered values, strings) and a scratch buffer for key scanning (untagged
+struct disambiguation).
 
-This state lives in the `format_state` pointer inside `DeserContext`. Each
-format crate defines its own state struct:
+r[format-state.postcard]
+Postcard requires no format state. `format_state` can be null.
 
 ```rust
 // For JSON:
@@ -1094,25 +1122,26 @@ struct JsonState {
 
 ### Arena allocation
 
+r[format-state.arena]
 The arena is bump-allocated: intrinsics call `arena_alloc(ctx, size, align)`
 which advances `arena_ptr` and returns the old pointer. If the arena is
-exhausted, the intrinsic grows it (realloc the backing allocation). The arena
-is reset (ptr = base) after each top-level `deser.call()` — all temporary
-allocations are freed in bulk.
+exhausted, the intrinsic grows it (realloc the backing allocation).
 
-This is cheap enough that buffering a JSON value for later replay (adjacently
-tagged, internally tagged) is not a performance concern. The buffered data is
-just the raw bytes plus a small index of key offsets — no parsing, no
+r[format-state.arena.reset]
+The arena is reset (`ptr = base`) after each top-level `deser.call()` — all
+temporary allocations are freed in bulk.
+
+Buffered data is raw bytes plus a small index of key offsets — no parsing, no
 intermediate `Value` type.
 
 ### Who allocates the context?
 
-The Rust entry point — the safe wrapper around `deser.call()` — allocates
+r[callconv.context-allocation]
+The Rust entry point (safe wrapper around `deser.call()`) allocates
 `DeserContext` on the stack, initializes the input cursor from the `&[u8]`
-argument, zero-initializes the error slot, and sets `format_state` to point
-to a format-specific state struct (also stack-allocated, or heap-allocated
-for the arena backing). Then it calls the emitted function with `out` and
-`ctx`.
+argument, zero-initializes the error slot, and sets `format_state` to the
+format-specific state struct. Then it calls the emitted function with `out`
+and `ctx`.
 
 ```rust
 impl CompiledDeser {
@@ -1136,32 +1165,22 @@ impl CompiledDeser {
 }
 ```
 
-Postcard passes a null `format_state` (or a zero-sized struct pointer).
-If a format needs no scratch space, it pays no allocation cost.
+r[format-state.zero-cost]
+If a format needs no scratch space (e.g., postcard), `format_state` is null
+and no allocation cost is paid.
 
 ## Sequence construction
 
-Deserializing `Vec<T>`, `HashSet<T>`, or any variable-length collection
-requires constructing elements in memory before knowing the final count (for
-JSON) or after reading a length prefix that may not be exact (for postcard).
+r[seq.chunk-chain]
+Deserializing variable-length collections (`Vec<T>`, `HashSet<T>`, etc.)
+uses a chunk chain: a linked list of fixed-size buffers. Elements are
+constructed in-place in the current chunk. When a chunk fills up, a new one
+is allocated and linked. No existing chunk ever moves.
 
-### The problem with Vec::push
-
-The naive approach — allocate a `Vec<T>`, push elements one at a time — has
-a fatal flaw for JIT-emitted code: `Vec::push` may reallocate, which
-invalidates all pointers into the Vec's buffer. If we're constructing
-element N in-place (writing its fields directly to the buffer at a known
-offset) and a reallocation moves the buffer, we're writing to freed memory.
-
-We could work around this by always finishing one element before starting the
-next. But that forces an extra copy if elements are complex (structs with
-many fields) and prevents future optimizations like prefetching.
-
-### Chunk chains
-
-Instead, fad uses a **chunk chain**: a linked list of fixed-size buffers.
-Elements are constructed in-place in the current chunk. When a chunk fills
-up, a new one is allocated and linked. No existing chunk ever moves.
+r[seq.no-vec-push]
+fad does NOT use `Vec::push` during deserialization. `Vec::push` may
+reallocate, invalidating pointers into the buffer — fatal for in-place
+element construction.
 
 ```rust
 #[repr(C)]
@@ -1187,7 +1206,10 @@ struct FullChunk {
 
 ### How the emitted code uses it
 
-For `Vec<Friend>` deserialization:
+r[seq.chain-lifecycle]
+The emitted code allocates a chain, loops to get slots and deserialize
+elements in-place, commits each element, then finalizes the chain into the
+target collection.
 
 ```
 deser_Vec_Friend:
@@ -1223,57 +1245,47 @@ loop:
 
 ### Finalization
 
-`intrinsic_chain_to_vec` builds the final `Vec<T>` from the chain:
+r[seq.finalize.one-chunk]
+If the chain has a single chunk, its buffer is transferred directly to the
+`Vec` (pointer, length, capacity) — zero copy. The chunk must be allocated
+with the same allocator and layout that `Vec` expects.
 
-- **One chunk (common case)**: The chunk's buffer *is* the Vec's buffer.
-  Transfer ownership directly — set the Vec's pointer, length, and capacity
-  from the chunk. No copy. This requires that the chunk was allocated with
-  the same allocator and layout that Vec expects, which the intrinsic
-  ensures (using `alloc::alloc::alloc` with the right layout, and checking
-  at JIT-compile time that Vec's layout is `{ptr, len, cap}`).
+r[seq.finalize.multi-chunk]
+If the chain has multiple chunks, a single buffer of `total_len` capacity is
+allocated, each chunk's data is `memcpy`'d into it in order, and the `Vec`
+is built from that — one copy total.
 
-- **Multiple chunks**: Allocate a single buffer of `total_len` capacity,
-  `memcpy` each chunk's data into it in order, build the Vec from that.
-  This is one copy of the total data — the same cost as if we'd known the
-  size upfront and allocated once.
+### Size hints
 
-### Why not a size hint + single allocation?
+r[seq.size-hint.postcard]
+Postcard provides an exact element count (length-prefixed). The chain is
+initialized with a single chunk of exactly the right capacity, so
+finalization is always the zero-copy one-chunk path.
 
-Postcard *does* give an exact element count (length-prefixed). In that case
-the chain is initialized with a single chunk of exactly the right capacity,
-and finalization is always the zero-copy one-chunk path.
-
-JSON doesn't know the count upfront. A heuristic size hint (e.g., based on
-remaining input bytes) could over-allocate. The chunk chain avoids guessing:
-start with a reasonable chunk size (e.g., 16 elements), double on each new
-chunk, and pay at most one copy at the end.
+r[seq.size-hint.json]
+JSON doesn't know the count upfront. The chain starts with a reasonable
+chunk size (e.g., 16 elements), doubles on each new chunk, and pays at most
+one copy at the end during finalization.
 
 ### Drop safety
 
-If deserialization fails mid-array (error on element N), the chain contains
-N-1 fully constructed elements and possibly a partially constructed Nth. The
-error path must:
-
-1. Drop the N-1 complete elements (by calling their drop glue in order).
+r[seq.drop-safety]
+If deserialization fails mid-array, the error path must:
+1. Drop the N-1 fully committed elements (by calling their drop glue).
 2. Drop any partially constructed fields of element N.
 3. Free the chain's buffers.
 
+r[seq.drop-safety.committed-count]
 The chain tracks `current_len` (committed elements) separately from the
-write cursor, so it knows exactly how many elements to drop. The partially
-constructed element is handled by the same partial-drop mechanism used for
-structs (a bitset of which fields were written — see error handling).
+write cursor, so it knows exactly how many elements to drop.
 
 ## Option, Result, and opaque types
 
-`Option<T>` and `Result<T, E>` look like enums, but fad cannot treat them as
-regular enums. Their memory layout is not predictable from the variant
-definitions alone — the compiler applies niche optimization
-(`Option<NonZeroU32>` is 4 bytes, `Option<&T>` uses null as `None`, etc.).
-You cannot write a discriminant byte at a known offset and a payload next to
-it. The layout depends on `T` in ways that only `rustc` knows.
-
-facet handles this correctly: `Option<T>` and `Result<T, E>` get their own
-`Def` variants (`Def::Option`, `Def::Result`) with dedicated vtables:
+r[opaque.vtable]
+`Option<T>` and `Result<T, E>` are opaque types — fad cannot treat them as
+regular enums because niche optimization makes their memory layout
+unpredictable. Construction and inspection go through facet's dedicated
+vtables (`OptionVTable`, `ResultVTable`).
 
 ```rust
 // OptionVTable — all operations go through these function pointers.
@@ -1302,16 +1314,17 @@ inline their logic into emitted code because the logic depends on `T`.
 
 ### How fad deserializes Option<T>
 
-For JSON, `Option<T>` fields have two behaviors:
+r[deser.json.option]
+For JSON, `Option<T>` fields have three behaviors:
+- **Field absent**: `vtable.init_none(out + field_offset)` is called after
+  the field loop for any unset optional fields.
+- **Field present with value**: the inner `T` is deserialized into a
+  temporary slot, then `vtable.init_some(out + field_offset, &temp)`.
+- **Field present with `null`**: `vtable.init_none(out + field_offset)`.
 
-- **Field absent from the object**: the field's bit in the required-field
-  bitset is never set. After the field loop, the emitted code calls
-  `vtable.init_none(out + field_offset)` for any unset optional fields.
-
-- **Field present with value**: deserialize the inner `T` into a temporary
-  slot, then call `vtable.init_some(out + field_offset, &temp)`.
-
-- **Field present with `null`**: call `vtable.init_none(out + field_offset)`.
+r[deser.postcard.option]
+For postcard, `Option<T>` is encoded as `0x00` (None) or `0x01` + value
+(Some). The emitted code reads the tag byte and calls the vtable.
 
 ```
 ; In the JSON field loop, after dispatching to the "age" field
@@ -1353,15 +1366,14 @@ deser_Option_u32:
 
 ### How fad deserializes Result<T, E>
 
-Result is externally tagged in JSON (like a regular enum):
+r[deser.json.result]
+For JSON, `Result<T, E>` uses externally tagged encoding (`{ "Ok": value }`
+or `{ "Err": value }`). The emitted code reads the variant key, deserializes
+the inner value into a temporary, and calls the vtable.
 
-```json
-{ "Ok": 42 }
-{ "Err": "something went wrong" }
-```
-
-The emitted code reads the variant key, deserializes the inner value into a
-temporary, and calls the vtable:
+r[deser.postcard.result]
+For postcard, `Result` is a varint tag (0 = Ok, 1 = Err) followed by the
+payload. Construction goes through the vtable.
 
 ```
 deser_Result_u32_String:
@@ -1380,35 +1392,26 @@ deser_Result_u32_String:
     ret
 ```
 
-For postcard, Result is a varint tag (0 = Ok, 1 = Err) followed by the
-payload, same as any enum — but construction still goes through the vtable.
-
 ### Why not just use the enum path?
 
-facet does expose Option and Result with `Type::User(UserType::Enum(...))`
-and tracks niche optimization via `EnumRepr::RustNPO`. In principle, fad
-could detect `RustNPO` and emit the right bit pattern directly.
-
-But that would mean fad has to understand every niche optimization strategy
-`rustc` uses — null pointers, `NonZero*` niches, bool niches, etc. — and
-get the bit patterns exactly right for every `T`. The vtable functions
-already do this correctly. The cost is one indirect call per Option/Result
-construction, which is negligible compared to the actual deserialization work.
-
-If profiling shows the vtable call is a bottleneck for some hot type (e.g.,
-`Vec<Option<u32>>` with millions of elements), fad could special-case known
-niche patterns. But that's an optimization, not the default path.
+r[opaque.no-niche-inlining]
+fad does not attempt to inline niche optimization logic into emitted code.
+The vtable functions already handle every niche pattern correctly. The cost
+is one indirect call per Option/Result construction, negligible compared to
+the actual deserialization work. Special-casing known niche patterns is a
+future optimization, not the default path.
 
 ### Default values
 
-`#[facet(default)]` on a field means: if the field is absent from the input,
-use `T::default()` instead of erroring. This is orthogonal to Option — a
-`String` field with `#[facet(default)]` gets `String::new()` if missing.
+r[deser.default]
+`#[facet(default)]` on a field means: if absent from the input, use
+`T::default()` instead of erroring. The field is treated as optional in the
+required-field bitset. After the field loop, if the bit is unset, the
+emitted code calls an intrinsic that invokes `T::default()`.
 
-The compiler checks at JIT-compile time whether a field has a default. If
-so, it's treated like an optional field for the required-field bitset: its
-bit is not required. After the field loop, if the bit is unset, the emitted
-code calls an intrinsic that invokes `T::default()` and writes the result:
+r[deser.default.fn-ptr]
+The default function pointer is baked into the emitted code at JIT-compile
+time from the shape's metadata.
 
 ```
     ; After the JSON field loop, for a field with #[facet(default)]:
@@ -1416,34 +1419,29 @@ code calls an intrinsic that invokes `T::default()` and writes the result:
         call intrinsic_write_default(out + offset_of(name), default_fn_ptr)
 ```
 
-`default_fn_ptr` is the address of a function that constructs the default
-value — baked into the emitted code at JIT-compile time from the shape's
-metadata.
-
-For postcard, defaults don't apply: all fields are always present in the
-wire format (postcard is non-self-describing, there's no concept of "absent
+r[deser.default.postcard-irrelevant]
+For postcard, defaults don't apply: all fields are always present in the wire
+format (postcard is non-self-describing, there's no concept of "absent
 field").
 
 ## Maps and sets
 
-`HashMap<K, V>`, `BTreeMap<K, V>`, `HashSet<T>`, `BTreeSet<T>` — these are
-opaque collection types, same as `Vec`. fad can't construct them by writing
-to memory at known offsets. It must go through vtable functions that facet
-provides.
-
-The deserialization strategy is the same as sequences: build a chunk chain
-of flat entries, then finalize into the collection via vtable.
+r[map.chunk-chain]
+Maps and sets are opaque collection types. fad deserializes them using the
+same chunk-chain strategy as sequences: build a chain of flat entries, then
+finalize into the collection via vtable.
 
 ### Maps
 
-A map is a sequence of `(K, V)` entries. The chunk chain holds entries laid
-out as `[K, padding, V]` with alignment determined by `max(align_of(K),
-align_of(V))`. The entry stride is computed at JIT-compile time.
+r[map.entry-layout]
+Map entries are laid out as `[K, padding, V]` in the chunk chain, with
+alignment `max(align_of(K), align_of(V))`. The entry stride is computed at
+JIT-compile time.
 
-For JSON, maps are objects — keys are always strings in the wire format, but
-`K` might be `String`, `u32`, `Cow<str>`, an enum, etc. The format crate
-reads the quoted key, and the compiler emits code to deserialize it into the
-key slot:
+r[deser.json.map]
+For JSON, maps are objects. Keys are always strings in the wire format, but
+`K` might be `String`, `u32`, `Cow<str>`, etc. The format crate reads the
+quoted key and the compiler emits code to deserialize it into the key slot.
 
 ```
 deser_HashMap_String_u32:
@@ -1469,19 +1467,20 @@ loop:
     ret
 ```
 
+r[map.finalize]
 `intrinsic_chain_to_map` iterates the committed entries and calls the map's
-vtable insert function for each `(K, V)` pair. The vtable function handles
-hashing (for HashMap) or ordering (for BTreeMap). If there's only one chunk,
-entries are read directly from it; if multiple, they're walked in chunk order.
+vtable insert function for each `(K, V)` pair. The vtable handles hashing
+(HashMap) or ordering (BTreeMap).
 
-For postcard, maps are length-prefixed sequences of `(K, V)` pairs — no
-keys-as-strings, just `K` then `V` in order. The chain gets an exact
-capacity from the length prefix.
+r[deser.postcard.map]
+For postcard, maps are length-prefixed sequences of `(K, V)` pairs. The
+chain gets an exact capacity from the length prefix.
 
 ### Sets
 
-Sets are the same as maps but with entries of just `K` (no value). The chunk
-chain holds `K` entries. Finalization calls a set-specific vtable insert.
+r[set.entries]
+Sets use the same chunk-chain strategy as maps but with entries of just `K`
+(no value). Finalization calls a set-specific vtable insert.
 
 ```
 deser_HashSet_String:
@@ -1502,27 +1501,24 @@ loop:
     ret
 ```
 
-JSON sets are arrays (there's no set literal in JSON). Postcard sets are
-length-prefixed sequences of `K`.
+r[deser.json.set]
+JSON sets are deserialized as arrays (there's no set literal in JSON).
+
+r[deser.postcard.set]
+Postcard sets are length-prefixed sequences of `K`.
 
 ## Serialization
 
-Serialization is the mirror of deserialization: walk a fully-constructed Rust
-value and emit bytes. It's simpler in several ways:
-
-- **No dispatch**: the value exists, its variant is known, its fields are
-  populated. There's no "which field is this key?" question.
-- **No bitsets**: every field is present (or is `Option::None`, which we can
-  check via vtable).
-- **No chunk chains**: output goes to a growable byte buffer, not into
-  a fixed-layout struct.
-- **No partial construction or drop safety**: the input value is borrowed,
-  not mutated.
+r[ser.overview]
+Serialization walks a fully-constructed Rust value and emits bytes. It
+requires no field dispatch, no bitsets, no chunk chains, and no drop safety
+— the input value is borrowed, not mutated.
 
 ### Calling convention
 
+r[ser.callconv]
 Serializer functions take `inp` (pointer to the value being serialized) and
-`ctx` (pointer to a `SerContext`):
+`ctx` (pointer to a `SerContext`).
 
 ```rust
 #[repr(C)]
@@ -1540,21 +1536,22 @@ struct SerContext {
 }
 ```
 
+r[ser.output-buffer]
 The output buffer is a `Vec<u8>` in disguise (ptr, len, cap). Emitted code
 writes bytes by storing to `out_ptr + out_len` and incrementing `out_len`.
 When `out_len` would exceed `out_cap`, the emitted code calls an intrinsic
-to grow the buffer (the same way `Vec::push` would, but via an explicit
-intrinsic call so the emitted code doesn't need to inline growth logic).
+to grow the buffer.
 
+r[ser.registers]
 Register assignment mirrors deserialization: `inp` in the first argument
 register, `ctx` in the second. The output pointer + length can be cached in
-callee-saved registers for the hot path (writing bytes is the most frequent
-operation).
+callee-saved registers for the hot path.
 
 ### Struct serialization
 
-For JSON, struct serialization emits each field in declaration order —
-no need for the trie or the field loop, just a straight sequence:
+r[ser.json.struct]
+For JSON, struct serialization emits each field in declaration order — no
+dispatch, just a straight sequence of key + value pairs.
 
 ```
 ser_Friend:
@@ -1570,12 +1567,13 @@ ser_Friend:
     ret
 ```
 
-The key strings (`"age"`, `"name"`) are baked into the emitted code as
-immediate byte sequences — they're known at JIT-compile time. For small
-keys, the emitted code writes them inline (a few `mov` + `str`
-instructions). For longer keys, it calls `memcpy` from a constant pool.
+r[ser.json.struct.inline-keys]
+Key strings are baked into the emitted code as immediate byte sequences. For
+small keys, they're written inline. For longer keys, `memcpy` from a
+constant pool.
 
-For postcard, struct serialization is even simpler — just serialize each
+r[ser.postcard.struct]
+For postcard, struct serialization emits each
 field in order, no keys, no delimiters:
 
 ```
@@ -1587,9 +1585,11 @@ ser_Friend:
 
 ### Enum serialization
 
-The emitted code reads the enum's discriminant (or calls the vtable for
-Option/Result), then branches to the right variant's serializer.
+r[ser.enum.discriminant]
+The emitted code reads the enum's discriminant (known offset and size from
+the shape), then branches to the right variant's serializer.
 
+r[ser.json.enum]
 For JSON externally tagged:
 
 ```
@@ -1615,7 +1615,9 @@ ser_Animal:
             ret
 ```
 
-For postcard:
+r[ser.postcard.enum]
+For postcard, enums are serialized as a varint discriminant followed by the
+variant's fields in order.
 
 ```
 ser_Animal:
@@ -1634,11 +1636,14 @@ ser_Animal:
 
 ### Option serialization
 
-For JSON, `Option<T>` fields that are `None` are simply omitted from the
-output. The emitted code checks `vtable.is_some(inp + field_offset)` and
-conditionally emits the key + value. This means the comma logic needs to
-handle the case where a field is skipped — the emitted code tracks whether
-a comma is needed before the next field:
+r[ser.json.option]
+For JSON, `Option<T>` fields that are `None` are omitted from the output.
+The emitted code checks `vtable.is_some(inp + field_offset)` and
+conditionally emits the key + value. The comma logic tracks whether a comma
+is needed before the next field.
+
+r[ser.postcard.option]
+For postcard, `Option<T>` emits `0x00` for None or `0x01` + value for Some.
 
 ```
 ser_struct_with_optional_age:
@@ -1674,9 +1679,14 @@ For postcard, `Option<T>` emits `0x00` for None or `0x01` + value for Some:
 
 ### Sequence serialization
 
-For JSON, the emitted code emits `[`, then iterates the Vec's elements
-(ptr, len are read from known offsets — Vec layout is verified at
-JIT-compile time), serializes each element with commas between, then `]`.
+r[ser.json.seq]
+For JSON, sequence serialization emits `[`, then iterates the Vec's elements
+(ptr, len from known offsets — Vec layout verified at JIT-compile time),
+serializes each element with commas between, then `]`.
+
+r[ser.postcard.seq]
+For postcard, sequence serialization emits the length as a varint, then each
+element with no delimiters.
 
 ```
 ser_Vec_Friend:
@@ -1695,14 +1705,15 @@ loop:
     ret
 ```
 
-For postcard, emit the length as a varint, then each element with no
-delimiters.
-
 ### Map serialization
 
-For JSON, maps are objects. The emitted code iterates via vtable (maps are
-opaque — no known memory layout for iteration). The vtable provides an
-iterator that yields `(K_ptr, V_ptr)` pairs:
+r[ser.json.map]
+For JSON, maps are serialized as objects. The emitted code iterates via
+vtable (maps are opaque — no known memory layout). The vtable provides an
+iterator yielding `(K_ptr, V_ptr)` pairs.
+
+r[ser.postcard.map]
+For postcard, maps emit the length as a varint, then each `(K, V)` pair.
 
 ```
 ser_HashMap_String_u32:
@@ -1723,31 +1734,24 @@ loop:
     ret
 ```
 
-For postcard, emit the length as a varint, then each `(K, V)` pair.
-
 ### Output buffer growth
 
-The output buffer starts at a reasonable size (e.g., 256 bytes or a
-caller-provided hint). When the emitted code needs to write N bytes and
-`out_len + N > out_cap`, it calls an intrinsic:
+r[ser.output-growth]
+When the emitted code needs to write N bytes and `out_len + N > out_cap`, it
+calls `intrinsic_grow_output` which reallocates the buffer (doubling or
+adding `additional`, whichever is larger), updates `out_ptr`/`out_cap` in the
+context, and returns. The emitted code reloads the cached output pointer
+after the call.
 
-```rust
-extern "C" fn intrinsic_grow_output(ctx: *mut SerContext, additional: usize);
-```
-
-This reallocates the buffer (doubling or adding `additional`, whichever is
-larger), updates `out_ptr`, `out_cap` in the context, and returns. The
-emitted code reloads the cached output pointer after the call.
-
-For small writes (single bytes, short keys), the emitted code can check
-capacity inline and only call the intrinsic on the slow path. For large
-writes (memcpy of a string body), the intrinsic handles the capacity check
-internally.
+r[ser.output-growth.inline-check]
+For small writes (single bytes, short keys), the emitted code checks
+capacity inline and only calls the intrinsic on the slow path. For large
+writes, the intrinsic handles the capacity check internally.
 
 ### Compile-time optimizations
 
+r[ser.merged-constants]
 Since field names and delimiters are known at JIT-compile time, the
-serializer can precompute combined byte sequences. For example, `,"name":`
-(comma + key + colon) is 8 bytes and can be written as a single 8-byte
-store instruction on 64-bit platforms. The compiler merges adjacent constant
-byte sequences into the fewest possible store instructions.
+serializer merges adjacent constant byte sequences into the fewest possible
+store instructions. For example, `,"name":` (8 bytes) can be written as a
+single 8-byte store.
