@@ -8,13 +8,13 @@ pub mod postcard;
 use compiler::CompiledDeser;
 use context::{DeserContext, ErrorCode};
 
-// [impl api.compile]
+// r[impl api.compile]
 /// Compile a deserializer for the given shape and format.
 pub fn compile_deser(shape: &'static facet::Shape, format: &dyn format::Format) -> CompiledDeser {
     compiler::compile_deser(shape, format)
 }
 
-// [impl api.deserialize]
+// r[impl api.output]
 /// Deserialize a value of type `T` from the given input bytes using a compiled deserializer.
 ///
 /// # Safety
@@ -69,6 +69,7 @@ mod tests {
         name: String,
     }
 
+    // r[verify deser.postcard.struct]
     #[test]
     fn postcard_flat_struct() {
         // age=42 → postcard varint 0x2A (42 < 128, so single byte)

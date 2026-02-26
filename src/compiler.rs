@@ -3,7 +3,7 @@ use facet::{ScalarType, Shape, Type, UserType};
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format};
 
-// [impl compiler.shape-walk]
+// r[impl compiler.walk]
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
 pub struct CompiledDeser {

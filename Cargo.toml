@@ -14,3 +14,14 @@ readme = "README.md"
 facet = { path = "../facet/facet" }
 dynasmrt = "5"
 dynasm = "5"
+
+[dev-dependencies]
+divan = "0.1"
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+facet-postcard = { path = "../facet/facet-postcard", features = ["jit"] }
+facet-format = { path = "../facet/facet-format", features = ["jit"] }
+
+[[bench]]
+name = "deser_postcard"
+harness = false

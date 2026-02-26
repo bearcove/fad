@@ -1,5 +1,5 @@
-// [impl callconv.signature]
-// [impl callconv.registers.aarch64]
+// r[impl callconv.signature]
+// r[impl callconv.registers.aarch64]
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;

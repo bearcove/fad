@@ -1,6 +1,6 @@
 use core::fmt;
 
-// [impl context.deser-context]
+// r[impl callconv.deser-context]
 /// The runtime context passed to every emitted deserializer function.
 /// Layout is `#[repr(C)]` so field offsets are stable and can be used from JIT code.
 #[repr(C)]
@@ -13,7 +13,7 @@ pub struct DeserContext {
     pub error: ErrorSlot,
 }
 
-// [impl error.slot]
+// r[impl error.slot]
 /// Error information written by intrinsics when something goes wrong.
 #[repr(C)]
 pub struct ErrorSlot {
@@ -23,7 +23,8 @@ pub struct ErrorSlot {
     pub offset: u32,
 }
 
-// [impl error.codes]
+// r[impl error.slot]
+// r[impl error.propagation]
 /// Error codes written into `ErrorSlot.code`.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

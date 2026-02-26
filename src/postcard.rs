@@ -2,7 +2,7 @@ use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format};
 use crate::intrinsics;
 
-// [impl deser.postcard.field-order]
+// r[impl deser.postcard.struct]
 
 /// Postcard wire format — fields in declaration order, varint-encoded integers,
 /// length-prefixed strings.

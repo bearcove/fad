@@ -1,6 +1,6 @@
 use crate::arch::EmitCtx;
 
-// [impl shape-format.format-trait]
+// r[impl no-ir.format-trait]
 
 /// Information about a struct field needed during code emission.
 pub struct FieldEmitInfo {

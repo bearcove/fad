@@ -1,6 +1,6 @@
 use crate::context::{DeserContext, ErrorCode};
 
-// [impl callconv.intrinsics]
+// r[impl callconv.intrinsics]
 
 /// Read a postcard varint-encoded u32 from the input, write to `*out`.
 ///
