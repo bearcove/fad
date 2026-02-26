@@ -21,26 +21,28 @@ impl CompiledDeser {
 ///
 /// Currently supports: structs with u32 and String fields.
 pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDeser {
-    let mut ectx = EmitCtx::new();
-
-    match &shape.ty {
-        Type::User(UserType::Struct(st)) => {
-            let fields: Vec<FieldEmitInfo> = st
-                .fields
-                .iter()
-                .map(|f| FieldEmitInfo {
-                    offset: f.offset,
-                    shape: f.shape(),
-                    name: f.name,
-                })
-                .collect();
-
-            format.emit_struct_fields(&mut ectx, &fields, &mut |ectx, field| {
-                emit_field(ectx, format, field);
-            });
-        }
+    // Build field info first so we can query the format for stack requirements.
+    let fields = match &shape.ty {
+        Type::User(UserType::Struct(st)) => st
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| FieldEmitInfo {
+                offset: f.offset,
+                shape: f.shape(),
+                name: f.name,
+                required_index: i,
+            })
+            .collect::<Vec<_>>(),
         _ => panic!("unsupported shape: {}", shape.type_identifier),
-    }
+    };
+
+    let extra_stack = format.extra_stack_space(&fields);
+    let mut ectx = EmitCtx::new(extra_stack);
+
+    format.emit_struct_fields(&mut ectx, &fields, &mut |ectx, field| {
+        emit_field(ectx, format, field);
+    });
 
     let entry = ectx.entry;
     let buf = ectx.finalize();

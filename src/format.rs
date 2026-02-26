@@ -10,6 +10,8 @@ pub struct FieldEmitInfo {
     pub shape: &'static facet::Shape,
     /// The field name (for formats that use named fields).
     pub name: &'static str,
+    /// Index of this field for required-field bitset tracking.
+    pub required_index: usize,
 }
 
 /// A wire format that knows how to emit deserialization code.
@@ -17,6 +19,12 @@ pub struct FieldEmitInfo {
 /// Each method emits machine code into the `EmitCtx` that will, at runtime,
 /// read from the input buffer and write to the output struct.
 pub trait Format {
+    /// Extra bytes of stack space this format needs beyond the base frame.
+    /// JSON needs space for bitset, key_ptr, key_len, peek_byte.
+    fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
+        0
+    }
+
     /// Emit code to deserialize all fields of a struct.
     ///
     /// The format controls field ordering. For postcard, this just iterates

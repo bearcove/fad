@@ -34,6 +34,13 @@ pub enum ErrorCode {
     InvalidVarint = 2,
     InvalidUtf8 = 3,
     UnsupportedShape = 4,
+    ExpectedObjectStart = 5,
+    ExpectedColon = 6,
+    ExpectedStringKey = 7,
+    UnterminatedString = 8,
+    InvalidJsonNumber = 9,
+    MissingRequiredField = 10,
+    UnexpectedCharacter = 11,
 }
 
 impl fmt::Display for ErrorCode {
@@ -44,6 +51,13 @@ impl fmt::Display for ErrorCode {
             ErrorCode::InvalidVarint => write!(f, "invalid varint encoding"),
             ErrorCode::InvalidUtf8 => write!(f, "invalid UTF-8"),
             ErrorCode::UnsupportedShape => write!(f, "unsupported shape"),
+            ErrorCode::ExpectedObjectStart => write!(f, "expected '{{' to start object"),
+            ErrorCode::ExpectedColon => write!(f, "expected ':' after key"),
+            ErrorCode::ExpectedStringKey => write!(f, "expected '\"' to start key"),
+            ErrorCode::UnterminatedString => write!(f, "unterminated string"),
+            ErrorCode::InvalidJsonNumber => write!(f, "invalid JSON number"),
+            ErrorCode::MissingRequiredField => write!(f, "missing required field"),
+            ErrorCode::UnexpectedCharacter => write!(f, "unexpected character"),
         }
     }
 }

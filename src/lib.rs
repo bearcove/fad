@@ -3,6 +3,8 @@ pub mod compiler;
 pub mod context;
 pub mod format;
 pub mod intrinsics;
+pub mod json;
+pub mod json_intrinsics;
 pub mod postcard;
 
 use compiler::CompiledDeser;
@@ -84,5 +86,61 @@ mod tests {
                 name: "Alice".into()
             }
         );
+    }
+
+    // r[verify deser.json.struct]
+    #[test]
+    fn json_flat_struct() {
+        let input = br#"{"age": 42, "name": "Alice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
+    }
+
+    // r[verify deser.json.struct]
+    #[test]
+    fn json_reversed_key_order() {
+        let input = br#"{"name": "Alice", "age": 42}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
+    }
+
+    // r[verify deser.json.struct.unknown-keys]
+    #[test]
+    fn json_unknown_keys_skipped() {
+        let input = br#"{"age": 42, "extra": true, "name": "Alice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
+    }
+
+    // r[verify deser.json.struct]
+    #[test]
+    fn json_empty_object_missing_fields() {
+        let input = b"{}";
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result = deserialize::<Friend>(&deser, input);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, context::ErrorCode::MissingRequiredField);
     }
 }
