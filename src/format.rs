@@ -138,6 +138,22 @@ pub trait Format {
         panic!("internally tagged enums not supported by this format");
     }
 
+    // r[impl deser.json.enum.untagged]
+
+    /// Emit code to deserialize an untagged enum.
+    ///
+    /// Untagged enums use value-type bucketing + peek dispatch to determine which
+    /// variant to deserialize. Object bucket disambiguation uses a lowered solver
+    /// (bitmask narrowed by key presence).
+    fn emit_enum_untagged(
+        &self,
+        _ectx: &mut EmitCtx,
+        _variants: &[VariantEmitInfo],
+        _emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        panic!("untagged enums not supported by this format");
+    }
+
     /// Emit code to deserialize struct fields from an already-open JSON object.
     ///
     /// Used by internally tagged enums: after reading the tag key-value pair,

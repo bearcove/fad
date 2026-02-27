@@ -45,6 +45,7 @@ pub enum ErrorCode {
     InvalidBool = 13,
     UnknownVariant = 14,
     ExpectedTagKey = 15,
+    AmbiguousVariant = 16,
 }
 
 impl fmt::Display for ErrorCode {
@@ -66,6 +67,9 @@ impl fmt::Display for ErrorCode {
             ErrorCode::InvalidBool => write!(f, "invalid bool value"),
             ErrorCode::UnknownVariant => write!(f, "unknown enum variant"),
             ErrorCode::ExpectedTagKey => write!(f, "expected tag key to appear first"),
+            ErrorCode::AmbiguousVariant => {
+                write!(f, "ambiguous variant: multiple variants match")
+            }
         }
     }
 }

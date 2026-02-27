@@ -6,6 +6,7 @@ pub mod intrinsics;
 pub mod json;
 pub mod json_intrinsics;
 pub mod postcard;
+pub mod solver;
 
 use compiler::CompiledDeser;
 use context::{DeserContext, ErrorCode};
@@ -1275,6 +1276,185 @@ mod tests {
         }
 
         compile_deser(BadInternal::SHAPE, &json::FadJson);
+    }
+
+    // --- Milestone 8: Untagged enums ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(untagged)]
+    #[repr(u8)]
+    enum Untagged {
+        Cat,
+        Dog { name: String, good_boy: bool },
+        Parrot(String),
+    }
+
+    // r[verify deser.json.enum.untagged]
+    // r[verify deser.json.enum.untagged.string-trie]
+    #[test]
+    fn json_untagged_unit() {
+        let input = br#""Cat""#;
+        let deser = compile_deser(Untagged::SHAPE, &json::FadJson);
+        let result: Untagged = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Untagged::Cat);
+    }
+
+    // r[verify deser.json.enum.untagged]
+    // r[verify deser.json.enum.untagged.bucket]
+    // r[verify deser.json.enum.untagged.peek]
+    #[test]
+    fn json_untagged_struct() {
+        let input = br#"{"name": "Rex", "good_boy": true}"#;
+        let deser = compile_deser(Untagged::SHAPE, &json::FadJson);
+        let result: Untagged = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Untagged::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged]
+    // r[verify deser.json.enum.untagged.string-trie]
+    #[test]
+    fn json_untagged_newtype_string() {
+        let input = br#""Polly""#;
+        let deser = compile_deser(Untagged::SHAPE, &json::FadJson);
+        let result: Untagged = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Untagged::Parrot("Polly".into()));
+    }
+
+    // r[verify deser.json.enum.untagged]
+    #[test]
+    fn json_untagged_struct_reversed_keys() {
+        let input = br#"{"good_boy": true, "name": "Rex"}"#;
+        let deser = compile_deser(Untagged::SHAPE, &json::FadJson);
+        let result: Untagged = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Untagged::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            }
+        );
+    }
+
+    // Multi-struct solver test
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(untagged)]
+    #[repr(u8)]
+    enum Config {
+        Database { host: String, port: u32 },
+        Redis { host: String, db: u32 },
+    }
+
+    // r[verify deser.json.enum.untagged.object-solver]
+    #[test]
+    fn json_untagged_solver_database() {
+        let input = br#"{"host": "localhost", "port": 5432}"#;
+        let deser = compile_deser(Config::SHAPE, &json::FadJson);
+        let result: Config = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Config::Database {
+                host: "localhost".into(),
+                port: 5432,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged.object-solver]
+    #[test]
+    fn json_untagged_solver_redis() {
+        let input = br#"{"host": "localhost", "db": 0}"#;
+        let deser = compile_deser(Config::SHAPE, &json::FadJson);
+        let result: Config = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Config::Redis {
+                host: "localhost".into(),
+                db: 0,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged.object-solver]
+    #[test]
+    fn json_untagged_solver_key_order_independent() {
+        // Key order doesn't matter — "db" narrows to Redis regardless of position
+        let input = br#"{"db": 0, "host": "localhost"}"#;
+        let deser = compile_deser(Config::SHAPE, &json::FadJson);
+        let result: Config = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Config::Redis {
+                host: "localhost".into(),
+                db: 0,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged.scalar-unique]
+    #[test]
+    fn json_untagged_newtype_number() {
+        #[derive(Facet, Debug, PartialEq)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum StringOrNum {
+            Text(String),
+            Num(u32),
+        }
+
+        let input = br#"42"#;
+        let deser = compile_deser(StringOrNum::SHAPE, &json::FadJson);
+        let result: StringOrNum = deserialize(&deser, input).unwrap();
+        assert_eq!(result, StringOrNum::Num(42));
+
+        let input = br#""hello""#;
+        let deser = compile_deser(StringOrNum::SHAPE, &json::FadJson);
+        let result: StringOrNum = deserialize(&deser, input).unwrap();
+        assert_eq!(result, StringOrNum::Text("hello".into()));
+    }
+
+    // r[verify deser.json.enum.untagged.scalar-unique]
+    #[test]
+    fn json_untagged_newtype_bool() {
+        #[derive(Facet, Debug, PartialEq)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum StringOrBool {
+            Text(String),
+            Flag(bool),
+        }
+
+        let input = br#"true"#;
+        let deser = compile_deser(StringOrBool::SHAPE, &json::FadJson);
+        let result: StringOrBool = deserialize(&deser, input).unwrap();
+        assert_eq!(result, StringOrBool::Flag(true));
+
+        let input = br#""hello""#;
+        let deser = compile_deser(StringOrBool::SHAPE, &json::FadJson);
+        let result: StringOrBool = deserialize(&deser, input).unwrap();
+        assert_eq!(result, StringOrBool::Text("hello".into()));
+    }
+
+    // r[verify deser.json.enum.untagged.scalar-unique]
+    #[test]
+    #[should_panic(expected = "number variants")]
+    fn json_untagged_ambiguous_number_panics() {
+        #[derive(Facet)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum BadNum {
+            #[allow(dead_code)]
+            A(u32),
+            #[allow(dead_code)]
+            B(i64),
+        }
+
+        compile_deser(BadNum::SHAPE, &json::FadJson);
     }
 
     // r[verify compiler.recursive.one-func-per-shape]

@@ -168,6 +168,44 @@ enum IntAnimalFacet {
     Dog { name: String, good_boy: bool },
 }
 
+// ── Shared types: enum (untagged, mixed buckets) ──────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+#[repr(u8)]
+enum UntaggedSerde {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[facet(untagged)]
+#[repr(u8)]
+enum UntaggedFacet {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
+// ── Shared types: enum (untagged, solver — multiple struct variants) ──────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+#[repr(u8)]
+enum ConfigSerde {
+    Database { host: String, port: u32 },
+    Redis { host: String, db: u32 },
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[facet(untagged)]
+#[repr(u8)]
+enum ConfigFacet {
+    Database { host: String, port: u32 },
+    Redis { host: String, db: u32 },
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_JSON: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
@@ -185,6 +223,10 @@ static ADJ_ENUM_JSON: &[u8] =
     br#"{"type": "Dog", "data": {"name": "Rex", "good_boy": true}}"#;
 
 static INT_ENUM_JSON: &[u8] = br#"{"type": "Dog", "name": "Rex", "good_boy": true}"#;
+
+static UNTAGGED_STRUCT_JSON: &[u8] = br#"{"name": "Rex", "good_boy": true}"#;
+
+static UNTAGGED_SOLVER_JSON: &[u8] = br#"{"host": "localhost", "port": 5432}"#;
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
@@ -214,6 +256,14 @@ static FAD_ADJ_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_INT_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(IntAnimalFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_UNTAGGED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(UntaggedFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_UNTAGGED_SOLVER: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(ConfigFacet::SHAPE, &fad::json::FadJson)
 });
 
 static FACET_JSON_JIT_FLAT: LazyLock<
@@ -412,6 +462,58 @@ mod enum_internal {
         bencher.bench(|| {
             black_box(
                 fad::deserialize::<IntAnimalFacet>(deser, black_box(INT_ENUM_JSON)).unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: enum (untagged, struct variant via peek dispatch) ─────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_untagged {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<UntaggedSerde>(black_box(UNTAGGED_STRUCT_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_UNTAGGED;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<UntaggedFacet>(deser, black_box(UNTAGGED_STRUCT_JSON)).unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: enum (untagged, solver — two struct variants) ─────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_untagged_solver {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<ConfigSerde>(black_box(UNTAGGED_SOLVER_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_UNTAGGED_SOLVER;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<ConfigFacet>(deser, black_box(UNTAGGED_SOLVER_JSON)).unwrap(),
             )
         });
     }

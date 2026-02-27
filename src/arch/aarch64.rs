@@ -827,6 +827,136 @@ impl EmitCtx {
         );
     }
 
+    /// Save the cached input_ptr (x19) to a stack slot.
+    pub fn emit_save_input_ptr(&mut self, stack_offset: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; str x19, [sp, #stack_offset]
+        );
+    }
+
+    /// Restore the cached input_ptr (x19) from a stack slot.
+    pub fn emit_restore_input_ptr(&mut self, stack_offset: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x19, [sp, #stack_offset]
+        );
+    }
+
+    /// Store a 64-bit immediate into a stack slot at sp + offset.
+    pub fn emit_store_imm64_to_stack(&mut self, stack_offset: u32, value: u64) {
+        if value == 0 {
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; str xzr, [sp, #stack_offset]
+            );
+        } else {
+            // Load immediate into x9, then store
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; movz x9, #((value) & 0xFFFF) as u32
+            );
+            if value > 0xFFFF {
+                dynasm!(self.ops ; .arch aarch64
+                    ; movk x9, #((value >> 16) & 0xFFFF) as u32, LSL #16
+                );
+            }
+            if value > 0xFFFF_FFFF {
+                dynasm!(self.ops ; .arch aarch64
+                    ; movk x9, #((value >> 32) & 0xFFFF) as u32, LSL #32
+                );
+            }
+            if value > 0xFFFF_FFFF_FFFF {
+                dynasm!(self.ops ; .arch aarch64
+                    ; movk x9, #((value >> 48) & 0xFFFF) as u32, LSL #48
+                );
+            }
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; str x9, [sp, #stack_offset]
+            );
+        }
+    }
+
+    /// AND a 64-bit immediate into a stack slot at sp + offset.
+    /// Loads the slot, ANDs with the immediate, stores back.
+    pub fn emit_and_imm64_on_stack(&mut self, stack_offset: u32, mask: u64) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #stack_offset]
+        );
+        // Load mask into x10
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; movz x10, #((mask) & 0xFFFF) as u32
+        );
+        if mask > 0xFFFF {
+            dynasm!(self.ops ; .arch aarch64
+                ; movk x10, #((mask >> 16) & 0xFFFF) as u32, LSL #16
+            );
+        }
+        if mask > 0xFFFF_FFFF {
+            dynasm!(self.ops ; .arch aarch64
+                ; movk x10, #((mask >> 32) & 0xFFFF) as u32, LSL #32
+            );
+        }
+        if mask > 0xFFFF_FFFF_FFFF {
+            dynasm!(self.ops ; .arch aarch64
+                ; movk x10, #((mask >> 48) & 0xFFFF) as u32, LSL #48
+            );
+        }
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; and x9, x9, x10
+            ; str x9, [sp, #stack_offset]
+        );
+    }
+
+    /// Check if the stack slot at sp + offset has exactly one bit set (popcount == 1).
+    /// If so, branch to `label`.
+    pub fn emit_popcount_eq1_branch(&mut self, stack_offset: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #stack_offset]
+            // popcount == 1 iff (x & (x-1)) == 0 && x != 0
+            ; sub x10, x9, #1
+            ; tst x9, x10           // sets Z if (x & (x-1)) == 0
+            ; b.ne #12              // skip if more than 1 bit
+            ; cbnz x9, =>label      // branch if nonzero (exactly 1 bit)
+        );
+    }
+
+    /// Check if the stack slot at sp + offset is zero. If so, branch to `label`.
+    pub fn emit_stack_zero_branch(&mut self, stack_offset: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #stack_offset]
+            ; cbz x9, =>label
+        );
+    }
+
+    /// Load the stack slot at sp + offset into x9, then branch to `label` if
+    /// bit `bit_index` is set.
+    pub fn emit_test_bit_branch(&mut self, stack_offset: u32, bit_index: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #stack_offset]
+            ; tbnz x9, #bit_index, =>label
+        );
+    }
+
+    /// Emit an error (write error code to ctx, branch to error_exit).
+    pub fn emit_error(&mut self, code: crate::context::ErrorCode) {
+        let error_exit = self.error_exit;
+        let error_code = code as u32;
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; movz w9, #error_code
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+        );
+    }
+
     /// Advance the cached cursor by n bytes (inline, no function call).
     pub fn emit_advance_cursor_by(&mut self, n: u32) {
         dynasm!(self.ops

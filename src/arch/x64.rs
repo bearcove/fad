@@ -765,6 +765,95 @@ impl EmitCtx {
         );
     }
 
+    /// Save the cached input_ptr (r12) to a stack slot.
+    pub fn emit_save_input_ptr(&mut self, stack_offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov [rsp + stack_offset as i32], r12
+        );
+    }
+
+    /// Restore the cached input_ptr (r12) from a stack slot.
+    pub fn emit_restore_input_ptr(&mut self, stack_offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r12, [rsp + stack_offset as i32]
+        );
+    }
+
+    /// Store a 64-bit immediate into a stack slot at rsp + offset.
+    pub fn emit_store_imm64_to_stack(&mut self, stack_offset: u32, value: u64) {
+        let val = value as i64;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD val
+            ; mov [rsp + stack_offset as i32], rax
+        );
+    }
+
+    /// AND a 64-bit immediate into a stack slot at rsp + offset.
+    /// Loads the slot, ANDs with the immediate, stores back.
+    pub fn emit_and_imm64_on_stack(&mut self, stack_offset: u32, mask: u64) {
+        let mask_val = mask as i64;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, [rsp + stack_offset as i32]
+            ; mov r10, QWORD mask_val
+            ; and rax, r10
+            ; mov [rsp + stack_offset as i32], rax
+        );
+    }
+
+    /// Check if the stack slot at rsp + offset has exactly one bit set (popcount == 1).
+    /// If so, branch to `label`.
+    pub fn emit_popcount_eq1_branch(&mut self, stack_offset: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, [rsp + stack_offset as i32]
+            // popcount == 1 iff (x & (x-1)) == 0 && x != 0
+            ; lea r10, [rax - 1]
+            ; test rax, r10        // sets Z if (x & (x-1)) == 0
+            ; jnz >skip            // more than 1 bit
+            ; test rax, rax        // check nonzero
+            ; jnz =>label          // exactly 1 bit
+            ; skip:
+        );
+    }
+
+    /// Check if the stack slot at rsp + offset is zero. If so, branch to `label`.
+    pub fn emit_stack_zero_branch(&mut self, stack_offset: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, [rsp + stack_offset as i32]
+            ; test rax, rax
+            ; jz =>label
+        );
+    }
+
+    /// Load the stack slot at rsp + offset, test if bit `bit_index` is set,
+    /// and branch to `label` if so.
+    pub fn emit_test_bit_branch(&mut self, stack_offset: u32, bit_index: u32, label: DynamicLabel) {
+        let mask = (1u64 << bit_index) as i64;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, [rsp + stack_offset as i32]
+            ; mov r10, QWORD mask
+            ; test rax, r10
+            ; jnz =>label
+        );
+    }
+
+    /// Emit an error (write error code to ctx, jump to error_exit).
+    pub fn emit_error(&mut self, code: crate::context::ErrorCode) {
+        let error_exit = self.error_exit;
+        let error_code = code as i32;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+        );
+    }
+
     /// Advance the cached cursor by n bytes (inline, no function call).
     pub fn emit_advance_cursor_by(&mut self, n: u32) {
         dynasm!(self.ops

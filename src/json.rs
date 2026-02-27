@@ -1,29 +1,36 @@
-use facet::ScalarType;
+use dynasmrt::DynamicLabel;
+use facet::{ScalarType, Type, UserType};
 
 use crate::arch::EmitCtx;
+use crate::context::ErrorCode;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
 use crate::json_intrinsics;
+use crate::solver::LoweredSolver;
 
 // r[impl deser.json.struct]
 // r[impl deser.json.struct.unknown-keys]
 
-// Stack layout (extra_stack = 32, offsets from sp):
+// Stack layout (extra_stack = 48, offsets from sp):
 //   [sp+0..48)   callee-saved registers (base frame)
 //   [sp+48..56)  bitset (u64) — tracks which required fields have been seen
 //   [sp+56..64)  key_ptr (*const u8) — borrowed pointer into input
 //   [sp+64..72)  key_len (usize)
 //   [sp+72..80)  comma_or_end result (u8 + padding)
+//   [sp+80..88)  saved_cursor — saved input_ptr for solver restore
+//   [sp+88..96)  candidates — solver bitmask for object bucket disambiguation
 const BITSET_OFFSET: u32 = 48;
 const KEY_PTR_OFFSET: u32 = 56;
 const KEY_LEN_OFFSET: u32 = 64;
 const RESULT_BYTE_OFFSET: u32 = 72;
+const SAVED_CURSOR_OFFSET: u32 = 80;
+const CANDIDATES_OFFSET: u32 = 88;
 
 /// JSON wire format — key-value pairs, linear key dispatch.
 pub struct FadJson;
 
 impl Format for FadJson {
     fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
-        32
+        48
     }
 
     fn emit_struct_fields(
@@ -534,6 +541,242 @@ impl Format for FadJson {
         ectx.bind_label(done_label);
     }
 
+    // r[impl deser.json.enum.untagged]
+    // r[impl deser.json.enum.untagged.bucket]
+    // r[impl deser.json.enum.untagged.peek]
+    // r[impl deser.json.enum.untagged.object-solver]
+    // r[impl deser.json.enum.untagged.string-trie]
+    // r[impl deser.json.enum.untagged.scalar-unique]
+    fn emit_enum_untagged(
+        &self,
+        ectx: &mut EmitCtx,
+        variants: &[VariantEmitInfo],
+        emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        // ══════════════════════════════════════════════════════════════════
+        // Layer 1: Bucket variants by JSON value type (JIT-compile time)
+        // ══════════════════════════════════════════════════════════════════
+
+        let mut object_variants: Vec<usize> = Vec::new();
+        let mut string_variants: Vec<usize> = Vec::new();
+        let mut bool_variants: Vec<usize> = Vec::new();
+        let mut number_variants: Vec<usize> = Vec::new();
+        let null_variants: Vec<usize> = Vec::new();
+
+        for (i, variant) in variants.iter().enumerate() {
+            match variant.kind {
+                VariantKind::Unit => {
+                    string_variants.push(i);
+                }
+                VariantKind::Struct => {
+                    object_variants.push(i);
+                }
+                VariantKind::Tuple => {
+                    assert!(
+                        variant.fields.len() == 1,
+                        "untagged tuple variant {} has {} fields, expected 1",
+                        variant.name,
+                        variant.fields.len()
+                    );
+                    let inner_shape = variant.fields[0].shape;
+                    match &inner_shape.ty {
+                        Type::User(UserType::Struct(_)) => {
+                            object_variants.push(i);
+                        }
+                        _ => match inner_shape.scalar_type() {
+                            Some(ScalarType::String) => string_variants.push(i),
+                            Some(ScalarType::Bool) => bool_variants.push(i),
+                            Some(
+                                ScalarType::U8
+                                | ScalarType::U16
+                                | ScalarType::U32
+                                | ScalarType::U64
+                                | ScalarType::I8
+                                | ScalarType::I16
+                                | ScalarType::I32
+                                | ScalarType::I64
+                                | ScalarType::F32
+                                | ScalarType::F64,
+                            ) => number_variants.push(i),
+                            _ => panic!(
+                                "unsupported inner type for untagged tuple variant {}: {}",
+                                variant.name, inner_shape.type_identifier
+                            ),
+                        },
+                    }
+                }
+            }
+        }
+
+        // Validate scalar bucket uniqueness
+        assert!(
+            bool_variants.len() <= 1,
+            "untagged enum has {} bool variants — at most 1 allowed",
+            bool_variants.len()
+        );
+        assert!(
+            number_variants.len() <= 1,
+            "untagged enum has {} number variants — at most 1 allowed",
+            number_variants.len()
+        );
+        let string_newtype_count = string_variants
+            .iter()
+            .filter(|&&i| variants[i].kind == VariantKind::Tuple)
+            .count();
+        assert!(
+            string_newtype_count <= 1,
+            "untagged enum has {} newtype String variants — at most 1 allowed",
+            string_newtype_count
+        );
+
+        // ══════════════════════════════════════════════════════════════════
+        // Layer 2: Peek dispatch (emitted code)
+        // ══════════════════════════════════════════════════════════════════
+
+        let done_label = ectx.new_label();
+
+        // Peek at first non-whitespace byte
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+
+        let object_label = ectx.new_label();
+        let string_label = ectx.new_label();
+        let bool_label = ectx.new_label();
+        let number_label = ectx.new_label();
+        let null_label = ectx.new_label();
+
+        if !object_variants.is_empty() {
+            ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'{', object_label);
+        }
+        if !string_variants.is_empty() {
+            ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'"', string_label);
+        }
+        if !bool_variants.is_empty() {
+            ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b't', bool_label);
+            ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'f', bool_label);
+        }
+        if !null_variants.is_empty() {
+            ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'n', null_label);
+        }
+        if !number_variants.is_empty() {
+            ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'-', number_label);
+            for d in b'0'..=b'9' {
+                ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, d, number_label);
+            }
+        }
+
+        // No bucket matched
+        ectx.emit_unknown_variant_error();
+
+        // ══════════════════════════════════════════════════════════════════
+        // Layer 3: Within-bucket disambiguation
+        // ══════════════════════════════════════════════════════════════════
+
+        // ── Object bucket ────────────────────────────────────────────────
+        if !object_variants.is_empty() {
+            ectx.bind_label(object_label);
+            if object_variants.len() == 1 {
+                emit_variant_body(ectx, &variants[object_variants[0]]);
+            } else {
+                let solver_variants: Vec<(usize, &VariantEmitInfo)> = object_variants
+                    .iter()
+                    .map(|&i| (i, &variants[i]))
+                    .collect();
+                let solver = LoweredSolver::build(&solver_variants);
+                self.emit_object_solver(ectx, &solver, variants, done_label, emit_variant_body);
+            }
+            ectx.emit_branch(done_label);
+        }
+
+        // ── String bucket ────────────────────────────────────────────────
+        if !string_variants.is_empty() {
+            ectx.bind_label(string_label);
+
+            let has_newtype = string_variants
+                .iter()
+                .any(|&i| variants[i].kind == VariantKind::Tuple);
+
+            if has_newtype {
+                // Save cursor so we can restore for the newtype String fallback.
+                // read_key consumes the string, but emit_variant_body for the
+                // newtype needs to read it again via read_string_value.
+                ectx.emit_save_input_ptr(SAVED_CURSOR_OFFSET);
+            }
+
+            // Read the string as a borrowed key (ptr + len)
+            ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+                json_intrinsics::fad_json_read_key as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+            );
+
+            // Try unit variant names
+            let unit_labels: Vec<_> = string_variants
+                .iter()
+                .filter(|&&i| variants[i].kind == VariantKind::Unit)
+                .map(|&i| (i, ectx.new_label()))
+                .collect();
+
+            for &(vi, label) in &unit_labels {
+                let name_bytes = variants[vi].name.as_bytes();
+                ectx.emit_call_pure_4arg(
+                    json_intrinsics::fad_json_key_equals as *const u8,
+                    KEY_PTR_OFFSET,
+                    KEY_LEN_OFFSET,
+                    name_bytes.as_ptr(),
+                    name_bytes.len() as u32,
+                );
+                ectx.emit_cbnz_x0(label);
+            }
+
+            // No unit name matched
+            if let Some(&nt_idx) = string_variants
+                .iter()
+                .find(|&&i| variants[i].kind == VariantKind::Tuple)
+            {
+                // Restore cursor to before the string, then call emit_variant_body
+                // which will re-read it via read_string_value (allocating a String).
+                ectx.emit_restore_input_ptr(SAVED_CURSOR_OFFSET);
+                emit_variant_body(ectx, &variants[nt_idx]);
+                ectx.emit_branch(done_label);
+            } else {
+                ectx.emit_unknown_variant_error();
+            }
+
+            // Unit variant handlers
+            for &(vi, label) in &unit_labels {
+                ectx.bind_label(label);
+                emit_variant_body(ectx, &variants[vi]);
+                ectx.emit_branch(done_label);
+            }
+        }
+
+        // ── Bool bucket ──────────────────────────────────────────────────
+        if !bool_variants.is_empty() {
+            ectx.bind_label(bool_label);
+            emit_variant_body(ectx, &variants[bool_variants[0]]);
+            ectx.emit_branch(done_label);
+        }
+
+        // ── Number bucket ────────────────────────────────────────────────
+        if !number_variants.is_empty() {
+            ectx.bind_label(number_label);
+            emit_variant_body(ectx, &variants[number_variants[0]]);
+            ectx.emit_branch(done_label);
+        }
+
+        // ── Null bucket ──────────────────────────────────────────────────
+        if !null_variants.is_empty() {
+            ectx.bind_label(null_label);
+            emit_variant_body(ectx, &variants[null_variants[0]]);
+            ectx.emit_branch(done_label);
+        }
+
+        ectx.bind_label(done_label);
+    }
+
     fn emit_struct_fields_continuation(
         &self,
         ectx: &mut EmitCtx,
@@ -615,5 +858,142 @@ impl Format for FadJson {
         // Check that all required fields were seen
         let expected_mask = (1u64 << fields.len()) - 1;
         ectx.emit_check_bitset(BITSET_OFFSET, expected_mask);
+    }
+}
+
+impl FadJson {
+    /// Emit the object-bucket solver for untagged enum disambiguation.
+    ///
+    /// Two-pass approach:
+    /// 1. Save cursor, scan all keys (without parsing values), AND per-key masks
+    ///    into the candidates bitmask until popcount == 1 or end of object.
+    /// 2. Restore cursor, dispatch to the resolved variant's body.
+    fn emit_object_solver(
+        &self,
+        ectx: &mut EmitCtx,
+        solver: &LoweredSolver,
+        variants: &[VariantEmitInfo],
+        done_label: DynamicLabel,
+        emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        let resolve_label = ectx.new_label();
+        let error_no_match = ectx.new_label();
+        let error_ambiguous = ectx.new_label();
+        let scan_loop = ectx.new_label();
+
+        // ── Pass 1: Save cursor, scan keys, narrow candidates ────────
+
+        // Save cursor (input_ptr) before consuming the object
+        ectx.emit_save_input_ptr(SAVED_CURSOR_OFFSET);
+
+        // Initialize candidates bitmask to all candidates set
+        ectx.emit_store_imm64_to_stack(CANDIDATES_OFFSET, solver.initial_mask);
+
+        // Consume '{'
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_start as *const u8,
+        );
+
+        // Check for empty object → resolve immediately
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        let empty_object = ectx.new_label();
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'}', empty_object);
+
+        // ── scan_loop ────────────────────────────────────────────────
+        ectx.bind_label(scan_loop);
+
+        // Read key
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Consume ':'
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+
+        // Skip the value (we don't need it during the scan pass)
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+
+        // Linear key dispatch: for each known key, AND its mask into candidates.
+        // Unknown keys don't narrow (no AND).
+        let after_key_dispatch = ectx.new_label();
+        let key_labels: Vec<_> = solver.key_masks.iter().map(|_| ectx.new_label()).collect();
+
+        for (i, &(name, _mask)) in solver.key_masks.iter().enumerate() {
+            let name_bytes = name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(key_labels[i]);
+        }
+        // Unknown key — don't narrow, go to check
+        ectx.emit_branch(after_key_dispatch);
+
+        // Key match handlers: AND the mask
+        for (i, &(_name, mask)) in solver.key_masks.iter().enumerate() {
+            ectx.bind_label(key_labels[i]);
+            ectx.emit_and_imm64_on_stack(CANDIDATES_OFFSET, mask);
+            ectx.emit_branch(after_key_dispatch);
+        }
+
+        ectx.bind_label(after_key_dispatch);
+
+        // Check candidates: popcount == 1 → resolve early
+        ectx.emit_popcount_eq1_branch(CANDIDATES_OFFSET, resolve_label);
+        // popcount == 0 → no match
+        ectx.emit_stack_zero_branch(CANDIDATES_OFFSET, error_no_match);
+
+        // comma_or_end: '}' → resolve, ',' → continue scanning
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_comma_or_end_object as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, resolve_label);
+        ectx.emit_branch(scan_loop);
+
+        // Empty object → resolve with whatever candidates remain
+        ectx.bind_label(empty_object);
+        ectx.emit_advance_cursor_by(1); // consume '}'
+        // Fall through to resolve
+
+        // ── Pass 2: Resolve — restore cursor, dispatch to variant ────
+        ectx.bind_label(resolve_label);
+
+        // Restore cursor to before the '{'
+        ectx.emit_restore_input_ptr(SAVED_CURSOR_OFFSET);
+
+        // For each candidate bit position, check if that bit is set and
+        // dispatch to the variant body.
+        for (bit, &orig_variant_idx) in solver.candidate_to_variant.iter().enumerate() {
+            let variant_label = ectx.new_label();
+            ectx.emit_test_bit_branch(CANDIDATES_OFFSET, bit as u32, variant_label);
+            // Not this candidate, try next
+            let skip_label = ectx.new_label();
+            ectx.emit_branch(skip_label);
+
+            ectx.bind_label(variant_label);
+            emit_variant_body(ectx, &variants[orig_variant_idx]);
+            ectx.emit_branch(done_label);
+
+            ectx.bind_label(skip_label);
+        }
+
+        // If we get here, no candidate bit was set — shouldn't happen but be safe
+        ectx.emit_branch(error_no_match);
+
+        // ── Error paths ──────────────────────────────────────────────
+        ectx.bind_label(error_no_match);
+        ectx.emit_error(ErrorCode::UnknownVariant);
+
+        ectx.bind_label(error_ambiguous);
+        ectx.emit_error(ErrorCode::AmbiguousVariant);
     }
 }

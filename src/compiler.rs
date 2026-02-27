@@ -272,9 +272,10 @@ impl<'fmt> Compiler<'fmt> {
                 );
             }
 
-            // Untagged: not this milestone
+            // r[impl deser.json.enum.untagged]
+            // Untagged: value-type bucketing + peek dispatch + solver
             (_, _, true) => {
-                panic!("untagged enums not yet supported by fad");
+                format.emit_enum_untagged(ectx, &variants, &mut emit_standard_variant_body);
             }
 
             // Invalid: content without tag
