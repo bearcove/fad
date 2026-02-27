@@ -606,6 +606,107 @@ impl EmitCtx {
         );
     }
 
+    // ── Inline string reads ────────────────────────────────────────────
+
+    /// Emit inline postcard string deserialization.
+    ///
+    /// Inlines the varint length decode (fast path) and bounds check,
+    /// then calls a lean intrinsic for UTF-8 validation + allocation only.
+    /// Cursor advance is also inlined after the call.
+    ///
+    /// Stack usage: sp+48 holds the string length (u32) across the call.
+    /// This is within the extra stack area (postcard requests 8 bytes).
+    pub fn emit_inline_postcard_string(
+        &mut self,
+        offset: u32,
+        slow_varint_intrinsic: *const u8,
+        validate_alloc_intrinsic: *const u8,
+    ) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let varint_slow = self.ops.new_dynamic_label();
+        let have_length = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+        let varint_ptr = slow_varint_intrinsic as u64;
+        let alloc_ptr = validate_alloc_intrinsic as u64;
+
+        // Step 1: Inline varint length decode
+        // Fast path: single-byte varint (length < 128)
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Bounds check: need at least 1 byte for the varint
+            ; cmp x19, x20
+            ; b.hs =>eof_label
+            // Load first byte
+            ; ldrb w9, [x19]
+            // Test continuation bit (bit 7)
+            ; tbnz w9, #7, =>varint_slow
+            // Fast path: single-byte varint, length in w9
+            ; add x19, x19, #1
+            ; b =>have_length
+
+            // Slow path: multi-byte varint length
+            ; =>varint_slow
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            ; mov x0, x22
+            ; add x1, sp, #48               // temp u32 on stack
+            ; movz x8, #((varint_ptr) & 0xFFFF) as u32
+            ; movk x8, #((varint_ptr >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((varint_ptr >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((varint_ptr >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+            ; ldr w9, [sp, #48]             // load decoded length
+            ; b =>have_length
+        );
+
+        // Step 2: Inline bounds check + call validate+alloc + advance cursor
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; =>have_length
+            // w9 = string length. Save to stack so it survives the blr.
+            ; str w9, [sp, #48]
+
+            // Bounds check: remaining >= length
+            // w9 is already zero-extended to x9 (ldrb and ldr w9 both clear upper 32 bits)
+            ; sub x10, x20, x19             // x10 = remaining bytes
+            ; cmp x10, x9                   // remaining >= length?
+            ; b.lo =>eof_label
+
+            // Call validate_and_alloc_string(ctx, out+offset, input_ptr, length)
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            ; mov x0, x22                   // arg0: ctx
+            ; add x1, x21, #offset          // arg1: out + offset
+            ; mov x2, x19                   // arg2: data_ptr = current input_ptr
+            ; mov w3, w9                    // arg3: data_len = length
+            ; movz x8, #((alloc_ptr) & 0xFFFF) as u32
+            ; movk x8, #((alloc_ptr >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((alloc_ptr >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((alloc_ptr >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+
+            // Check error
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+
+            // Advance cursor by string length (reload from stack)
+            // ldr w9 zero-extends to x9, so x9 has the correct 64-bit value
+            ; ldr w9, [sp, #48]
+            ; add x19, x19, x9             // input_ptr += length
+            ; b =>done_label
+
+            // Cold: eof / bounds check failure
+            ; =>eof_label
+            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+
+            ; =>done_label
+        );
+    }
+
     // ── Enum support ──────────────────────────────────────────────────
 
     // r[impl deser.enum.set-variant]

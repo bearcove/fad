@@ -236,3 +236,29 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
     unsafe { out.write(s.to_owned()) };
     ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
 }
+
+/// Validate UTF-8 and allocate a String from a raw byte slice, write to `*out`.
+///
+/// This is the "lean" string intrinsic — it does NOT read the length varint,
+/// bounds check the input, or advance the cursor. The JIT inlines those parts.
+/// This intrinsic only handles the work that can't be inlined: UTF-8 validation
+/// and heap allocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_postcard_validate_and_alloc_string(
+    ctx: *mut DeserContext,
+    out: *mut String,
+    data_ptr: *const u8,
+    data_len: u32,
+) {
+    let len = data_len as usize;
+    let bytes = unsafe { core::slice::from_raw_parts(data_ptr, len) };
+    let s = match core::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            let ctx = unsafe { &mut *ctx };
+            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+            return;
+        }
+    };
+    unsafe { out.write(s.to_owned()) };
+}

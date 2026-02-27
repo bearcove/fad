@@ -11,6 +11,13 @@ use crate::intrinsics;
 pub struct FadPostcard;
 
 impl Format for FadPostcard {
+    fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
+        // We need at least 8 bytes of scratch space on the stack for:
+        // - varint slow path temp (used by emit_read_postcard_discriminant
+        //   and emit_inline_postcard_string)
+        8
+    }
+
     fn supports_inline_nested(&self) -> bool {
         true
     }
@@ -63,8 +70,11 @@ impl Format for FadPostcard {
     }
 
     fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize) {
-        let fn_ptr = intrinsics::fad_read_postcard_string as *const u8;
-        ectx.emit_call_intrinsic(fn_ptr, offset as u32);
+        ectx.emit_inline_postcard_string(
+            offset as u32,
+            intrinsics::fad_read_varint_u32 as *const u8,
+            intrinsics::fad_postcard_validate_and_alloc_string as *const u8,
+        );
     }
 
     // r[impl deser.postcard.enum]

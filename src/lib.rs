@@ -984,6 +984,26 @@ mod tests {
         eprintln!("=== fad json enum (Animal) ===\n{}", disasm_jit(&deser));
     }
 
+    #[test]
+    fn disasm_serde_postcard_enum() {
+        fn serde_deser(data: &[u8]) -> AnimalSerde {
+            ::postcard::from_bytes(data).unwrap()
+        }
+
+        #[derive(serde::Deserialize, Debug)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        enum AnimalSerde {
+            Cat,
+            Dog { name: String, good_boy: bool },
+            Parrot(String),
+        }
+
+        let fn_ptr = serde_deser as *const u8;
+        let asm = unsafe { disasm_native(fn_ptr, 2048) };
+        eprintln!("=== serde postcard enum (AnimalSerde) @ {fn_ptr:?} ===\n{asm}");
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {
