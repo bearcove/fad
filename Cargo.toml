@@ -11,7 +11,7 @@ categories = ["encoding", "data-structures"]
 readme = "README.md"
 
 [dependencies]
-facet = { path = "../facet/facet" }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
 dynasmrt = "5"
 dynasm = "5"
 
@@ -20,9 +20,9 @@ divan = "0.1"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-facet-postcard = { path = "../facet/facet-postcard", features = ["jit"] }
-facet-json = { path = "../facet/facet-json", features = ["jit"] }
-facet-format = { path = "../facet/facet-format", features = ["jit"] }
+facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jit"] }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jit"] }
+facet-format = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jit"] }
 
 [[bench]]
 name = "deser_postcard"
