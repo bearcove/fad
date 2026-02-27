@@ -674,10 +674,10 @@ impl EmitCtx {
     pub fn emit_write_discriminant(&mut self, value: i64, size: u32) {
         match size {
             1 => dynasm!(self.ops ; .arch x64
-                ; mov BYTE [r14], value as i8 as i32
+                ; mov BYTE [r14], value as i8
             ),
             2 => dynasm!(self.ops ; .arch x64
-                ; mov WORD [r14], value as i16 as i32
+                ; mov WORD [r14], value as i16
             ),
             4 => dynasm!(self.ops ; .arch x64
                 ; mov DWORD [r14], value as i32
