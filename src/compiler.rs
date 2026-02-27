@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use dynasmrt::{AssemblyOffset, DynamicLabel};
-use facet::{ScalarType, Shape, Type, UserType};
+use facet::{EnumRepr, ScalarType, Shape, Type, UserType};
 
 use crate::arch::EmitCtx;
-use crate::format::{FieldEmitInfo, Format};
+use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
 pub struct CompiledDeser {
@@ -84,18 +84,49 @@ impl<'fmt> Compiler<'fmt> {
             },
         );
 
+        match &shape.ty {
+            Type::User(UserType::Struct(_)) => {
+                self.compile_struct(shape, entry_label);
+            }
+            Type::User(UserType::Enum(enum_type)) => {
+                self.compile_enum(shape, enum_type, entry_label);
+            }
+            _ => panic!("unsupported shape: {}", shape.type_identifier),
+        }
+
+        entry_label
+    }
+
+    /// Compile a struct shape into a function.
+    fn compile_struct(
+        &mut self,
+        shape: &'static Shape,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
         let fields = collect_fields(shape);
         let inline = self.format.supports_inline_nested();
 
-        // For non-inlining formats, depth-first compile all nested struct fields
-        // so they're available as call targets.
+        // For non-inlining formats, depth-first compile all nested composite fields
+        // (structs and enums) so they're available as call targets.
+        // Enum fields always need pre-compilation (even in inline formats) since
+        // they can't be inlined — they need their own discriminant dispatch.
         let nested: Vec<Option<DynamicLabel>> = if inline {
-            vec![None; fields.len()]
+            fields
+                .iter()
+                .map(|f| {
+                    if matches!(&f.shape.ty, Type::User(UserType::Enum(_))) {
+                        Some(self.compile_shape(f.shape))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         } else {
             fields
                 .iter()
                 .map(|f| {
-                    if is_struct(f.shape) {
+                    if is_composite(f.shape) {
                         Some(self.compile_shape(f.shape))
                     } else {
                         None
@@ -119,8 +150,94 @@ impl<'fmt> Compiler<'fmt> {
 
         // Mark as finished with the resolved offset.
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
 
-        entry_label
+    // r[impl deser.postcard.enum]
+    // r[impl deser.json.enum.external]
+
+    /// Compile an enum shape into a function.
+    fn compile_enum(
+        &mut self,
+        shape: &'static Shape,
+        enum_type: &'static facet::EnumType,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+        let variants = collect_variants(enum_type);
+        let disc_size = discriminant_size(enum_type.enum_repr);
+        let inline = self.format.supports_inline_nested();
+
+        // Depth-first compile all nested composite types (structs and enums)
+        // found in variant fields so they're available as call targets.
+        // Enum fields always need pre-compilation even in inline formats.
+        let nested_labels: Vec<Vec<Option<DynamicLabel>>> = if inline {
+            variants
+                .iter()
+                .map(|v| {
+                    v.fields
+                        .iter()
+                        .map(|f| {
+                            if matches!(&f.shape.ty, Type::User(UserType::Enum(_))) {
+                                Some(self.compile_shape(f.shape))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            variants
+                .iter()
+                .map(|v| {
+                    v.fields
+                        .iter()
+                        .map(|f| {
+                            if is_composite(f.shape) {
+                                Some(self.compile_shape(f.shape))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+
+        // Bind the entry label, emit prologue.
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_func();
+
+        let format = self.format;
+        let ectx = &mut self.ectx;
+
+        format.emit_enum(ectx, &variants, &mut |ectx, variant| {
+            // Write the Rust discriminant to [out + 0].
+            ectx.emit_write_discriminant(variant.rust_discriminant, disc_size);
+
+            if variant.kind == VariantKind::Unit {
+                return; // No fields to deserialize.
+            }
+
+            let nested = &nested_labels[variant.index];
+
+            // For struct variants in keyed formats: use emit_struct_fields for the
+            // key-matching loop.
+            if variant.kind == VariantKind::Struct && !inline {
+                format.emit_struct_fields(ectx, &variant.fields, &mut |ectx, field| {
+                    emit_field(ectx, format, field, &variant.fields, nested);
+                });
+                return;
+            }
+
+            // For positional formats (postcard) or tuple variants: emit fields in order.
+            for field in &variant.fields {
+                emit_field(ectx, format, field, &variant.fields, nested);
+            }
+        });
+
+        self.ectx.end_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
     }
 }
 
@@ -141,9 +258,64 @@ fn collect_fields(shape: &'static Shape) -> Vec<FieldEmitInfo> {
     }
 }
 
+// r[impl deser.enum.variant-kinds]
+
+fn collect_variants(enum_type: &'static facet::EnumType) -> Vec<VariantEmitInfo> {
+    enum_type
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let kind = VariantKind::from_struct_type(&v.data);
+            let fields: Vec<FieldEmitInfo> = v
+                .data
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(j, f)| FieldEmitInfo {
+                    offset: f.offset,
+                    shape: f.shape(),
+                    name: f.name,
+                    required_index: j,
+                })
+                .collect();
+            VariantEmitInfo {
+                index: i,
+                name: v.effective_name(),
+                rust_discriminant: v.discriminant.expect(
+                    "enum variant must have a known discriminant (use #[repr(u8)] or similar)",
+                ),
+                fields,
+                kind,
+            }
+        })
+        .collect()
+}
+
+/// Get the discriminant storage size in bytes from an EnumRepr.
+fn discriminant_size(repr: EnumRepr) -> u32 {
+    match repr {
+        EnumRepr::U8 | EnumRepr::I8 => 1,
+        EnumRepr::U16 | EnumRepr::I16 => 2,
+        EnumRepr::U32 | EnumRepr::I32 => 4,
+        EnumRepr::U64 | EnumRepr::I64 | EnumRepr::USize | EnumRepr::ISize => 8,
+        EnumRepr::Rust | EnumRepr::RustNPO => {
+            panic!("cannot JIT-compile enums with #[repr(Rust)] — use #[repr(u8)] or similar")
+        }
+    }
+}
+
 /// Returns true if the shape is a struct type.
 fn is_struct(shape: &'static Shape) -> bool {
     matches!(&shape.ty, Type::User(UserType::Struct(_)))
+}
+
+/// Returns true if the shape needs its own compiled function (struct or enum).
+fn is_composite(shape: &'static Shape) -> bool {
+    matches!(
+        &shape.ty,
+        Type::User(UserType::Struct(_) | UserType::Enum(_))
+    )
 }
 
 /// Emit code for a single field, dispatching to nested struct calls, inline
@@ -222,8 +394,35 @@ fn emit_inline_struct(
 
 /// Compile a deserializer for the given shape and format.
 pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDeser {
-    let fields = collect_fields(shape);
-    let extra_stack = format.extra_stack_space(&fields);
+    // Compute extra stack space. For structs, pass fields. For enums, we need
+    // the max across all variant bodies. Use empty fields for enums since JSON
+    // enum handling computes its own stack needs.
+    let extra_stack = match &shape.ty {
+        Type::User(UserType::Struct(_)) => {
+            let fields = collect_fields(shape);
+            format.extra_stack_space(&fields)
+        }
+        Type::User(UserType::Enum(enum_type)) => {
+            // For enums, the format might need extra stack for variant body
+            // deserialization (e.g., JSON struct variant key matching).
+            // Compute the max across all variants.
+            let mut max_extra = 0u32;
+            for v in enum_type.variants {
+                let fields: Vec<FieldEmitInfo> = v.data.fields.iter().enumerate().map(|(j, f)| {
+                    FieldEmitInfo {
+                        offset: f.offset,
+                        shape: f.shape(),
+                        name: f.name,
+                        required_index: j,
+                    }
+                }).collect();
+                max_extra = max_extra.max(format.extra_stack_space(&fields));
+            }
+            max_extra
+        }
+        _ => panic!("unsupported root shape: {}", shape.type_identifier),
+    };
+
     let mut compiler = Compiler::new(extra_stack, format);
     compiler.compile_shape(shape);
 

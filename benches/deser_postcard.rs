@@ -84,6 +84,24 @@ struct OuterFacet {
     z: u32,
 }
 
+// ── Shared types: enum ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[repr(u8)]
+enum AnimalSerde {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[repr(u8)]
+enum AnimalFacet {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
@@ -117,6 +135,14 @@ static DEEP_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
     .unwrap()
 });
 
+static ENUM_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    postcard::to_allocvec(&AnimalSerde::Dog {
+        name: "Rex".into(),
+        good_boy: true,
+    })
+    .unwrap()
+});
+
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
 static FAD_FLAT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
@@ -129,6 +155,10 @@ static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(OuterFacet::SHAPE, &fad::postcard::FadPostcard)
+});
+
+static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(AnimalFacet::SHAPE, &fad::postcard::FadPostcard)
 });
 
 static FACET_JIT_FLAT: LazyLock<
@@ -243,6 +273,30 @@ mod deep_nested_struct {
         let deser = &*FAD_DEEP;
         bencher.bench(|| {
             black_box(fad::deserialize::<OuterFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: enum (struct variant) ─────────────────────────────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_struct_variant {
+    use super::*;
+
+    #[divan::bench]
+    fn postcard_serde(bencher: Bencher) {
+        let data = &*ENUM_ENCODED;
+        bencher.bench(|| {
+            black_box(postcard::from_bytes::<AnimalSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*ENUM_ENCODED;
+        let deser = &*FAD_ENUM;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<AnimalFacet>(deser, black_box(data)).unwrap())
         });
     }
 }

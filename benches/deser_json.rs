@@ -84,6 +84,24 @@ struct OuterFacet {
     z: u32,
 }
 
+// ── Shared types: enum ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[repr(u8)]
+enum AnimalSerde {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[repr(u8)]
+enum AnimalFacet {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_JSON: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
@@ -92,6 +110,8 @@ static NESTED_JSON: &[u8] =
     br#"{"name": "Alice", "age": 30, "address": {"city": "Portland", "zip": 97201}}"#;
 
 static DEEP_JSON: &[u8] = br#"{"middle": {"inner": {"x": 1}, "y": 2}, "z": 3}"#;
+
+static ENUM_JSON: &[u8] = br#"{"Dog": {"name": "Rex", "good_boy": true}}"#;
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
@@ -105,6 +125,10 @@ static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(OuterFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(AnimalFacet::SHAPE, &fad::json::FadJson)
 });
 
 static FACET_JSON_JIT_FLAT: LazyLock<
@@ -207,6 +231,28 @@ mod deep_nested_struct {
         let deser = &*FAD_DEEP;
         bencher.bench(|| {
             black_box(fad::deserialize::<OuterFacet>(deser, black_box(DEEP_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: enum (struct variant) ─────────────────────────────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_struct_variant {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<AnimalSerde>(black_box(ENUM_JSON)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_ENUM;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<AnimalFacet>(deser, black_box(ENUM_JSON)).unwrap())
         });
     }
 }

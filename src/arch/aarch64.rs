@@ -606,6 +606,126 @@ impl EmitCtx {
         );
     }
 
+    // ── Enum support ──────────────────────────────────────────────────
+
+    // r[impl deser.enum.set-variant]
+
+    /// Write a discriminant value to [out + 0].
+    /// `size` is 1, 2, 4, or 8 bytes (from EnumRepr).
+    pub fn emit_write_discriminant(&mut self, value: i64, size: u32) {
+        let val = value as u64;
+        // Load immediate into w9/x9
+        if size <= 4 {
+            let val32 = val as u32;
+            if val32 <= 0xFFFF {
+                dynasm!(self.ops ; .arch aarch64 ; movz w9, val32);
+            } else {
+                let lo = val32 & 0xFFFF;
+                let hi = (val32 >> 16) & 0xFFFF;
+                dynasm!(self.ops ; .arch aarch64
+                    ; movz w9, lo
+                    ; movk w9, hi, LSL #16
+                );
+            }
+        } else {
+            dynasm!(self.ops ; .arch aarch64
+                ; movz x9, #((val) & 0xFFFF) as u32
+                ; movk x9, #((val >> 16) & 0xFFFF) as u32, LSL #16
+                ; movk x9, #((val >> 32) & 0xFFFF) as u32, LSL #32
+                ; movk x9, #((val >> 48) & 0xFFFF) as u32, LSL #48
+            );
+        }
+        // Store to [out + 0]
+        match size {
+            1 => dynasm!(self.ops ; .arch aarch64 ; strb w9, [x21]),
+            2 => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x21]),
+            4 => dynasm!(self.ops ; .arch aarch64 ; str w9, [x21]),
+            8 => dynasm!(self.ops ; .arch aarch64 ; str x9, [x21]),
+            _ => panic!("unsupported discriminant size: {size}"),
+        }
+    }
+
+    // r[impl deser.postcard.enum.dispatch]
+
+    /// Read a postcard varint discriminant into w9 (kept in register for
+    /// dispatch, not stored to memory).
+    ///
+    /// On the fast path (single-byte, value < 128): 4 instructions.
+    /// On the slow path: calls the intrinsic, which writes to a temporary
+    /// on the stack, then loads the result into w9.
+    ///
+    /// After this, the caller emits `emit_cmp_imm_branch_eq` for each variant.
+    pub fn emit_read_postcard_discriminant(&mut self, slow_intrinsic: *const u8) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let slow_path = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+        let ptr_val = slow_intrinsic as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Bounds check
+            ; cmp x19, x20
+            ; b.hs =>eof_label
+            // Load first byte
+            ; ldrb w9, [x19]
+            // Test continuation bit
+            ; tbnz w9, #7, =>slow_path
+            // Fast path: single-byte varint
+            ; add x19, x19, #1
+            ; b =>done_label
+
+            // Slow path: call full varint decode intrinsic
+            // We need the value in w9 after the call, so we use the stack
+            // as a temporary (reuse slot at sp+48 which is the extra stack area).
+            // The intrinsic writes to its out arg.
+            ; =>slow_path
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            ; mov x0, x22
+            ; add x1, sp, #48            // temp u32 on stack
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+            ; ldr w9, [sp, #48]           // load decoded discriminant
+            ; b =>done_label
+
+            ; =>eof_label
+            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+
+            ; =>done_label
+        );
+    }
+
+    /// Compare w9 (discriminant) with immediate `imm` and branch to `label`
+    /// if equal.
+    pub fn emit_cmp_imm_branch_eq(&mut self, imm: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cmp w9, #imm
+            ; b.eq =>label
+        );
+    }
+
+    /// Emit a branch-to-error for unknown variant (sets UnknownVariant error code).
+    pub fn emit_unknown_variant_error(&mut self) {
+        let error_exit = self.error_exit;
+        let error_code = crate::context::ErrorCode::UnknownVariant as u32;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; movz w9, #error_code
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+        );
+    }
+
     /// Advance the cached cursor by n bytes (inline, no function call).
     pub fn emit_advance_cursor_by(&mut self, n: u32) {
         dynasm!(self.ops

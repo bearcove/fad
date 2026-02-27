@@ -767,6 +767,223 @@ mod tests {
         eprintln!("=== serde postcard deep_nested (OuterSerde) @ {fn_ptr:?} ===\n{asm}");
     }
 
+    // --- Milestone 6: Enums ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[repr(u8)]
+    enum Animal {
+        Cat,
+        Dog { name: String, good_boy: bool },
+        Parrot(String),
+    }
+
+    // r[verify deser.postcard.enum]
+    // r[verify deser.postcard.enum.unit]
+    #[test]
+    fn postcard_enum_unit_variant() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        #[repr(u8)]
+        enum AnimalSerde {
+            Cat,
+            #[allow(dead_code)]
+            Dog { name: String, good_boy: bool },
+            #[allow(dead_code)]
+            Parrot(String),
+        }
+
+        let encoded = ::postcard::to_allocvec(&AnimalSerde::Cat).unwrap();
+        let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
+        let result: Animal = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Animal::Cat);
+    }
+
+    // r[verify deser.postcard.enum]
+    // r[verify deser.postcard.enum.dispatch]
+    #[test]
+    fn postcard_enum_struct_variant() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        #[repr(u8)]
+        enum AnimalSerde {
+            #[allow(dead_code)]
+            Cat,
+            Dog { name: String, good_boy: bool },
+            #[allow(dead_code)]
+            Parrot(String),
+        }
+
+        let encoded = ::postcard::to_allocvec(&AnimalSerde::Dog {
+            name: "Rex".into(),
+            good_boy: true,
+        }).unwrap();
+        let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
+        let result: Animal = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Animal::Dog { name: "Rex".into(), good_boy: true });
+    }
+
+    // r[verify deser.postcard.enum]
+    #[test]
+    fn postcard_enum_tuple_variant() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        #[repr(u8)]
+        enum AnimalSerde {
+            #[allow(dead_code)]
+            Cat,
+            #[allow(dead_code)]
+            Dog { name: String, good_boy: bool },
+            Parrot(String),
+        }
+
+        let encoded = ::postcard::to_allocvec(&AnimalSerde::Parrot("Polly".into())).unwrap();
+        let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
+        let result: Animal = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Animal::Parrot("Polly".into()));
+    }
+
+    // r[verify deser.postcard.enum.dispatch]
+    #[test]
+    fn postcard_enum_unknown_discriminant() {
+        // Discriminant 99 doesn't exist
+        let input = [99u8];
+        let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
+        let result = deserialize::<Animal>(&deser, &input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
+    }
+
+    // r[verify deser.postcard.enum]
+    #[test]
+    fn postcard_enum_as_struct_field() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct Zoo {
+            name: String,
+            star: Animal,
+        }
+
+        #[derive(Serialize)]
+        #[repr(u8)]
+        enum AnimalSerde {
+            #[allow(dead_code)]
+            Cat,
+            Dog { name: String, good_boy: bool },
+            #[allow(dead_code)]
+            Parrot(String),
+        }
+
+        #[derive(Serialize)]
+        struct ZooSerde {
+            name: String,
+            star: AnimalSerde,
+        }
+
+        let encoded = ::postcard::to_allocvec(&ZooSerde {
+            name: "City Zoo".into(),
+            star: AnimalSerde::Dog { name: "Rex".into(), good_boy: true },
+        }).unwrap();
+        let deser = compile_deser(Zoo::SHAPE, &postcard::FadPostcard);
+        let result: Zoo = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Zoo {
+            name: "City Zoo".into(),
+            star: Animal::Dog { name: "Rex".into(), good_boy: true },
+        });
+    }
+
+    // r[verify deser.json.enum.external]
+    // r[verify deser.json.enum.external.unit-as-string]
+    #[test]
+    fn json_enum_unit_as_string() {
+        let input = br#""Cat""#;
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        let result: Animal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Animal::Cat);
+    }
+
+    // r[verify deser.json.enum.external]
+    // r[verify deser.json.enum.external.struct-variant]
+    #[test]
+    fn json_enum_struct_variant() {
+        let input = br#"{"Dog": {"name": "Rex", "good_boy": true}}"#;
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        let result: Animal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Animal::Dog { name: "Rex".into(), good_boy: true });
+    }
+
+    // r[verify deser.json.enum.external]
+    // r[verify deser.json.enum.external.tuple-variant]
+    #[test]
+    fn json_enum_tuple_variant() {
+        let input = br#"{"Parrot": "Polly"}"#;
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        let result: Animal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Animal::Parrot("Polly".into()));
+    }
+
+    // r[verify deser.json.enum.external]
+    #[test]
+    fn json_enum_unit_in_object() {
+        // Unit variant inside object form: { "Cat": null }
+        let input = br#"{"Cat": null}"#;
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        let result: Animal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Animal::Cat);
+    }
+
+    // r[verify deser.json.enum.external]
+    #[test]
+    fn json_enum_unknown_variant() {
+        let input = br#""Snake""#;
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        let result = deserialize::<Animal>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
+    }
+
+    // r[verify deser.json.enum.external]
+    #[test]
+    fn json_enum_as_struct_field() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Zoo {
+            name: String,
+            star: Animal,
+        }
+
+        let input = br#"{"name": "City Zoo", "star": {"Dog": {"name": "Rex", "good_boy": true}}}"#;
+        let deser = compile_deser(Zoo::SHAPE, &json::FadJson);
+        let result: Zoo = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Zoo {
+            name: "City Zoo".into(),
+            star: Animal::Dog { name: "Rex".into(), good_boy: true },
+        });
+    }
+
+    // r[verify deser.json.enum.external.struct-variant]
+    #[test]
+    fn json_enum_struct_variant_reversed_keys() {
+        let input = br#"{"Dog": {"good_boy": true, "name": "Rex"}}"#;
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        let result: Animal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Animal::Dog { name: "Rex".into(), good_boy: true });
+    }
+
+    #[test]
+    fn disasm_postcard_enum() {
+        let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
+        eprintln!("=== fad postcard enum (Animal) ===\n{}", disasm_jit(&deser));
+    }
+
+    #[test]
+    fn disasm_json_enum() {
+        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
+        eprintln!("=== fad json enum (Animal) ===\n{}", disasm_jit(&deser));
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {

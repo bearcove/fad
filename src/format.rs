@@ -1,4 +1,4 @@
-use facet::ScalarType;
+use facet::{ScalarType, StructKind};
 
 use crate::arch::EmitCtx;
 
@@ -14,6 +14,40 @@ pub struct FieldEmitInfo {
     pub name: &'static str,
     /// Index of this field for required-field bitset tracking.
     pub required_index: usize,
+}
+
+// r[impl deser.enum.variant-kinds]
+
+/// The kind of an enum variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariantKind {
+    Unit,
+    Tuple,
+    Struct,
+}
+
+impl VariantKind {
+    pub fn from_struct_type(st: &facet::StructType) -> Self {
+        match st.kind {
+            StructKind::Unit => VariantKind::Unit,
+            StructKind::Struct => VariantKind::Struct,
+            StructKind::TupleStruct | StructKind::Tuple => VariantKind::Tuple,
+        }
+    }
+}
+
+/// Information about an enum variant needed during code emission.
+pub struct VariantEmitInfo {
+    /// Variant index (0-based, used as wire discriminant for postcard).
+    pub index: usize,
+    /// Variant name (for JSON key matching).
+    pub name: &'static str,
+    /// Rust discriminant value to write to the tag slot.
+    pub rust_discriminant: i64,
+    /// Fields of this variant (offsets are absolute from enum base).
+    pub fields: Vec<FieldEmitInfo>,
+    /// Variant kind.
+    pub kind: VariantKind,
 }
 
 /// A wire format that knows how to emit deserialization code.
@@ -55,4 +89,16 @@ pub trait Format {
 
     /// Emit code to read a String and write it to `out + offset`.
     fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize);
+
+    /// Emit code to deserialize an enum value.
+    ///
+    /// The format reads the wire discriminant (varint for postcard, string key
+    /// for JSON), dispatches to the matching variant, and calls
+    /// `emit_variant_body` for each variant's payload.
+    fn emit_enum(
+        &self,
+        ectx: &mut EmitCtx,
+        variants: &[VariantEmitInfo],
+        emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    );
 }

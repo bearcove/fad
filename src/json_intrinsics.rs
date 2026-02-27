@@ -291,6 +291,25 @@ unsafe fn skip_ws_raw(ctx: &mut DeserContext) {
     }
 }
 
+/// Skip whitespace, then expect and consume '}'.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_expect_object_end(ctx: *mut DeserContext) {
+    unsafe {
+        fad_json_skip_ws(ctx);
+    }
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
+        return;
+    }
+    let b = unsafe { *ctx.input_ptr };
+    if b != b'}' {
+        ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
+        return;
+    }
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+}
+
 /// Skip whitespace, then expect ',' (write 0 to *out) or '}' (write 1 to *out).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_comma_or_end_object(ctx: *mut DeserContext, out: *mut u8) {

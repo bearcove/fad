@@ -43,6 +43,7 @@ pub enum ErrorCode {
     UnexpectedCharacter = 11,
     NumberOutOfRange = 12,
     InvalidBool = 13,
+    UnknownVariant = 14,
 }
 
 impl fmt::Display for ErrorCode {
@@ -62,6 +63,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::UnexpectedCharacter => write!(f, "unexpected character"),
             ErrorCode::NumberOutOfRange => write!(f, "number out of range for target type"),
             ErrorCode::InvalidBool => write!(f, "invalid bool value"),
+            ErrorCode::UnknownVariant => write!(f, "unknown enum variant"),
         }
     }
 }

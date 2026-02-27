@@ -1,7 +1,7 @@
 use facet::ScalarType;
 
 use crate::arch::EmitCtx;
-use crate::format::{FieldEmitInfo, Format};
+use crate::format::{FieldEmitInfo, Format, VariantEmitInfo};
 use crate::intrinsics;
 
 // r[impl deser.postcard.struct]
@@ -65,5 +65,39 @@ impl Format for FadPostcard {
     fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize) {
         let fn_ptr = intrinsics::fad_read_postcard_string as *const u8;
         ectx.emit_call_intrinsic(fn_ptr, offset as u32);
+    }
+
+    // r[impl deser.postcard.enum]
+    // r[impl deser.postcard.enum.dispatch]
+    // r[impl deser.postcard.enum.unit]
+    fn emit_enum(
+        &self,
+        ectx: &mut EmitCtx,
+        variants: &[VariantEmitInfo],
+        emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        // Read varint discriminant into scratch register (w9 on aarch64, r10d on x64).
+        // Uses fad_read_varint_u32 as slow path intrinsic.
+        ectx.emit_read_postcard_discriminant(intrinsics::fad_read_varint_u32 as *const u8);
+
+        let done_label = ectx.new_label();
+        let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
+
+        // Linear compare chain: cmp discriminant, N; branch if equal to variant N.
+        for (i, variant) in variants.iter().enumerate() {
+            ectx.emit_cmp_imm_branch_eq(variant.index as u32, variant_labels[i]);
+        }
+
+        // Default: unknown discriminant.
+        ectx.emit_unknown_variant_error();
+
+        // Variant handlers.
+        for (i, variant) in variants.iter().enumerate() {
+            ectx.bind_label(variant_labels[i]);
+            emit_variant_body(ectx, variant);
+            ectx.emit_branch(done_label);
+        }
+
+        ectx.bind_label(done_label);
     }
 }

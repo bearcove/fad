@@ -1,7 +1,7 @@
 use facet::ScalarType;
 
 use crate::arch::EmitCtx;
-use crate::format::{FieldEmitInfo, Format};
+use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
 use crate::json_intrinsics;
 
 // r[impl deser.json.struct]
@@ -149,5 +149,136 @@ impl Format for FadJson {
             json_intrinsics::fad_json_read_string_value as *const u8,
             offset as u32,
         );
+    }
+
+    // r[impl deser.json.enum.external]
+    // r[impl deser.json.enum.external.unit-as-string]
+    // r[impl deser.json.enum.external.struct-variant]
+    // r[impl deser.json.enum.external.tuple-variant]
+    fn emit_enum(
+        &self,
+        ectx: &mut EmitCtx,
+        variants: &[VariantEmitInfo],
+        emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        let done_label = ectx.new_label();
+        let object_path = ectx.new_label();
+
+        // Peek at first non-whitespace byte to determine path.
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+
+        // If peek == '"', it's a bare string (unit variant).
+        // Otherwise, expect an object.
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'{', object_path);
+
+        // ══════════════════════════════════════════════════════════════════
+        // Bare string path: read the quoted string, match unit variants.
+        // ══════════════════════════════════════════════════════════════════
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Compare against unit variant names.
+        let unit_labels: Vec<_> = variants
+            .iter()
+            .filter(|v| v.kind == VariantKind::Unit)
+            .map(|v| (v, ectx.new_label()))
+            .collect();
+
+        for (variant, label) in &unit_labels {
+            let name_bytes = variant.name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(*label);
+        }
+
+        // No match → unknown variant.
+        ectx.emit_unknown_variant_error();
+
+        // Unit variant handlers.
+        for (variant, label) in &unit_labels {
+            ectx.bind_label(*label);
+            emit_variant_body(ectx, variant);
+            ectx.emit_branch(done_label);
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        // Object path: { "VariantName": value }
+        // ══════════════════════════════════════════════════════════════════
+        ectx.bind_label(object_path);
+
+        // Consume '{'
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_start as *const u8,
+        );
+
+        // Read the variant name key.
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Consume ':'
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+
+        // Compare against all variant names.
+        let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
+
+        for (i, variant) in variants.iter().enumerate() {
+            let name_bytes = variant.name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(variant_labels[i]);
+        }
+
+        // No match → unknown variant.
+        ectx.emit_unknown_variant_error();
+
+        // Variant handlers.
+        let expect_end_label = ectx.new_label();
+        for (i, variant) in variants.iter().enumerate() {
+            ectx.bind_label(variant_labels[i]);
+            match variant.kind {
+                VariantKind::Unit => {
+                    // Unit variant inside object: { "Cat": null } — skip the value.
+                    emit_variant_body(ectx, variant);
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_skip_value as *const u8,
+                    );
+                }
+                VariantKind::Struct | VariantKind::Tuple => {
+                    // Struct variant: { "Dog": { "name": "Rex", ... } }
+                    // Tuple variant (newtype): { "Parrot": "Polly" }
+                    // emit_variant_body handles both — for struct it calls
+                    // emit_struct_fields, for tuple it emits the single field.
+                    emit_variant_body(ectx, variant);
+                }
+            }
+            ectx.emit_branch(expect_end_label);
+        }
+
+        // After variant body: expect closing '}'
+        ectx.bind_label(expect_end_label);
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_end as *const u8,
+        );
+
+        ectx.bind_label(done_label);
     }
 }
