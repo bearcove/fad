@@ -388,4 +388,265 @@ mod tests {
         assert_eq!(result.i8_min, i8::MIN);
         assert_eq!(result.i64_min, i64::MIN);
     }
+
+    // --- Milestone 5: Nested structs ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Address {
+        city: String,
+        zip: u32,
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Person {
+        name: String,
+        age: u32,
+        address: Address,
+    }
+
+    // r[verify deser.nested-struct]
+    // r[verify deser.nested-struct.offset]
+    #[test]
+    fn postcard_nested_struct() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct AddressSerde {
+            city: String,
+            zip: u32,
+        }
+
+        #[derive(Serialize)]
+        struct PersonSerde {
+            name: String,
+            age: u32,
+            address: AddressSerde,
+        }
+
+        let source = PersonSerde {
+            name: "Alice".into(),
+            age: 30,
+            address: AddressSerde {
+                city: "Portland".into(),
+                zip: 97201,
+            },
+        };
+
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Person::SHAPE, &postcard::FadPostcard);
+        let result: Person = deserialize(&deser, &encoded).unwrap();
+
+        assert_eq!(
+            result,
+            Person {
+                name: "Alice".into(),
+                age: 30,
+                address: Address {
+                    city: "Portland".into(),
+                    zip: 97201,
+                },
+            }
+        );
+    }
+
+    // r[verify deser.nested-struct]
+    // r[verify deser.nested-struct.offset]
+    #[test]
+    fn json_nested_struct() {
+        let input = br#"{"name": "Alice", "age": 30, "address": {"city": "Portland", "zip": 97201}}"#;
+        let deser = compile_deser(Person::SHAPE, &json::FadJson);
+        let result: Person = deserialize(&deser, input).unwrap();
+
+        assert_eq!(
+            result,
+            Person {
+                name: "Alice".into(),
+                age: 30,
+                address: Address {
+                    city: "Portland".into(),
+                    zip: 97201,
+                },
+            }
+        );
+    }
+
+    // r[verify deser.nested-struct]
+    #[test]
+    fn json_nested_struct_reversed_keys() {
+        let input = br#"{"address": {"zip": 97201, "city": "Portland"}, "age": 30, "name": "Alice"}"#;
+        let deser = compile_deser(Person::SHAPE, &json::FadJson);
+        let result: Person = deserialize(&deser, input).unwrap();
+
+        assert_eq!(
+            result,
+            Person {
+                name: "Alice".into(),
+                age: 30,
+                address: Address {
+                    city: "Portland".into(),
+                    zip: 97201,
+                },
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Inner {
+        x: u32,
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Middle {
+        inner: Inner,
+        y: u32,
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Outer {
+        middle: Middle,
+        z: u32,
+    }
+
+    // r[verify deser.nested-struct]
+    #[test]
+    fn postcard_deeply_nested() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct InnerSerde {
+            x: u32,
+        }
+        #[derive(Serialize)]
+        struct MiddleSerde {
+            inner: InnerSerde,
+            y: u32,
+        }
+        #[derive(Serialize)]
+        struct OuterSerde {
+            middle: MiddleSerde,
+            z: u32,
+        }
+
+        let source = OuterSerde {
+            middle: MiddleSerde {
+                inner: InnerSerde { x: 1 },
+                y: 2,
+            },
+            z: 3,
+        };
+
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Outer::SHAPE, &postcard::FadPostcard);
+        let result: Outer = deserialize(&deser, &encoded).unwrap();
+
+        assert_eq!(
+            result,
+            Outer {
+                middle: Middle {
+                    inner: Inner { x: 1 },
+                    y: 2,
+                },
+                z: 3,
+            }
+        );
+    }
+
+    // r[verify deser.nested-struct]
+    #[test]
+    fn json_deeply_nested() {
+        let input = br#"{"middle": {"inner": {"x": 1}, "y": 2}, "z": 3}"#;
+        let deser = compile_deser(Outer::SHAPE, &json::FadJson);
+        let result: Outer = deserialize(&deser, input).unwrap();
+
+        assert_eq!(
+            result,
+            Outer {
+                middle: Middle {
+                    inner: Inner { x: 1 },
+                    y: 2,
+                },
+                z: 3,
+            }
+        );
+    }
+
+    // r[verify deser.nested-struct]
+    #[test]
+    fn postcard_shared_inner_type() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct TwoAddresses {
+            home: Address,
+            work: Address,
+        }
+
+        #[derive(Serialize)]
+        struct AddressSerde {
+            city: String,
+            zip: u32,
+        }
+        #[derive(Serialize)]
+        struct TwoAddressesSerde {
+            home: AddressSerde,
+            work: AddressSerde,
+        }
+
+        let source = TwoAddressesSerde {
+            home: AddressSerde {
+                city: "Portland".into(),
+                zip: 97201,
+            },
+            work: AddressSerde {
+                city: "Seattle".into(),
+                zip: 98101,
+            },
+        };
+
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(TwoAddresses::SHAPE, &postcard::FadPostcard);
+        let result: TwoAddresses = deserialize(&deser, &encoded).unwrap();
+
+        assert_eq!(
+            result,
+            TwoAddresses {
+                home: Address {
+                    city: "Portland".into(),
+                    zip: 97201,
+                },
+                work: Address {
+                    city: "Seattle".into(),
+                    zip: 98101,
+                },
+            }
+        );
+    }
+
+    // r[verify compiler.recursive.one-func-per-shape]
+    #[test]
+    fn json_shared_inner_type() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct TwoAddresses {
+            home: Address,
+            work: Address,
+        }
+
+        let input = br#"{"home": {"city": "Portland", "zip": 97201}, "work": {"city": "Seattle", "zip": 98101}}"#;
+        let deser = compile_deser(TwoAddresses::SHAPE, &json::FadJson);
+        let result: TwoAddresses = deserialize(&deser, input).unwrap();
+
+        assert_eq!(
+            result,
+            TwoAddresses {
+                home: Address {
+                    city: "Portland".into(),
+                    zip: 97201,
+                },
+                work: Address {
+                    city: "Seattle".into(),
+                    zip: 98101,
+                },
+            }
+        );
+    }
 }

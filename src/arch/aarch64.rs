@@ -23,21 +23,46 @@ pub struct EmitCtx {
 //   x22 = ctx pointer
 
 impl EmitCtx {
-    /// Create a new EmitCtx and emit the function prologue.
+    /// Create a new EmitCtx. Does not emit any code.
     ///
     /// `extra_stack` is the number of additional bytes the format needs on the
     /// stack (e.g. 32 for JSON's bitset + key_ptr + key_len + peek_byte).
     /// The total frame is rounded up to 16-byte alignment.
+    ///
+    /// Call `begin_func()` to emit a function prologue.
     pub fn new(extra_stack: u32) -> Self {
         let frame_size = (BASE_FRAME + extra_stack + 15) & !15;
         let mut ops = Assembler::new().expect("failed to create assembler");
         let error_exit = ops.new_dynamic_label();
-        let entry = ops.offset();
+        let entry = AssemblyOffset(0);
+
+        EmitCtx {
+            ops,
+            error_exit,
+            entry,
+            frame_size,
+        }
+    }
+
+    /// Emit a function prologue. Returns the entry offset and a fresh error_exit label.
+    ///
+    /// The returned error_exit label must be passed to `end_func` when done emitting
+    /// this function's body.
+    ///
+    /// # Register assignments after prologue
+    /// - x19 = cached input_ptr
+    /// - x20 = cached input_end
+    /// - x21 = out pointer
+    /// - x22 = ctx pointer
+    pub fn begin_func(&mut self) -> (AssemblyOffset, DynamicLabel) {
+        let error_exit = self.ops.new_dynamic_label();
+        let entry = self.ops.offset();
+        let frame_size = self.frame_size;
 
         // We emit the prologue with sub sp + stp instead of the pre-index form,
         // because frame_size is dynamic and dynasm doesn't support runtime
         // immediates in pre-index stp.
-        dynasm!(ops
+        dynasm!(self.ops
             ; .arch aarch64
             ; sub sp, sp, #frame_size
             ; stp x29, x30, [sp]
@@ -54,12 +79,64 @@ impl EmitCtx {
             ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
         );
 
-        EmitCtx {
-            ops,
-            error_exit,
-            entry,
-            frame_size,
-        }
+        self.error_exit = error_exit;
+        (entry, error_exit)
+    }
+
+    /// Emit the success epilogue and error exit for the current function.
+    ///
+    /// `error_exit` must be the label returned by the corresponding `begin_func` call.
+    pub fn end_func(&mut self, error_exit: DynamicLabel) {
+        let frame_size = self.frame_size;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Success path: flush cursor, restore registers, return
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            ; ldp x21, x22, [sp, #32]
+            ; ldp x19, x20, [sp, #16]
+            ; ldp x29, x30, [sp]
+            ; add sp, sp, #frame_size
+            ; ret
+
+            // Error exit: just restore and return (error is already in ctx.error)
+            ; =>error_exit
+            ; ldp x21, x22, [sp, #32]
+            ; ldp x19, x20, [sp, #16]
+            ; ldp x29, x30, [sp]
+            ; add sp, sp, #frame_size
+            ; ret
+        );
+    }
+
+    /// Emit a call to another emitted function.
+    ///
+    /// Convention: x0 = out + field_offset, x1 = ctx (same as our entry convention).
+    /// Flushes cursor before call, reloads after, checks error.
+    ///
+    /// r[impl callconv.inter-function]
+    pub fn emit_call_emitted_func(&mut self, label: DynamicLabel, field_offset: u32) {
+        let error_exit = self.error_exit;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Flush cached cursor back to ctx
+            ; str x19, [x22, #CTX_INPUT_PTR]
+
+            // Set up arguments: x0 = out + field_offset, x1 = ctx
+            ; add x0, x21, #field_offset
+            ; mov x1, x22
+
+            // Call the emitted function via PC-relative branch-and-link
+            ; bl =>label
+
+            // Reload cached cursor from ctx (callee may have advanced it)
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+
+            // Check error: if ctx.error.code != 0, branch to error exit
+            ; ldr w9, [x22, #CTX_ERROR_CODE]
+            ; cbnz w9, =>error_exit
+        );
     }
 
     /// Emit a call to an intrinsic function.
@@ -324,30 +401,10 @@ impl EmitCtx {
         );
     }
 
-    /// Emit the success epilogue and error exit path. Finalizes the assembler.
+    /// Commit and finalize the assembler, returning the executable buffer.
+    ///
+    /// All functions must have been completed with `end_func` before calling this.
     pub fn finalize(mut self) -> dynasmrt::ExecutableBuffer {
-        let error_exit = self.error_exit;
-        let frame_size = self.frame_size;
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Success path: flush cursor, restore registers, return
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; ldp x21, x22, [sp, #32]
-            ; ldp x19, x20, [sp, #16]
-            ; ldp x29, x30, [sp]
-            ; add sp, sp, #frame_size
-            ; ret
-
-            // Error exit: just restore and return (error is already in ctx.error)
-            ; =>error_exit
-            ; ldp x21, x22, [sp, #32]
-            ; ldp x19, x20, [sp, #16]
-            ; ldp x29, x30, [sp]
-            ; add sp, sp, #frame_size
-            ; ret
-        );
-
         self.ops.commit().expect("failed to commit assembly");
         self.ops.finalize().expect("failed to finalize assembly")
     }
