@@ -27,6 +27,16 @@ pub trait Format {
         0
     }
 
+    /// Whether nested struct fields should be inlined into the parent function.
+    ///
+    /// Positional formats (postcard) return true — nested structs are just
+    /// "more fields at an offset", so inlining avoids the function call overhead.
+    /// Keyed formats (JSON) return false — each struct level needs its own
+    /// key-matching state machine.
+    fn supports_inline_nested(&self) -> bool {
+        false
+    }
+
     /// Emit code to deserialize all fields of a struct.
     ///
     /// The format controls field ordering. For postcard, this just iterates

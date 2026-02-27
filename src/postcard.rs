@@ -11,6 +11,10 @@ use crate::intrinsics;
 pub struct FadPostcard;
 
 impl Format for FadPostcard {
+    fn supports_inline_nested(&self) -> bool {
+        true
+    }
+
     fn emit_struct_fields(
         &self,
         ectx: &mut EmitCtx,

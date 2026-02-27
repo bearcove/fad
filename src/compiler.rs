@@ -60,8 +60,6 @@ impl<'fmt> Compiler<'fmt> {
         let key = shape as *const Shape;
 
         if let Some(entry) = self.shapes.get(&key) {
-            // Either already finished or in-progress (forward ref). Either way,
-            // the label is valid for emitting a call.
             return entry.label;
         }
 
@@ -75,35 +73,25 @@ impl<'fmt> Compiler<'fmt> {
             },
         );
 
-        // Collect fields for this shape.
-        let fields: Vec<FieldEmitInfo> = match &shape.ty {
-            Type::User(UserType::Struct(st)) => st
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(i, f)| FieldEmitInfo {
-                    offset: f.offset,
-                    shape: f.shape(),
-                    name: f.name,
-                    required_index: i,
-                })
-                .collect(),
-            _ => panic!("unsupported shape: {}", shape.type_identifier),
-        };
+        let fields = collect_fields(shape);
+        let inline = self.format.supports_inline_nested();
 
-        // Depth-first: compile all nested struct fields before this function.
-        // For non-recursive types, their labels will already be bound (backward call).
-        // For recursive back-edges, the label is allocated but not bound (forward ref).
-        let nested: Vec<Option<DynamicLabel>> = fields
-            .iter()
-            .map(|f| {
-                if is_struct(f.shape) {
-                    Some(self.compile_shape(f.shape))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // For non-inlining formats, depth-first compile all nested struct fields
+        // so they're available as call targets.
+        let nested: Vec<Option<DynamicLabel>> = if inline {
+            vec![None; fields.len()]
+        } else {
+            fields
+                .iter()
+                .map(|f| {
+                    if is_struct(f.shape) {
+                        Some(self.compile_shape(f.shape))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
 
         // Bind the entry label at the function start, then emit prologue.
         self.ectx.bind_label(entry_label);
@@ -113,7 +101,7 @@ impl<'fmt> Compiler<'fmt> {
         let ectx = &mut self.ectx;
 
         format.emit_struct_fields(ectx, &fields, &mut |ectx, field| {
-            emit_field_with_nested(ectx, format, field, &fields, &nested);
+            emit_field(ectx, format, field, &fields, &nested);
         });
 
         self.ectx.end_func(error_exit);
@@ -125,13 +113,31 @@ impl<'fmt> Compiler<'fmt> {
     }
 }
 
+fn collect_fields(shape: &'static Shape) -> Vec<FieldEmitInfo> {
+    match &shape.ty {
+        Type::User(UserType::Struct(st)) => st
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| FieldEmitInfo {
+                offset: f.offset,
+                shape: f.shape(),
+                name: f.name,
+                required_index: i,
+            })
+            .collect(),
+        _ => panic!("unsupported shape: {}", shape.type_identifier),
+    }
+}
+
 /// Returns true if the shape is a struct type.
 fn is_struct(shape: &'static Shape) -> bool {
     matches!(&shape.ty, Type::User(UserType::Struct(_)))
 }
 
-/// Emit code for a single field, dispatching to nested struct calls or scalar intrinsics.
-fn emit_field_with_nested(
+/// Emit code for a single field, dispatching to nested struct calls, inline
+/// expansion, or scalar intrinsics.
+fn emit_field(
     ectx: &mut EmitCtx,
     format: &dyn Format,
     field: &FieldEmitInfo,
@@ -151,6 +157,13 @@ fn emit_field_with_nested(
         return;
     }
 
+    // r[impl deser.nested-struct]
+    // r[impl deser.nested-struct.offset]
+    if is_struct(field.shape) && format.supports_inline_nested() {
+        emit_inline_struct(ectx, format, field.shape, field.offset);
+        return;
+    }
+
     match field.shape.scalar_type() {
         Some(ScalarType::String) => {
             format.emit_read_string(ectx, field.offset);
@@ -166,24 +179,39 @@ fn emit_field_with_nested(
     }
 }
 
+/// Inline a nested struct's fields into the parent function.
+///
+/// Instead of emitting a function call, we collect the nested struct's fields,
+/// adjust their offsets by `base_offset`, and emit them directly via the format's
+/// `emit_struct_fields`. This recurses for deeply nested structs.
+fn emit_inline_struct(
+    ectx: &mut EmitCtx,
+    format: &dyn Format,
+    shape: &'static Shape,
+    base_offset: usize,
+) {
+    let inner_fields = collect_fields(shape);
+    let adjusted: Vec<FieldEmitInfo> = inner_fields
+        .into_iter()
+        .map(|f| FieldEmitInfo {
+            offset: base_offset + f.offset,
+            shape: f.shape,
+            name: f.name,
+            required_index: f.required_index,
+        })
+        .collect();
+
+    // No nested labels — all struct fields will recurse into emit_inline_struct.
+    let no_nested = vec![None; adjusted.len()];
+
+    format.emit_struct_fields(ectx, &adjusted, &mut |ectx, field| {
+        emit_field(ectx, format, field, &adjusted, &no_nested);
+    });
+}
+
 /// Compile a deserializer for the given shape and format.
 pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDeser {
-    // Compute extra stack from the top-level shape's fields.
-    let fields: Vec<FieldEmitInfo> = match &shape.ty {
-        Type::User(UserType::Struct(st)) => st
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| FieldEmitInfo {
-                offset: f.offset,
-                shape: f.shape(),
-                name: f.name,
-                required_index: i,
-            })
-            .collect(),
-        _ => panic!("unsupported shape: {}", shape.type_identifier),
-    };
-
+    let fields = collect_fields(shape);
     let extra_stack = format.extra_stack_space(&fields);
     let mut compiler = Compiler::new(extra_stack, format);
     compiler.compile_shape(shape);
