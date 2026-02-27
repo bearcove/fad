@@ -242,7 +242,7 @@ serde codegen.
 | 4 | Done | All primitive scalar types |
 | 5 | Done | Nested structs (recursive compiler) |
 | 5.5 | Done | Inline nested structs for positional formats |
-| 5.6 | Open | Inline scalar intrinsics (#8) |
+| 5.6 | Done | Inline scalar intrinsics (#8) |
 | 6 | Open | Enums — externally tagged (#3) |
 | 7 | Open | Flatten + internally/adjacently tagged enums (#4) |
 | 8 | Open | Untagged enums (#5) |
