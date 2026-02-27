@@ -184,6 +184,7 @@ mod nested_struct {
 
 // ── Benchmarks: deeply nested struct ────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod deep_nested_struct {
     use super::*;
 

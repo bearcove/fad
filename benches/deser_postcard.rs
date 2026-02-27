@@ -215,6 +215,9 @@ mod nested_struct {
 
 // ── Benchmarks: deeply nested struct ────────────────────────────────────────
 
+// sample_size=65536 so that sub-nanosecond benchmarks don't hit the timer
+// precision floor (~41ns on Apple Silicon).
+#[divan::bench_group(sample_size = 65536)]
 mod deep_nested_struct {
     use super::*;
 

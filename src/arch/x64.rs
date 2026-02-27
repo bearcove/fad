@@ -363,6 +363,212 @@ impl EmitCtx {
         );
     }
 
+    // ── Inline scalar reads ──────────────────────────────────────────
+    //
+    // These emit scalar decode logic directly into the instruction stream,
+    // using cached registers (r12=input_ptr, r13=input_end, r14=out,
+    // r15=ctx). No cursor flush/reload, no indirect call.
+
+    /// Emit inline code to read a single byte (u8 or i8) and store to out+offset.
+    pub fn emit_inline_read_byte(&mut self, offset: u32) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            // Bounds check: need at least 1 byte
+            ; cmp r12, r13
+            ; jae =>eof_label
+            // Load, store, advance
+            ; movzx r10d, BYTE [r12]
+            ; mov BYTE [r14 + offset as i32], r10b
+            ; add r12, 1
+            ; jmp =>done_label
+
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
+
+            ; =>done_label
+        );
+    }
+
+    /// Emit inline code to read a bool and store to out+offset.
+    /// Validates the byte is 0 or 1.
+    pub fn emit_inline_read_bool(&mut self, offset: u32) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let invalid_label = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            // Bounds check
+            ; cmp r12, r13
+            ; jae =>eof_label
+            // Load byte
+            ; movzx r10d, BYTE [r12]
+            // Validate: must be 0 or 1
+            ; cmp r10d, 1
+            ; ja =>invalid_label
+            // Store and advance
+            ; mov BYTE [r14 + offset as i32], r10b
+            ; add r12, 1
+            ; jmp =>done_label
+
+            // Cold: invalid bool
+            ; =>invalid_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::InvalidBool as i32
+            ; jmp =>error_exit
+
+            // Cold: eof
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
+
+            ; =>done_label
+        );
+    }
+
+    /// Emit inline code to read 4 LE bytes (f32) and store to out+offset.
+    pub fn emit_inline_read_f32(&mut self, offset: u32) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            // Bounds check: need 4 bytes
+            ; mov r10, r13
+            ; sub r10, r12
+            ; cmp r10, 4
+            ; jb =>eof_label
+            // Load 4 bytes, store, advance
+            ; mov r10d, DWORD [r12]
+            ; mov DWORD [r14 + offset as i32], r10d
+            ; add r12, 4
+            ; jmp =>done_label
+
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
+
+            ; =>done_label
+        );
+    }
+
+    /// Emit inline code to read 8 LE bytes (f64) and store to out+offset.
+    pub fn emit_inline_read_f64(&mut self, offset: u32) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            // Bounds check: need 8 bytes
+            ; mov r10, r13
+            ; sub r10, r12
+            ; cmp r10, 8
+            ; jb =>eof_label
+            // Load 8 bytes, store, advance
+            ; mov r10, QWORD [r12]
+            ; mov QWORD [r14 + offset as i32], r10
+            ; add r12, 8
+            ; jmp =>done_label
+
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
+
+            ; =>done_label
+        );
+    }
+
+    /// Emit inline varint fast path: if the first byte has bit 7 clear
+    /// (single-byte varint, value < 128), store directly and advance.
+    /// Otherwise fall through to a full intrinsic call for multi-byte decode.
+    ///
+    /// `store_width`: 2 (u16/i16), 4 (u32/i32), or 8 (u64/i64).
+    /// `zigzag`: true for signed types (apply zigzag decode on fast path).
+    /// `intrinsic_fn_ptr`: full varint decode intrinsic for the slow path.
+    pub fn emit_inline_varint_fast_path(
+        &mut self,
+        offset: u32,
+        store_width: u32,
+        zigzag: bool,
+        intrinsic_fn_ptr: *const u8,
+    ) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let slow_path = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+        let ptr_val = intrinsic_fn_ptr as i64;
+
+        // Bounds check: need at least 1 byte
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>eof_label
+            // Load first byte
+            ; movzx r10d, BYTE [r12]
+            // Test continuation bit (bit 7)
+            ; test r10d, 0x80
+            ; jnz =>slow_path
+            // Fast path: single-byte varint, value in r10d (0..127)
+            ; add r12, 1
+        );
+
+        if zigzag {
+            // Zigzag decode: decoded = (v >> 1) ^ -(v & 1)
+            dynasm!(self.ops
+                ; .arch x64
+                ; mov r11d, r10d
+                ; shr r11d, 1              // r11d = v >> 1
+                ; and r10d, 1              // r10d = v & 1
+                ; neg r10d                 // r10d = -(v & 1) = 0 or 0xFFFFFFFF
+                ; xor r10d, r11d           // r10d = decoded value
+            );
+        }
+
+        // Store based on width
+        match store_width {
+            2 => dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset as i32], r10w),
+            4 => dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset as i32], r10d),
+            8 => dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset as i32], r10),
+            _ => panic!("unsupported varint store width: {store_width}"),
+        }
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; jmp =>done_label
+
+            // Slow path: multi-byte varint, call intrinsic
+            ; =>slow_path
+            // Flush cached cursor back to ctx
+            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            // Set up arguments: rdi = ctx, rsi = out + offset
+            ; mov rdi, r15
+            ; lea rsi, [r14 + offset as i32]
+            // Load function pointer and call
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            // Reload cursor and check error
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+            ; jmp =>done_label
+
+            // Cold: eof
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
+
+            ; =>done_label
+        );
+    }
+
     /// Advance the cached cursor by n bytes (inline, no function call).
     pub fn emit_advance_cursor_by(&mut self, n: u32) {
         dynasm!(self.ops

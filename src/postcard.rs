@@ -31,21 +31,35 @@ impl Format for FadPostcard {
     // r[impl deser.postcard.scalar.float]
     // r[impl deser.postcard.scalar.bool]
     fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
-        let fn_ptr: *const u8 = match scalar_type {
-            ScalarType::U8 => intrinsics::fad_read_u8 as _,
-            ScalarType::U16 => intrinsics::fad_read_u16 as _,
-            ScalarType::U32 => intrinsics::fad_read_varint_u32 as _,
-            ScalarType::U64 => intrinsics::fad_read_u64 as _,
-            ScalarType::I8 => intrinsics::fad_read_i8 as _,
-            ScalarType::I16 => intrinsics::fad_read_i16 as _,
-            ScalarType::I32 => intrinsics::fad_read_i32 as _,
-            ScalarType::I64 => intrinsics::fad_read_i64 as _,
-            ScalarType::F32 => intrinsics::fad_read_f32 as _,
-            ScalarType::F64 => intrinsics::fad_read_f64 as _,
-            ScalarType::Bool => intrinsics::fad_read_bool as _,
+        let offset = offset as u32;
+        match scalar_type {
+            // Tier 1: fixed-size, fully inlined
+            ScalarType::U8 | ScalarType::I8 => ectx.emit_inline_read_byte(offset),
+            ScalarType::Bool => ectx.emit_inline_read_bool(offset),
+            ScalarType::F32 => ectx.emit_inline_read_f32(offset),
+            ScalarType::F64 => ectx.emit_inline_read_f64(offset),
+
+            // Tier 2: varint fast path + intrinsic slow path
+            ScalarType::U16 => ectx.emit_inline_varint_fast_path(
+                offset, 2, false, intrinsics::fad_read_u16 as _,
+            ),
+            ScalarType::U32 => ectx.emit_inline_varint_fast_path(
+                offset, 4, false, intrinsics::fad_read_varint_u32 as _,
+            ),
+            ScalarType::U64 => ectx.emit_inline_varint_fast_path(
+                offset, 8, false, intrinsics::fad_read_u64 as _,
+            ),
+            ScalarType::I16 => ectx.emit_inline_varint_fast_path(
+                offset, 2, true, intrinsics::fad_read_i16 as _,
+            ),
+            ScalarType::I32 => ectx.emit_inline_varint_fast_path(
+                offset, 4, true, intrinsics::fad_read_i32 as _,
+            ),
+            ScalarType::I64 => ectx.emit_inline_varint_fast_path(
+                offset, 8, true, intrinsics::fad_read_i64 as _,
+            ),
             _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
-        };
-        ectx.emit_call_intrinsic(fn_ptr, offset as u32);
+        }
     }
 
     fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize) {
