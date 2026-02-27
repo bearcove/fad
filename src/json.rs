@@ -5,7 +5,7 @@ use crate::arch::EmitCtx;
 use crate::context::ErrorCode;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
 use crate::json_intrinsics;
-use crate::solver::LoweredSolver;
+use crate::solver::{JsonValueType, LoweredSolver};
 
 // r[impl deser.json.struct]
 // r[impl deser.json.struct.unknown-keys]
@@ -865,8 +865,8 @@ impl FadJson {
     /// Emit the object-bucket solver for untagged enum disambiguation.
     ///
     /// Two-pass approach:
-    /// 1. Save cursor, scan all keys (without parsing values), AND per-key masks
-    ///    into the candidates bitmask until popcount == 1 or end of object.
+    /// 1. Save cursor, scan all keys, narrow candidates using key-presence,
+    ///    value-type, and nested-key evidence until popcount == 1 or end of object.
     /// 2. Restore cursor, dispatch to the resolved variant's body.
     fn emit_object_solver(
         &self,
@@ -878,7 +878,6 @@ impl FadJson {
     ) {
         let resolve_label = ectx.new_label();
         let error_no_match = ectx.new_label();
-        let error_ambiguous = ectx.new_label();
         let scan_loop = ectx.new_label();
 
         // ── Pass 1: Save cursor, scan keys, narrow candidates ────────
@@ -915,11 +914,10 @@ impl FadJson {
         // Consume ':'
         ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
 
-        // Skip the value (we don't need it during the scan pass)
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        // NOTE: skip_value is NOT called here — it's in each per-key handler,
+        // because some handlers need to peek at or sub-scan the value first.
 
-        // Linear key dispatch: for each known key, AND its mask into candidates.
-        // Unknown keys don't narrow (no AND).
+        // Linear key dispatch: identify which key this is.
         let after_key_dispatch = ectx.new_label();
         let key_labels: Vec<_> = solver.key_masks.iter().map(|_| ectx.new_label()).collect();
 
@@ -934,13 +932,40 @@ impl FadJson {
             );
             ectx.emit_cbnz_x0(key_labels[i]);
         }
-        // Unknown key — don't narrow, go to check
+        // Unknown key — skip value, don't narrow
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
         ectx.emit_branch(after_key_dispatch);
 
-        // Key match handlers: AND the mask
+        // Per-key handlers
         for (i, &(_name, mask)) in solver.key_masks.iter().enumerate() {
             ectx.bind_label(key_labels[i]);
+
+            // Always AND key-presence mask
             ectx.emit_and_imm64_on_stack(CANDIDATES_OFFSET, mask);
+
+            let has_vt = !solver.value_type_masks[i].is_empty();
+            let has_sub = solver.sub_solvers[i].is_some();
+
+            if !has_vt && !has_sub {
+                // Simple: just skip the value
+                ectx.emit_call_intrinsic_ctx_only(
+                    json_intrinsics::fad_json_skip_value as *const u8,
+                );
+            } else if has_sub {
+                // Sub-solver: peek, if '{' run sub-scan, else value-type + skip
+                self.emit_sub_scan_or_skip(
+                    ectx,
+                    &solver.value_type_masks[i],
+                    solver.sub_solvers[i].as_ref().unwrap(),
+                );
+            } else {
+                // Value-type evidence only: peek, AND type mask, skip
+                self.emit_value_type_peek(ectx, &solver.value_type_masks[i]);
+                ectx.emit_call_intrinsic_ctx_only(
+                    json_intrinsics::fad_json_skip_value as *const u8,
+                );
+            }
+
             ectx.emit_branch(after_key_dispatch);
         }
 
@@ -992,8 +1017,194 @@ impl FadJson {
         // ── Error paths ──────────────────────────────────────────────
         ectx.bind_label(error_no_match);
         ectx.emit_error(ErrorCode::UnknownVariant);
+    }
 
-        ectx.bind_label(error_ambiguous);
-        ectx.emit_error(ErrorCode::AmbiguousVariant);
+    /// Emit a value-type peek: read the value's first byte and AND the matching
+    /// type mask into CANDIDATES.
+    fn emit_value_type_peek(
+        &self,
+        ectx: &mut EmitCtx,
+        vt_masks: &[(JsonValueType, u64)],
+    ) {
+        let after_vt = ectx.new_label();
+
+        // Peek at the value's first byte
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+
+        Self::emit_value_type_dispatch(ectx, vt_masks, after_vt);
+
+        ectx.bind_label(after_vt);
+    }
+
+    /// Emit value-type dispatch using an already-loaded byte in RESULT_BYTE_OFFSET.
+    fn emit_value_type_dispatch(
+        ectx: &mut EmitCtx,
+        vt_masks: &[(JsonValueType, u64)],
+        after_label: DynamicLabel,
+    ) {
+        // For each value type, check peek byte(s) and branch to handler.
+        let mut handlers: Vec<(DynamicLabel, u64)> = Vec::new();
+
+        for &(vtype, mask) in vt_masks {
+            let handler = ectx.new_label();
+            match vtype {
+                JsonValueType::Object => {
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'{', handler);
+                }
+                JsonValueType::Array => {
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'[', handler);
+                }
+                JsonValueType::String => {
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'"', handler);
+                }
+                JsonValueType::Bool => {
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b't', handler);
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'f', handler);
+                }
+                JsonValueType::Null => {
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'n', handler);
+                }
+                JsonValueType::Number => {
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'-', handler);
+                    for d in b'0'..=b'9' {
+                        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, d, handler);
+                    }
+                }
+            }
+            handlers.push((handler, mask));
+        }
+
+        // No type matched — don't narrow (shouldn't happen for valid JSON)
+        ectx.emit_branch(after_label);
+
+        // Emit handlers: AND mask and branch to after
+        for (handler, mask) in handlers {
+            ectx.bind_label(handler);
+            ectx.emit_and_imm64_on_stack(CANDIDATES_OFFSET, mask);
+            ectx.emit_branch(after_label);
+        }
+    }
+
+    /// Emit code for a key with a sub-solver: peek at value, if '{' run sub-scan
+    /// of the nested object's keys, otherwise apply value-type mask + skip_value.
+    fn emit_sub_scan_or_skip(
+        &self,
+        ectx: &mut EmitCtx,
+        vt_masks: &[(JsonValueType, u64)],
+        sub_solver: &crate::solver::SubSolver,
+    ) {
+        let after_all = ectx.new_label();
+        let sub_scan_path = ectx.new_label();
+
+        // Peek at value to determine if it's an object
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'{', sub_scan_path);
+
+        // Not an object: apply value-type mask if available, then skip_value
+        if !vt_masks.is_empty() {
+            // Byte is already loaded in RESULT_BYTE_OFFSET — dispatch on it
+            // (filter out Object since we already handled that branch)
+            let non_object: Vec<_> = vt_masks
+                .iter()
+                .filter(|&&(vt, _)| vt != JsonValueType::Object)
+                .copied()
+                .collect();
+            if !non_object.is_empty() {
+                let after_vt = ectx.new_label();
+                Self::emit_value_type_dispatch(ectx, &non_object, after_vt);
+                ectx.bind_label(after_vt);
+            }
+        }
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        ectx.emit_branch(after_all);
+
+        // ── Object path: run sub-scan ────────────────────────────────
+        ectx.bind_label(sub_scan_path);
+
+        // Consume '{'
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_start as *const u8,
+        );
+
+        // Check for empty inner object
+        let sub_scan_loop = ectx.new_label();
+        let after_sub_scan = ectx.new_label();
+
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        let empty_inner = ectx.new_label();
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'}', empty_inner);
+
+        // Sub-scan loop
+        ectx.bind_label(sub_scan_loop);
+
+        // Read inner key
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+
+        // Inner key dispatch: for each inner key, AND outer mask
+        let after_inner_dispatch = ectx.new_label();
+        let inner_labels: Vec<_> = sub_solver
+            .inner_key_masks
+            .iter()
+            .map(|_| ectx.new_label())
+            .collect();
+
+        for (j, &(inner_name, _)) in sub_solver.inner_key_masks.iter().enumerate() {
+            let name_bytes = inner_name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(inner_labels[j]);
+        }
+        // Unknown inner key — don't narrow
+        ectx.emit_branch(after_inner_dispatch);
+
+        // Inner key handlers
+        for (j, &(_, outer_mask)) in sub_solver.inner_key_masks.iter().enumerate() {
+            ectx.bind_label(inner_labels[j]);
+            ectx.emit_and_imm64_on_stack(CANDIDATES_OFFSET, outer_mask);
+            ectx.emit_branch(after_inner_dispatch);
+        }
+
+        ectx.bind_label(after_inner_dispatch);
+
+        // Early exit if resolved
+        ectx.emit_popcount_eq1_branch(CANDIDATES_OFFSET, after_sub_scan);
+
+        // comma_or_end for inner object
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_comma_or_end_object as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_sub_scan);
+        ectx.emit_branch(sub_scan_loop);
+
+        // Empty inner object — consume '}'
+        ectx.bind_label(empty_inner);
+        ectx.emit_advance_cursor_by(1);
+
+        ectx.bind_label(after_sub_scan);
+        // Sub-scan consumed the entire nested object, no skip_value needed.
+        ectx.emit_branch(after_all);
+
+        ectx.bind_label(after_all);
     }
 }

@@ -1457,6 +1457,153 @@ mod tests {
         compile_deser(BadNum::SHAPE, &json::FadJson);
     }
 
+    // r[verify deser.json.enum.untagged.value-type]
+    #[test]
+    fn json_untagged_value_type_number_vs_string() {
+        #[derive(Facet, Debug, PartialEq)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum ValueTyped {
+            NumField { value: u32 },
+            StrField { value: String },
+        }
+
+        let deser = compile_deser(ValueTyped::SHAPE, &json::FadJson);
+
+        let input = br#"{"value": 42}"#;
+        let result: ValueTyped = deserialize(&deser, input).unwrap();
+        assert_eq!(result, ValueTyped::NumField { value: 42 });
+
+        let input = br#"{"value": "hello"}"#;
+        let result: ValueTyped = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            ValueTyped::StrField {
+                value: "hello".into()
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged.value-type]
+    #[test]
+    fn json_untagged_value_type_bool_vs_number() {
+        #[derive(Facet, Debug, PartialEq)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum BoolOrNum {
+            Flag { active: bool },
+            Count { active: u32 },
+        }
+
+        let deser = compile_deser(BoolOrNum::SHAPE, &json::FadJson);
+
+        let input = br#"{"active": true}"#;
+        let result: BoolOrNum = deserialize(&deser, input).unwrap();
+        assert_eq!(result, BoolOrNum::Flag { active: true });
+
+        let input = br#"{"active": 5}"#;
+        let result: BoolOrNum = deserialize(&deser, input).unwrap();
+        assert_eq!(result, BoolOrNum::Count { active: 5 });
+    }
+
+    // r[verify deser.json.enum.untagged.nested-key]
+    #[test]
+    fn json_untagged_nested_key_evidence() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct SuccessPayload {
+            items: u32,
+        }
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct ErrorPayload {
+            message: String,
+        }
+
+        #[derive(Facet, Debug, PartialEq)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum ApiResponse {
+            Success { status: u32, data: SuccessPayload },
+            Error { status: u32, data: ErrorPayload },
+        }
+
+        let deser = compile_deser(ApiResponse::SHAPE, &json::FadJson);
+
+        let input = br#"{"status": 200, "data": {"items": 5}}"#;
+        let result: ApiResponse = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            ApiResponse::Success {
+                status: 200,
+                data: SuccessPayload { items: 5 }
+            }
+        );
+
+        let input = br#"{"status": 500, "data": {"message": "fail"}}"#;
+        let result: ApiResponse = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            ApiResponse::Error {
+                status: 500,
+                data: ErrorPayload {
+                    message: "fail".into()
+                }
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged.nested-key]
+    #[test]
+    fn json_untagged_nested_key_order_independent() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct SuccessPayload {
+            items: u32,
+        }
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct ErrorPayload {
+            message: String,
+        }
+
+        #[derive(Facet, Debug, PartialEq)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum ApiResponse {
+            Success { status: u32, data: SuccessPayload },
+            Error { status: u32, data: ErrorPayload },
+        }
+
+        let deser = compile_deser(ApiResponse::SHAPE, &json::FadJson);
+
+        // data before status — key order shouldn't matter
+        let input = br#"{"data": {"items": 5}, "status": 200}"#;
+        let result: ApiResponse = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            ApiResponse::Success {
+                status: 200,
+                data: SuccessPayload { items: 5 }
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.untagged.ambiguity-error]
+    #[test]
+    #[should_panic(expected = "indistinguishable")]
+    fn json_untagged_truly_ambiguous_panics() {
+        #[derive(Facet)]
+        #[facet(untagged)]
+        #[repr(u8)]
+        enum TrulyAmbiguous {
+            #[allow(dead_code)]
+            A { x: u32 },
+            #[allow(dead_code)]
+            B { x: u32 },
+        }
+
+        compile_deser(TrulyAmbiguous::SHAPE, &json::FadJson);
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {

@@ -1087,6 +1087,29 @@ known field names of all struct variants in the bucket. Each key maps to a
 bitmask of variants that contain that field. ANDing narrows the candidate set.
 Typically resolves after 1-2 keys.
 
+r[deser.json.enum.untagged.value-type]
+When key presence alone cannot disambiguate (multiple candidates share identical
+key sets), the solver peeks at the first byte of each value to determine its
+JSON type (object, string, number, bool, null). If candidates have different
+field types at the same key (e.g. one has `value: u32`, another `value: String`),
+the peek byte narrows further. Per-key, per-type masks are built at JIT-compile
+time and AND'd into the candidate bitmask.
+
+r[deser.json.enum.untagged.nested-key]
+When multiple candidates have the same key mapping to different struct types,
+the solver runs a sub-scan of the nested object's keys. Instead of calling
+`skip_value`, it consumes the nested `{...}`, scanning inner keys and ANDing
+per-inner-key masks (which map back to outer candidates) into the candidate
+bitmask. This handles cases like `data: SuccessPayload{items}` vs
+`data: ErrorPayload{message}` where the top-level key `"data"` is shared but
+the nested structs have distinguishing fields.
+
+r[deser.json.enum.untagged.ambiguity-error]
+If key presence, value-type evidence, and nested-key evidence together cannot
+resolve the ambiguity, the compiler reports an error at JIT-compile time.
+Two variants with identical key sets, identical field types at every key, and
+identical nested structure are genuinely indistinguishable from the wire format.
+
 **String bucket** — if multiple variants expect strings (like `Cat` as a unit
 variant string and `Parrot(String)`), the compiler checks whether they can be
 distinguished. Unit variants have a fixed set of known string values; newtype
