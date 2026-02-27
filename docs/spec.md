@@ -127,6 +127,27 @@ r[no-ir.format-trait]
 Format crates implement a trait that the fad compiler calls to emit machine
 code for format-specific operations.
 
+r[no-ir.format-trait.methods]
+The Format trait provides the following methods:
+
+- `emit_struct_fields(ectx, fields, callback)` — emit the field iteration
+  logic for a struct. The format controls field ordering: positional formats
+  emit fields in declaration order, keyed formats emit a key-matching loop.
+- `emit_read_scalar(ectx, offset, scalar_type)` — emit code to read a
+  scalar value from the input and store it at `out + offset`.
+- `emit_read_string(ectx, offset)` — emit code to read a string from the
+  input, allocate it, and store it at `out + offset`.
+- `extra_stack_space(fields)` — return the number of bytes of additional
+  stack space the format needs per emitted function (e.g., JSON needs space
+  for key pointer/length and bitset; postcard needs zero).
+- `supports_inline_nested()` — return whether nested struct fields can be
+  flattened into the parent function instead of emitting separate functions.
+
+r[no-ir.format-trait.inline-nested]
+`supports_inline_nested()` controls how the compiler handles nested struct
+fields. When true, nested fields are flattened into the parent function with
+adjusted offsets. When false, each struct shape gets its own emitted function.
+
 r[no-ir.format-trait.stateless]
 Format trait implementations are stateless at JIT-compile time: they emit
 code but hold no mutable state between calls. Runtime state lives in the
@@ -363,14 +384,44 @@ They call each other exactly like hand-written Rust would.
 ## Nested structs
 
 r[deser.nested-struct]
-When a struct field's shape is itself a struct, the compiler recursively emits
-a deserializer for the inner struct. The inner struct is deserialized in-place
-at its offset within the outer struct.
+When a struct field's shape is itself a struct, the compiler emits code to
+deserialize the inner struct in-place at its offset within the outer struct.
+The strategy depends on the format's `supports_inline_nested()`.
 
 r[deser.nested-struct.offset]
-The emitted code passes `out + field_offset` as the `out` pointer when calling
-the inner struct's deserializer, so the inner struct is written directly into
-its slot in the outer struct's memory layout.
+The emitted code passes `out + field_offset` as the `out` pointer for the
+inner struct, so it is written directly into its slot in the outer struct's
+memory layout.
+
+r[deser.nested-struct.inline]
+When `supports_inline_nested()` returns true, nested struct fields are
+flattened into the parent function at JIT-compile time. The compiler collects
+the inner struct's fields, adds the parent field's byte offset to each, and
+emits them directly in the parent function body. No separate function or
+inter-function call is emitted.
+
+For example, `Person { name: String, age: u32, address: Address { city: String, zip: u32 } }`
+emits a single function:
+
+```
+read_string(offset=0)    ; name
+read_varint(offset=24)   ; age
+read_string(offset=32)   ; address.city  (address_offset + 0)
+read_varint(offset=56)   ; address.zip   (address_offset + 24)
+```
+
+r[deser.nested-struct.inline.recursive]
+Inline flattening recurses: if an inlined struct itself contains nested
+structs, those are also inlined, producing a single flat function for
+arbitrarily deep nesting.
+
+r[deser.nested-struct.call]
+When `supports_inline_nested()` returns false, each unique struct shape gets
+its own emitted function with a full prologue/epilogue. The parent calls the
+nested function via
+`r[callconv.inter-function]`. Shared inner types (e.g., `Address` used in
+both `home` and `work` fields) are compiled once and called from multiple
+sites, per `r[compiler.recursive.one-func-per-shape]`.
 
 r[ser.nested-struct]
 When serializing a struct field whose shape is itself a struct, the compiler
@@ -1147,32 +1198,59 @@ registers. Emitted functions can be called directly from Rust `extern "C"`
 code with no thunk.
 
 r[callconv.registers.aarch64]
-On aarch64: `x0` = `out`, `x1` = `ctx`, `x19` = cached `input_ptr`
-(callee-saved), `x20` = cached `input_end` (callee-saved).
+On aarch64, the emitted function's prologue moves arguments into callee-saved
+registers and loads the input cursor from `ctx`:
 
 | Register | Role |
 |----------|------|
-| `x0`     | `out` — pointer to output slot |
-| `x1`     | `ctx` — pointer to `DeserContext` |
-| `x19`    | cached `input_ptr` (callee-saved) |
-| `x20`    | cached `input_end` (callee-saved) |
+| `x0`     | `out` — C ABI argument (moved to `x21` in prologue) |
+| `x1`     | `ctx` — C ABI argument (moved to `x22` in prologue) |
+| `x19`    | cached `input_ptr` (callee-saved, loaded from `ctx`) |
+| `x20`    | cached `input_end` (callee-saved, loaded from `ctx`) |
+| `x21`    | cached `out` pointer (callee-saved) |
+| `x22`    | cached `ctx` pointer (callee-saved) |
 
 r[callconv.registers.x86-64]
-On x86_64: `rdi` = `out`, `rsi` = `ctx`, `r12` = cached `input_ptr`
-(callee-saved), `r13` = cached `input_end` (callee-saved).
+On x86_64, the emitted function's prologue moves arguments into callee-saved
+registers and loads the input cursor from `ctx`:
 
 | Register | Role |
 |----------|------|
-| `rdi`    | `out` — pointer to output slot |
-| `rsi`    | `ctx` — pointer to `DeserContext` |
-| `r12`    | cached `input_ptr` (callee-saved) |
-| `r13`    | cached `input_end` (callee-saved) |
+| `rdi`    | `out` — C ABI argument (moved to `r14` in prologue) |
+| `rsi`    | `ctx` — C ABI argument (moved to `r15` in prologue) |
+| `r12`    | cached `input_ptr` (callee-saved, loaded from `ctx`) |
+| `r13`    | cached `input_end` (callee-saved, loaded from `ctx`) |
+| `r14`    | cached `out` pointer (callee-saved) |
+| `r15`    | cached `ctx` pointer (callee-saved) |
 
 r[callconv.cursor-caching]
-The input cursor (`input_ptr`, `input_end`) is cached in callee-saved
-registers. On function entry, the emitted code loads them from `ctx`. Before
+The input cursor (`input_ptr`, `input_end`) and the `out`/`ctx` pointers are
+all cached in callee-saved registers for the lifetime of the function. On
+function entry, the emitted code loads them from arguments and `ctx`. Before
 calling an intrinsic, the emitted code stores `input_ptr` back to `ctx`.
-After the intrinsic returns, it reloads.
+After the intrinsic returns, it reloads `input_ptr` (the intrinsic may have
+advanced it).
+
+### Stack frame
+
+r[callconv.stack-frame]
+Each emitted function allocates a 16-byte-aligned stack frame. The base
+layout reserves 48 bytes:
+
+```
+[sp+0..16)   frame pointer + return address (aarch64: stp x29,x30)
+[sp+16..32)  callee-saved pair 1 (x19,x20 / r12,r13)
+[sp+32..48)  callee-saved pair 2 (x21,x22 / r14,r15)
+[sp+48..)    format-specific extra space
+```
+
+Total frame size = `(48 + extra_stack + 15) & !15`.
+
+r[callconv.stack-frame.extra]
+Format-specific extra stack space begins at offset 48 from the stack pointer.
+The size is determined by `Format::extra_stack_space()` at JIT-compile time.
+Postcard needs zero extra bytes; JSON needs space for key pointer/length
+and a required-field bitset.
 
 ### Calling intrinsics
 
