@@ -622,6 +622,95 @@ mod tests {
         );
     }
 
+    fn disassemble(deser: &CompiledDeser) -> String {
+        let code = deser.code();
+        let mut out = String::new();
+        use std::fmt::Write;
+        use yaxpeax_arch::{Decoder, U8Reader};
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            use yaxpeax_arm::armv8::a64::InstDecoder;
+
+            let decoder = InstDecoder::default();
+            let mut reader = U8Reader::new(code);
+            let mut offset = 0usize;
+            while offset + 4 <= code.len() {
+                let marker = if offset == deser.entry_offset() {
+                    " <entry>"
+                } else {
+                    ""
+                };
+                match decoder.decode(&mut reader) {
+                    Ok(inst) => {
+                        writeln!(&mut out, "{offset:4x}:{marker}  {inst}").unwrap();
+                    }
+                    Err(e) => {
+                        let word =
+                            u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
+                        writeln!(&mut out, "{offset:4x}:{marker}  <{e}> (0x{word:08x})").unwrap();
+                    }
+                }
+                offset += 4;
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            use yaxpeax_x86::amd64::InstDecoder;
+
+            let decoder = InstDecoder::default();
+            let mut reader = U8Reader::new(code);
+            let mut offset = 0usize;
+            while offset < code.len() {
+                let marker = if offset == deser.entry_offset() {
+                    " <entry>"
+                } else {
+                    ""
+                };
+                match decoder.decode(&mut reader) {
+                    Ok(inst) => {
+                        let len = inst.len().to_const() as usize;
+                        writeln!(&mut out, "{offset:4x}:{marker}  {inst}").unwrap();
+                        offset += len;
+                    }
+                    Err(_) => {
+                        writeln!(
+                            &mut out,
+                            "{offset:4x}:{marker}  <decode error> (0x{:02x})",
+                            code[offset]
+                        )
+                        .unwrap();
+                        offset += 1;
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn disasm_postcard_deep_nested() {
+        let deser = compile_deser(Outer::SHAPE, &postcard::FadPostcard);
+        let asm = disassemble(&deser);
+        eprintln!("=== postcard deep_nested (Outer) ===\n{asm}");
+    }
+
+    #[test]
+    fn disasm_postcard_flat() {
+        let deser = compile_deser(Friend::SHAPE, &postcard::FadPostcard);
+        let asm = disassemble(&deser);
+        eprintln!("=== postcard flat (Friend) ===\n{asm}");
+    }
+
+    #[test]
+    fn disasm_json_nested() {
+        let deser = compile_deser(Person::SHAPE, &json::FadJson);
+        let asm = disassemble(&deser);
+        eprintln!("=== json nested (Person) ===\n{asm}");
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {

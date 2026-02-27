@@ -8,13 +8,24 @@ use crate::format::{FieldEmitInfo, Format};
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
 pub struct CompiledDeser {
-    _buf: dynasmrt::ExecutableBuffer,
+    buf: dynasmrt::ExecutableBuffer,
+    entry: AssemblyOffset,
     func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext),
 }
 
 impl CompiledDeser {
     pub(crate) fn func(&self) -> unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) {
         self.func
+    }
+
+    /// The raw executable code buffer.
+    pub fn code(&self) -> &[u8] {
+        &self.buf
+    }
+
+    /// Byte offset of the entry point within the code buffer.
+    pub fn entry_offset(&self) -> usize {
+        self.entry.0
     }
 }
 
@@ -226,5 +237,9 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
         unsafe { core::mem::transmute(buf.ptr(entry_offset)) };
 
-    CompiledDeser { _buf: buf, func }
+    CompiledDeser {
+        buf,
+        entry: entry_offset,
+        func,
+    }
 }
