@@ -206,6 +206,74 @@ enum ConfigFacet {
     Redis { host: String, db: u32 },
 }
 
+// ── Shared types: enum (untagged, solver — value-type evidence) ─────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+#[repr(u8)]
+enum ValueTypedSerde {
+    NumField { value: u32 },
+    StrField { value: String },
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[facet(untagged)]
+#[repr(u8)]
+enum ValueTypedFacet {
+    NumField { value: u32 },
+    StrField { value: String },
+}
+
+// ── Shared types: enum (untagged, solver — nested key evidence) ─────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct SuccessPayloadSerde {
+    items: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct ErrorPayloadSerde {
+    message: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+#[repr(u8)]
+enum ApiResponseSerde {
+    Success {
+        status: u32,
+        data: SuccessPayloadSerde,
+    },
+    Error {
+        status: u32,
+        data: ErrorPayloadSerde,
+    },
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct SuccessPayloadFacet {
+    items: u32,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct ErrorPayloadFacet {
+    message: String,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[facet(untagged)]
+#[repr(u8)]
+enum ApiResponseFacet {
+    Success {
+        status: u32,
+        data: SuccessPayloadFacet,
+    },
+    Error {
+        status: u32,
+        data: ErrorPayloadFacet,
+    },
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_JSON: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
@@ -227,6 +295,11 @@ static INT_ENUM_JSON: &[u8] = br#"{"type": "Dog", "name": "Rex", "good_boy": tru
 static UNTAGGED_STRUCT_JSON: &[u8] = br#"{"name": "Rex", "good_boy": true}"#;
 
 static UNTAGGED_SOLVER_JSON: &[u8] = br#"{"host": "localhost", "port": 5432}"#;
+
+static UNTAGGED_VALUE_TYPE_JSON: &[u8] = br#"{"value": 42}"#;
+
+static UNTAGGED_NESTED_KEY_JSON: &[u8] =
+    br#"{"status": 200, "data": {"items": 5}}"#;
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
@@ -264,6 +337,14 @@ static FAD_UNTAGGED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_UNTAGGED_SOLVER: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(ConfigFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_UNTAGGED_VALUE_TYPE: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(ValueTypedFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_UNTAGGED_NESTED_KEY: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(ApiResponseFacet::SHAPE, &fad::json::FadJson)
 });
 
 static FACET_JSON_JIT_FLAT: LazyLock<
@@ -493,7 +574,7 @@ mod enum_untagged {
     }
 }
 
-// ── Benchmarks: enum (untagged, solver — two struct variants) ─────────────
+// ── Benchmarks: enum (untagged, solver — key presence only) ───────────────
 
 #[divan::bench_group(sample_size = 65536)]
 mod enum_untagged_solver {
@@ -514,6 +595,62 @@ mod enum_untagged_solver {
         bencher.bench(|| {
             black_box(
                 fad::deserialize::<ConfigFacet>(deser, black_box(UNTAGGED_SOLVER_JSON)).unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: enum (untagged, solver — value-type evidence) ─────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_untagged_value_type {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<ValueTypedSerde>(black_box(UNTAGGED_VALUE_TYPE_JSON))
+                    .unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_UNTAGGED_VALUE_TYPE;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<ValueTypedFacet>(deser, black_box(UNTAGGED_VALUE_TYPE_JSON))
+                    .unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: enum (untagged, solver — nested key evidence) ─────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_untagged_nested_key {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<ApiResponseSerde>(black_box(UNTAGGED_NESTED_KEY_JSON))
+                    .unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_UNTAGGED_NESTED_KEY;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<ApiResponseFacet>(deser, black_box(UNTAGGED_NESTED_KEY_JSON))
+                    .unwrap(),
             )
         });
     }
