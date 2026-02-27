@@ -7,15 +7,12 @@ serialization/deserialization code based on [facet] reflection.
 
 ## Context
 
-r[context.facet-based]
 fad uses facet's reflection system (proc macros exposing type information: layout,
 fields, vtables) as the basis for all serialization and deserialization.
 
-r[context.jit]
 fad emits machine code at runtime via dynasmrt, caching compiled code per
 (type, format, direction) combination.
 
-r[context.formats]
 fad targets at minimum JSON and postcard as format crates.
 
 ## API surface
@@ -29,6 +26,16 @@ All inputs are `&[u8]` representing a complete document (no streaming).
 
 r[api.output]
 The compiled deserializer writes into a caller-provided `MaybeUninit<T>`.
+
+r[api.cache]
+Compiled deserializers and serializers are cached per `(Shape, Format,
+Direction)` triple. Subsequent calls with the same triple return the cached
+compiled function.
+
+r[api.cache.thread-safety]
+The compilation cache is thread-safe: concurrent compilations for the same
+key produce a single compiled function; concurrent compilations for different
+keys proceed in parallel.
 
 ```rust
 use facet::Facet;
@@ -53,7 +60,6 @@ let doc = unsafe { doc.assume_init() };
 
 ## Shape intelligence vs format intelligence
 
-r[shape-format.combine]
 The compiler combines shape intelligence (field names, types, layouts, offsets) with
 format intelligence (wire encoding rules) to emit specialized machine code.
 
@@ -88,18 +94,15 @@ On the other hand, when it comes to
 have no 'name' (they're not maps, they're known lists of fields, conceptually):
 postcard is non-self-describing.
 
-r[shape-format.dynasmrt]
 fad generates machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
 
 ## No IR
 
-r[no-ir.direct-emission]
 fad has no intermediate representation. The compiler and format crates emit
 machine instructions directly via dynasmrt's `Assembler`. Format trait methods
 like `emit_field_loop` produce real `mov`, `cmp`, `b.eq`, `call` instructions
 for the target architecture.
 
-r[no-ir.rust-structs-are-ir]
 The Rust structs that drive compilation (shapes, field info, variant info,
 dispatch tables) serve as the intermediate representation. All "optimizations"
 (trie construction, untagged enum dispatch strategy) happen in Rust at
@@ -109,11 +112,9 @@ r[no-ir.two-backends]
 fad supports two backends — aarch64 and x86_64 — selected via
 `#[cfg(target_arch)]`. Format crates must emit for both.
 
-r[no-ir.no-interpreter]
 The emitted code is always native machine code. There is no interpreter
 fallback.
 
-r[no-ir.dynasmrt]
 dynasmrt handles label management, relocation, memory protection (RW→RX),
 and cache flushing on aarch64.
 
@@ -125,6 +126,99 @@ from emitted code via the platform's C calling convention.
 r[no-ir.format-trait]
 Format crates implement a trait that the fad compiler calls to emit machine
 code for format-specific operations.
+
+r[no-ir.format-trait.stateless]
+Format trait implementations are stateless at JIT-compile time: they emit
+code but hold no mutable state between calls. Runtime state lives in the
+`format_state` pointer inside `DeserContext`.
+
+## Scalar types
+
+r[scalar.types]
+fad supports deserialization and serialization of all Rust integer types
+(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128), floating-point types
+(f32, f64), bool, and char.
+
+r[scalar.overflow]
+When a wire value does not fit in the target type (e.g., 256 into u8, or a
+negative value into an unsigned type), the deserializer reports an overflow
+error with the byte offset.
+
+### JSON scalars
+
+r[deser.json.scalar.integer]
+JSON integers are parsed from decimal text representation and range-checked
+against the target integer type at runtime. Out-of-range values are an error.
+
+r[deser.json.scalar.float]
+JSON numbers with fractional or exponent parts are parsed into f32 or f64.
+
+r[deser.json.scalar.bool]
+JSON `true` and `false` literals are parsed into Rust `bool`. Any other
+value is an error.
+
+r[deser.json.scalar.char]
+JSON single-character strings are parsed into Rust `char`. Multi-character
+strings or non-string JSON values are an error.
+
+r[ser.json.scalar.integer]
+JSON integer serialization emits the decimal text representation.
+
+r[ser.json.scalar.float]
+JSON float serialization emits a decimal representation with enough precision
+to round-trip.
+
+r[ser.json.scalar.bool]
+JSON bool serialization emits `true` or `false`.
+
+### Postcard scalars
+
+r[deser.postcard.scalar.varint]
+Postcard encodes unsigned integers as LEB128 varints and signed integers as
+ZigZag-encoded varints. The deserializer decodes the varint and stores the
+result into the target type.
+
+r[deser.postcard.scalar.float]
+Postcard encodes f32 as 4 little-endian bytes and f64 as 8 little-endian
+bytes.
+
+r[deser.postcard.scalar.bool]
+Postcard encodes bool as a single byte: 0x00 = false, 0x01 = true. Any
+other value is an error.
+
+r[ser.postcard.scalar]
+Postcard scalar serialization emits the corresponding varint or
+fixed-width encoding.
+
+## Strings
+
+r[deser.json.string]
+JSON string deserialization reads a double-quoted string, processes escape
+sequences, and allocates the result as a Rust `String`.
+
+r[deser.json.string.escape]
+JSON string deserialization handles all JSON escape sequences: `\\`, `\/`,
+`\"`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\uXXXX` (including surrogate
+pairs for non-BMP characters).
+
+r[deser.json.string.utf8]
+Invalid UTF-8 in JSON strings is reported as an error.
+
+r[deser.postcard.string]
+Postcard string deserialization reads a varint length followed by that many
+UTF-8 bytes, and allocates a Rust `String`.
+
+r[deser.string.allocation]
+String deserialization allocates heap memory for the result. The allocation
+is owned by the output struct.
+
+r[ser.json.string]
+JSON string serialization emits a double-quoted string with special
+characters escaped according to the JSON specification.
+
+r[ser.postcard.string]
+Postcard string serialization emits a varint length followed by the UTF-8
+bytes.
 
 ## The compiler
 
@@ -266,6 +360,43 @@ The result for `Node` is two emitted functions:
 
 They call each other exactly like hand-written Rust would.
 
+## Nested structs
+
+r[deser.nested-struct]
+When a struct field's shape is itself a struct, the compiler recursively emits
+a deserializer for the inner struct. The inner struct is deserialized in-place
+at its offset within the outer struct.
+
+r[deser.nested-struct.offset]
+The emitted code passes `out + field_offset` as the `out` pointer when calling
+the inner struct's deserializer, so the inner struct is written directly into
+its slot in the outer struct's memory layout.
+
+r[ser.nested-struct]
+When serializing a struct field whose shape is itself a struct, the compiler
+recursively emits a serializer that reads from `inp + field_offset`.
+
+## Newtype wrappers and tuple structs
+
+r[deser.newtype]
+Newtype wrappers (single-field tuple structs like `struct Age(u32)`) are
+deserialized transparently: the emitted code deserializes the inner type
+directly into the newtype's memory, which has the same layout.
+
+r[deser.json.tuple-struct]
+JSON tuple structs with multiple fields are deserialized as JSON arrays.
+
+r[deser.postcard.tuple-struct]
+Postcard tuple structs are deserialized as their fields in declaration order,
+same as named structs but without field names.
+
+r[ser.newtype]
+Newtype wrappers are serialized transparently: the emitted code serializes
+the inner type directly.
+
+r[ser.json.tuple-struct]
+JSON tuple structs with multiple fields are serialized as JSON arrays.
+
 ## emit_field_loop for postcard
 
 r[deser.postcard.struct]
@@ -395,6 +526,23 @@ r[deser.json.struct.unknown-keys]
 Unknown keys in JSON objects are skipped via a `skip_value` call. They do not
 cause an error.
 
+### JSON parsing behaviors
+
+r[deser.json.whitespace]
+The JSON deserializer skips whitespace (space, tab, newline, carriage return)
+between all tokens.
+
+r[deser.json.null]
+The JSON literal `null` is recognized and used for Option fields (init_none)
+and as an acceptable value for unit enum variants.
+
+r[deser.json.depth-limit]
+The JSON deserializer enforces a maximum nesting depth to prevent stack
+overflow from deeply nested inputs.
+
+r[deser.json.duplicate-keys]
+If a JSON object contains duplicate keys, the last value wins.
+
 ## Flatten
 
 r[deser.flatten]
@@ -493,6 +641,18 @@ loop:
 For postcard, `collect_fields` similarly expands flattened fields in-order into
 the sequence, with adjusted offsets.
 
+r[deser.flatten.conflict]
+If a flattened struct's field names collide with the parent struct's field
+names, the compiler reports an error at JIT-compile time.
+
+r[deser.flatten.multiple]
+Multiple `#[facet(flatten)]` fields in the same struct are supported; all
+their fields are merged into the parent's key namespace.
+
+r[ser.flatten]
+For JSON, struct serialization with `#[facet(flatten)]` inlines the flattened
+struct's fields into the parent object — no nested object is emitted.
+
 ## Enums
 
 ```rust
@@ -541,6 +701,10 @@ r[deser.postcard.enum.dispatch]
 The emitted code reads the varint discriminant, branches to the right variant
 via a switch, then deserializes its fields in order. Unknown discriminant
 values are an error.
+
+r[deser.postcard.enum.unit]
+Unit enum variants are encoded as just the varint discriminant with no
+payload bytes.
 
 ```
 deser_Animal:
@@ -685,6 +849,14 @@ The data-before-type case requires buffering the raw value into the format
 arena. An alternative is to require type-first ordering and error otherwise —
 simpler emitted code, less compatible.
 
+r[deser.json.enum.adjacent.unit-variant]
+For adjacently tagged enums, unit variants may omit the `content` key or
+have it set to `null`.
+
+r[deser.json.enum.adjacent.tuple-variant]
+For adjacently tagged enums, tuple variants with a single field have the
+field as the `content` value directly.
+
 ### JSON enums — internally tagged
 
 r[deser.json.enum.internal]
@@ -698,6 +870,10 @@ tag field lives alongside the variant's own fields.
 r[deser.json.enum.internal.struct-only]
 Internally tagged encoding only works for struct variants and unit variants.
 Tuple variants are not supported with internal tagging.
+
+r[deser.json.enum.internal.unit-variant]
+For internally tagged enums, unit variants are objects with only the tag key:
+`{ "type": "Cat" }`.
 
 r[deser.json.enum.internal.buffering]
 Because the tag key may not appear first, the emitted code buffers key-value
@@ -1032,6 +1208,15 @@ from `ctx` in case the callee advanced it.
 
 ## Error handling
 
+r[error.types]
+The error type provides at minimum: the byte offset in the input where the
+error occurred and a human-readable description of what was expected vs. what
+was found.
+
+r[error.api]
+`DeserError` is the public error type returned by `CompiledDeser::call`. It
+is constructed from the `ErrorSlot` after the emitted function returns.
+
 r[error.slot]
 Errors are signaled through the context's error slot, not through return
 values. When an emitted function or intrinsic encounters an error, it writes
@@ -1069,7 +1254,6 @@ deser_Friend:
 
 ### Why not setjmp/longjmp?
 
-r[error.no-longjmp]
 fad does not use setjmp/longjmp. longjmp skips destructors, leaving
 partially-constructed values in an undroppable state. setjmp has its own
 cost, and it makes error messages (offset, context) harder to produce.
@@ -1079,7 +1263,6 @@ That's one cycle, almost always correctly predicted as not-taken.
 
 ### Why not two-register return?
 
-r[error.no-two-reg]
 fad does not use two-register return for errors. Emitted functions write into
 `out` by pointer — they don't "return" the deserialized value. Error
 propagation would still require a branch after every call, same cost as the
@@ -1168,6 +1351,45 @@ impl CompiledDeser {
 r[format-state.zero-cost]
 If a format needs no scratch space (e.g., postcard), `format_state` is null
 and no allocation cost is paid.
+
+## Sequences and arrays
+
+r[deser.json.vec]
+For JSON, `Vec<T>` is deserialized from a JSON array using the chunk-chain
+strategy described below.
+
+r[deser.postcard.vec]
+For postcard, `Vec<T>` is deserialized as a varint length followed by that
+many elements.
+
+r[deser.array]
+Fixed-size arrays `[T; N]` are deserialized by emitting N element
+deserializers in sequence. The emitted code verifies the input contains
+exactly N elements.
+
+r[deser.json.array]
+For JSON, `[T; N]` is deserialized from a JSON array. If the array has
+fewer or more than N elements, an error is reported.
+
+r[deser.postcard.array]
+For postcard, `[T; N]` is deserialized as N elements in sequence with no
+length prefix (the count is known from the type).
+
+r[ser.array]
+Fixed-size arrays `[T; N]` are serialized by emitting N element serializers
+in sequence.
+
+## Drop safety
+
+r[deser.drop-safety]
+If deserialization fails after partially constructing a value, all
+fully-initialized fields and sub-values must be dropped. The compiler emits
+drop glue calls for fields that were successfully written before the error.
+
+r[deser.drop-safety.bitset]
+The required-field bitset doubles as a "fields initialized" tracker for
+drop-safety purposes: on error, only fields whose bits are set need to be
+dropped.
 
 ## Sequence construction
 
@@ -1394,7 +1616,6 @@ deser_Result_u32_String:
 
 ### Why not just use the enum path?
 
-r[opaque.no-niche-inlining]
 fad does not attempt to inline niche optimization logic into emitted code.
 The vtable functions already handle every niche pattern correctly. The cost
 is one indirect call per Option/Result construction, negligible compared to
@@ -1634,6 +1855,18 @@ ser_Animal:
             ret
 ```
 
+r[ser.json.enum.adjacent]
+JSON adjacently tagged enum serialization emits
+`{ "tag_key": "VariantName", "content_key": payload }`.
+
+r[ser.json.enum.internal]
+JSON internally tagged enum serialization emits the tag field alongside the
+variant's own fields in a single object.
+
+r[ser.json.enum.untagged]
+JSON untagged enum serialization emits the variant's payload directly with
+no discriminant in the output.
+
 ### Option serialization
 
 r[ser.json.option]
@@ -1676,6 +1909,16 @@ For postcard, `Option<T>` emits `0x00` for None or `0x01` + value for Some:
     else:
         emit_byte(0x00)
 ```
+
+### Result serialization
+
+r[ser.json.result]
+JSON `Result<T, E>` serialization uses externally tagged encoding:
+`{ "Ok": value }` or `{ "Err": value }`.
+
+r[ser.postcard.result]
+Postcard `Result<T, E>` serialization emits a varint tag (0 = Ok, 1 = Err)
+followed by the payload.
 
 ### Sequence serialization
 
@@ -1733,6 +1976,14 @@ loop:
     emit_byte('}')
     ret
 ```
+
+### Set serialization
+
+r[ser.json.set]
+JSON sets are serialized as arrays.
+
+r[ser.postcard.set]
+Postcard sets are serialized as length-prefixed sequences of elements.
 
 ### Output buffer growth
 
