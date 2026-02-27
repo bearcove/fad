@@ -1,3 +1,5 @@
+use facet::ScalarType;
+
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format};
 use crate::json_intrinsics;
@@ -121,11 +123,25 @@ impl Format for FadJson {
         ectx.emit_check_bitset(BITSET_OFFSET, expected_mask);
     }
 
-    fn emit_read_u32(&self, ectx: &mut EmitCtx, offset: usize) {
-        ectx.emit_call_intrinsic(
-            json_intrinsics::fad_json_read_u32 as *const u8,
-            offset as u32,
-        );
+    // r[impl deser.json.scalar.integer]
+    // r[impl deser.json.scalar.float]
+    // r[impl deser.json.scalar.bool]
+    fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
+        let fn_ptr: *const u8 = match scalar_type {
+            ScalarType::U8 => json_intrinsics::fad_json_read_u8 as _,
+            ScalarType::U16 => json_intrinsics::fad_json_read_u16 as _,
+            ScalarType::U32 => json_intrinsics::fad_json_read_u32 as _,
+            ScalarType::U64 => json_intrinsics::fad_json_read_u64 as _,
+            ScalarType::I8 => json_intrinsics::fad_json_read_i8 as _,
+            ScalarType::I16 => json_intrinsics::fad_json_read_i16 as _,
+            ScalarType::I32 => json_intrinsics::fad_json_read_i32 as _,
+            ScalarType::I64 => json_intrinsics::fad_json_read_i64 as _,
+            ScalarType::F32 => json_intrinsics::fad_json_read_f32 as _,
+            ScalarType::F64 => json_intrinsics::fad_json_read_f64 as _,
+            ScalarType::Bool => json_intrinsics::fad_json_read_bool as _,
+            _ => panic!("unsupported JSON scalar: {:?}", scalar_type),
+        };
+        ectx.emit_call_intrinsic(fn_ptr, offset as u32);
     }
 
     fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize) {

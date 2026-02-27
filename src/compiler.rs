@@ -54,13 +54,13 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
 
 fn emit_field(ectx: &mut EmitCtx, format: &dyn Format, field: &FieldEmitInfo) {
     match field.shape.scalar_type() {
-        Some(ScalarType::U32) => {
-            format.emit_read_u32(ectx, field.offset);
-        }
         Some(ScalarType::String) => {
             format.emit_read_string(ectx, field.offset);
         }
-        _ => panic!(
+        Some(st) => {
+            format.emit_read_scalar(ectx, field.offset, st);
+        }
+        None => panic!(
             "unsupported field type: {} (scalar_type={:?})",
             field.shape.type_identifier,
             field.shape.scalar_type()

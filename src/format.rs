@@ -1,3 +1,5 @@
+use facet::ScalarType;
+
 use crate::arch::EmitCtx;
 
 // r[impl no-ir.format-trait]
@@ -36,8 +38,10 @@ pub trait Format {
         emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     );
 
-    /// Emit code to read a u32 scalar and write it to `out + offset`.
-    fn emit_read_u32(&self, ectx: &mut EmitCtx, offset: usize);
+    // r[impl scalar.types]
+
+    /// Emit code to read a scalar value and write it to `out + offset`.
+    fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType);
 
     /// Emit code to read a String and write it to `out + offset`.
     fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize);

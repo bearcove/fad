@@ -2,64 +2,212 @@ use crate::context::{DeserContext, ErrorCode};
 
 // r[impl callconv.intrinsics]
 
-/// Read a postcard varint-encoded u32 from the input, write to `*out`.
-///
-/// Postcard varints encode 7 bits per byte, MSB is continuation flag.
-/// Maximum 5 bytes for u32.
-///
-/// # Safety
-/// `ctx` and `out` must be valid pointers. `ctx.input_ptr`..`ctx.input_end` must be a valid range.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fad_read_varint_u32(ctx: *mut DeserContext, out: *mut u32) {
-    let ctx = unsafe { &mut *ctx };
-    let mut result: u32 = 0;
+// --- Varint helpers ---
+
+/// Read a LEB128-encoded unsigned varint, returning up to 64 bits.
+/// Sets error on malformed varint or EOF.
+unsafe fn read_varint_u64(ctx: &mut DeserContext) -> u64 {
+    let mut result: u64 = 0;
     let mut shift: u32 = 0;
 
     loop {
         if ctx.input_ptr >= ctx.input_end {
             ctx.error.code = ErrorCode::UnexpectedEof as u32;
-            return;
+            return 0;
         }
 
         let byte = unsafe { *ctx.input_ptr };
         ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
 
-        // Low 7 bits contribute to the value
-        let value_bits = (byte & 0x7F) as u32;
+        let value_bits = (byte & 0x7F) as u64;
 
-        // Check for overflow: if we're at shift >= 28 and the byte has high bits set
-        if shift >= 28 && (byte & 0x70) != 0 {
+        if shift >= 63 && (byte & 0x7E) != 0 {
             ctx.error.code = ErrorCode::InvalidVarint as u32;
-            return;
+            return 0;
         }
 
         result |= value_bits << shift;
         shift += 7;
 
-        // If MSB is 0, this is the last byte
         if byte & 0x80 == 0 {
-            break;
+            return result;
         }
 
-        if shift >= 35 {
+        if shift >= 70 {
             ctx.error.code = ErrorCode::InvalidVarint as u32;
-            return;
+            return 0;
         }
     }
-
-    unsafe { *out = result };
 }
 
+/// Decode a ZigZag-encoded i64 from a u64.
+fn zigzag_decode(encoded: u64) -> i64 {
+    ((encoded >> 1) as i64) ^ -((encoded & 1) as i64)
+}
+
+// --- Unsigned integer intrinsics ---
+
+// r[impl deser.postcard.scalar.bool]
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_bool(ctx: *mut DeserContext, out: *mut bool) {
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let byte = unsafe { *ctx.input_ptr };
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+    match byte {
+        0 => unsafe { *out = false },
+        1 => unsafe { *out = true },
+        _ => ctx.error.code = ErrorCode::InvalidBool as u32,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_u8(ctx: *mut DeserContext, out: *mut u8) {
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let byte = unsafe { *ctx.input_ptr };
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+    unsafe { *out = byte };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_u16(ctx: *mut DeserContext, out: *mut u16) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    if val > u16::MAX as u64 {
+        ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+        return;
+    }
+    unsafe { *out = val as u16 };
+}
+
+// r[impl deser.postcard.scalar.varint]
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_varint_u32(ctx: *mut DeserContext, out: *mut u32) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    if val > u32::MAX as u64 {
+        ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+        return;
+    }
+    unsafe { *out = val as u32 };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_u64(ctx: *mut DeserContext, out: *mut u64) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    unsafe { *out = val };
+}
+
+// --- Signed integer intrinsics ---
+// i8: raw byte in two's complement (per postcard spec)
+// i16/i32/i64: ZigZag + varint
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_i8(ctx: *mut DeserContext, out: *mut i8) {
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let byte = unsafe { *ctx.input_ptr };
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+    unsafe { *out = byte as i8 };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_i16(ctx: *mut DeserContext, out: *mut i16) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let decoded = zigzag_decode(val);
+    if decoded < i16::MIN as i64 || decoded > i16::MAX as i64 {
+        ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+        return;
+    }
+    unsafe { *out = decoded as i16 };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_i32(ctx: *mut DeserContext, out: *mut i32) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let decoded = zigzag_decode(val);
+    if decoded < i32::MIN as i64 || decoded > i32::MAX as i64 {
+        ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+        return;
+    }
+    unsafe { *out = decoded as i32 };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_i64(ctx: *mut DeserContext, out: *mut i64) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    unsafe { *out = zigzag_decode(val) };
+}
+
+// --- Float intrinsics (little-endian IEEE 754) ---
+
+// r[impl deser.postcard.scalar.float]
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_f32(ctx: *mut DeserContext, out: *mut f32) {
+    let ctx = unsafe { &mut *ctx };
+    let remaining = unsafe { ctx.input_end.offset_from(ctx.input_ptr) as usize };
+    if remaining < 4 {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let bytes: [u8; 4] = unsafe { core::ptr::read_unaligned(ctx.input_ptr as *const [u8; 4]) };
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(4) };
+    unsafe { *out = f32::from_le_bytes(bytes) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_f64(ctx: *mut DeserContext, out: *mut f64) {
+    let ctx = unsafe { &mut *ctx };
+    let remaining = unsafe { ctx.input_end.offset_from(ctx.input_ptr) as usize };
+    if remaining < 8 {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let bytes: [u8; 8] = unsafe { core::ptr::read_unaligned(ctx.input_ptr as *const [u8; 8]) };
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(8) };
+    unsafe { *out = f64::from_le_bytes(bytes) };
+}
+
+// --- String intrinsic ---
+
 /// Read a postcard length-prefixed string from the input, write to `*out`.
-///
-/// Format: varint length, then that many bytes of UTF-8.
-///
-/// # Safety
-/// `ctx` and `out` must be valid pointers. `out` must point to an initialized (possibly zeroed)
-/// `String` location. `ctx.input_ptr`..`ctx.input_end` must be a valid range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *mut String) {
-    // Read the length as a varint
     let mut len: u32 = 0;
     unsafe { fad_read_varint_u32(ctx, &mut len) };
 
@@ -70,14 +218,12 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
 
     let len = len as usize;
 
-    // Check we have enough bytes
     let remaining = unsafe { ctx.input_end.offset_from(ctx.input_ptr) as usize };
     if remaining < len {
         ctx.error.code = ErrorCode::UnexpectedEof as u32;
         return;
     }
 
-    // Validate UTF-8
     let bytes = unsafe { core::slice::from_raw_parts(ctx.input_ptr, len) };
     let s = match core::str::from_utf8(bytes) {
         Ok(s) => s,
@@ -87,9 +233,6 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
         }
     };
 
-    // Write the String to the output slot
     unsafe { out.write(s.to_owned()) };
-
-    // Advance cursor
     ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
 }

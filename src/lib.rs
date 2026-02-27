@@ -143,4 +143,249 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code, context::ErrorCode::MissingRequiredField);
     }
+
+    // --- Milestone 4: All scalar types ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct AllScalars {
+        a_bool: bool,
+        a_u8: u8,
+        a_u16: u16,
+        a_u32: u32,
+        a_u64: u64,
+        a_i8: i8,
+        a_i16: i16,
+        a_i32: i32,
+        a_i64: i64,
+        a_f32: f32,
+        a_f64: f64,
+        a_name: String,
+    }
+
+    // r[verify deser.postcard.scalar.varint]
+    // r[verify deser.postcard.scalar.float]
+    // r[verify deser.postcard.scalar.bool]
+    #[test]
+    fn postcard_all_scalars() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct AllScalarsSerde {
+            a_bool: bool,
+            a_u8: u8,
+            a_u16: u16,
+            a_u32: u32,
+            a_u64: u64,
+            a_i8: i8,
+            a_i16: i16,
+            a_i32: i32,
+            a_i64: i64,
+            a_f32: f32,
+            a_f64: f64,
+            a_name: String,
+        }
+
+        let source = AllScalarsSerde {
+            a_bool: true,
+            a_u8: 200,
+            a_u16: 1000,
+            a_u32: 70000,
+            a_u64: 1_000_000_000_000,
+            a_i8: -42,
+            a_i16: -1000,
+            a_i32: -70000,
+            a_i64: -1_000_000_000_000,
+            a_f32: 3.14,
+            a_f64: 2.718281828459045,
+            a_name: "hello".into(),
+        };
+
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(AllScalars::SHAPE, &postcard::FadPostcard);
+        let result: AllScalars = deserialize(&deser, &encoded).unwrap();
+
+        assert_eq!(result.a_bool, true);
+        assert_eq!(result.a_u8, 200);
+        assert_eq!(result.a_u16, 1000);
+        assert_eq!(result.a_u32, 70000);
+        assert_eq!(result.a_u64, 1_000_000_000_000);
+        assert_eq!(result.a_i8, -42);
+        assert_eq!(result.a_i16, -1000);
+        assert_eq!(result.a_i32, -70000);
+        assert_eq!(result.a_i64, -1_000_000_000_000);
+        assert_eq!(result.a_f32, 3.14);
+        assert_eq!(result.a_f64, 2.718281828459045);
+        assert_eq!(result.a_name, "hello");
+    }
+
+    // r[verify deser.json.scalar.integer]
+    // r[verify deser.json.scalar.float]
+    // r[verify deser.json.scalar.bool]
+    #[test]
+    fn json_all_scalars() {
+        let input = br#"{
+            "a_bool": true,
+            "a_u8": 200,
+            "a_u16": 1000,
+            "a_u32": 70000,
+            "a_u64": 1000000000000,
+            "a_i8": -42,
+            "a_i16": -1000,
+            "a_i32": -70000,
+            "a_i64": -1000000000000,
+            "a_f32": 3.14,
+            "a_f64": 2.718281828459045,
+            "a_name": "hello"
+        }"#;
+
+        let deser = compile_deser(AllScalars::SHAPE, &json::FadJson);
+        let result: AllScalars = deserialize(&deser, input).unwrap();
+
+        assert_eq!(result.a_bool, true);
+        assert_eq!(result.a_u8, 200);
+        assert_eq!(result.a_u16, 1000);
+        assert_eq!(result.a_u32, 70000);
+        assert_eq!(result.a_u64, 1_000_000_000_000);
+        assert_eq!(result.a_i8, -42);
+        assert_eq!(result.a_i16, -1000);
+        assert_eq!(result.a_i32, -70000);
+        assert_eq!(result.a_i64, -1_000_000_000_000);
+        assert_eq!(result.a_f32, 3.14);
+        assert_eq!(result.a_f64, 2.718281828459045);
+        assert_eq!(result.a_name, "hello");
+    }
+
+    // r[verify deser.json.scalar.bool]
+    #[test]
+    fn json_bool_true_false() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Bools {
+            a: bool,
+            b: bool,
+        }
+
+        let input = br#"{"a": true, "b": false}"#;
+        let deser = compile_deser(Bools::SHAPE, &json::FadJson);
+        let result: Bools = deserialize(&deser, input).unwrap();
+        assert_eq!(result.a, true);
+        assert_eq!(result.b, false);
+    }
+
+    // r[verify deser.postcard.scalar.bool]
+    #[test]
+    fn postcard_bool_true_false() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Bools {
+            a: bool,
+            b: bool,
+        }
+
+        // postcard: true=1, false=0
+        let input = [1u8, 0u8];
+        let deser = compile_deser(Bools::SHAPE, &postcard::FadPostcard);
+        let result: Bools = deserialize(&deser, &input).unwrap();
+        assert_eq!(result.a, true);
+        assert_eq!(result.b, false);
+    }
+
+    // r[verify deser.json.scalar.integer]
+    #[test]
+    fn json_boundary_values() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Boundaries {
+            u8_max: u8,
+            u16_max: u16,
+            i8_min: i8,
+            i8_max: i8,
+            i16_min: i16,
+            i32_min: i32,
+        }
+
+        let input = br#"{
+            "u8_max": 255,
+            "u16_max": 65535,
+            "i8_min": -128,
+            "i8_max": 127,
+            "i16_min": -32768,
+            "i32_min": -2147483648
+        }"#;
+
+        let deser = compile_deser(Boundaries::SHAPE, &json::FadJson);
+        let result: Boundaries = deserialize(&deser, input).unwrap();
+        assert_eq!(result.u8_max, 255);
+        assert_eq!(result.u16_max, 65535);
+        assert_eq!(result.i8_min, -128);
+        assert_eq!(result.i8_max, 127);
+        assert_eq!(result.i16_min, -32768);
+        assert_eq!(result.i32_min, -2147483648);
+    }
+
+    // r[verify deser.json.scalar.integer]
+    #[test]
+    fn json_u8_out_of_range() {
+        #[derive(Facet, Debug)]
+        struct Tiny {
+            val: u8,
+        }
+
+        let input = br#"{"val": 256}"#;
+        let deser = compile_deser(Tiny::SHAPE, &json::FadJson);
+        let result = deserialize::<Tiny>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::NumberOutOfRange);
+    }
+
+    // r[verify deser.json.scalar.float]
+    #[test]
+    fn json_float_scientific() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Floats {
+            a: f64,
+            b: f64,
+        }
+
+        let input = br#"{"a": 1.5e2, "b": -3.14}"#;
+        let deser = compile_deser(Floats::SHAPE, &json::FadJson);
+        let result: Floats = deserialize(&deser, input).unwrap();
+        assert_eq!(result.a, 150.0);
+        assert_eq!(result.b, -3.14);
+    }
+
+    // r[verify deser.postcard.scalar.varint]
+    #[test]
+    fn postcard_boundary_values() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct Boundaries {
+            u8_max: u8,
+            u64_big: u64,
+            i8_min: i8,
+            i64_min: i64,
+        }
+
+        #[derive(Serialize)]
+        struct BoundariesSerde {
+            u8_max: u8,
+            u64_big: u64,
+            i8_min: i8,
+            i64_min: i64,
+        }
+
+        let source = BoundariesSerde {
+            u8_max: 255,
+            u64_big: u64::MAX,
+            i8_min: i8::MIN,
+            i64_min: i64::MIN,
+        };
+
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Boundaries::SHAPE, &postcard::FadPostcard);
+        let result: Boundaries = deserialize(&deser, &encoded).unwrap();
+
+        assert_eq!(result.u8_max, 255);
+        assert_eq!(result.u64_big, u64::MAX);
+        assert_eq!(result.i8_min, i8::MIN);
+        assert_eq!(result.i64_min, i64::MIN);
+    }
 }

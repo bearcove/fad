@@ -41,6 +41,8 @@ pub enum ErrorCode {
     InvalidJsonNumber = 9,
     MissingRequiredField = 10,
     UnexpectedCharacter = 11,
+    NumberOutOfRange = 12,
+    InvalidBool = 13,
 }
 
 impl fmt::Display for ErrorCode {
@@ -58,6 +60,8 @@ impl fmt::Display for ErrorCode {
             ErrorCode::InvalidJsonNumber => write!(f, "invalid JSON number"),
             ErrorCode::MissingRequiredField => write!(f, "missing required field"),
             ErrorCode::UnexpectedCharacter => write!(f, "unexpected character"),
+            ErrorCode::NumberOutOfRange => write!(f, "number out of range for target type"),
+            ErrorCode::InvalidBool => write!(f, "invalid bool value"),
         }
     }
 }
