@@ -286,7 +286,7 @@ impl LoweredSolver {
 
         // For keys with value-type evidence, check if types can split remaining.
         // We check per-type: if any type mask isolates a single candidate, it resolves.
-        for (i, vt_masks) in self.value_type_masks.iter().enumerate() {
+        for vt_masks in &self.value_type_masks {
             if vt_masks.is_empty() {
                 continue;
             }
