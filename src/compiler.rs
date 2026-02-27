@@ -211,18 +211,20 @@ impl<'fmt> Compiler<'fmt> {
         let format = self.format;
         let ectx = &mut self.ectx;
 
-        format.emit_enum(ectx, &variants, &mut |ectx, variant| {
-            // Write the Rust discriminant to [out + 0].
+        // Detect tagging mode from shape metadata.
+        let tag_key = shape.get_tag_attr();
+        let content_key = shape.get_content_attr();
+
+        // Closure for the standard variant body: writes discriminant + deserializes fields.
+        let mut emit_standard_variant_body = |ectx: &mut EmitCtx, variant: &VariantEmitInfo| {
             ectx.emit_write_discriminant(variant.rust_discriminant, disc_size);
 
             if variant.kind == VariantKind::Unit {
-                return; // No fields to deserialize.
+                return;
             }
 
             let nested = &nested_labels[variant.index];
 
-            // For struct variants in keyed formats: use emit_struct_fields for the
-            // key-matching loop.
             if variant.kind == VariantKind::Struct && !inline {
                 format.emit_struct_fields(ectx, &variant.fields, &mut |ectx, field| {
                     emit_field(ectx, format, field, &variant.fields, nested);
@@ -230,31 +232,106 @@ impl<'fmt> Compiler<'fmt> {
                 return;
             }
 
-            // For positional formats (postcard) or tuple variants: emit fields in order.
             for field in &variant.fields {
                 emit_field(ectx, format, field, &variant.fields, nested);
             }
-        });
+        };
+
+        match (tag_key, content_key, shape.is_untagged()) {
+            // Externally tagged (default)
+            (None, None, false) => {
+                format.emit_enum(ectx, &variants, &mut emit_standard_variant_body);
+            }
+
+            // r[impl deser.json.enum.adjacent]
+            // Adjacently tagged: { "tag_key": "Variant", "content_key": value }
+            (Some(tk), Some(ck), false) => {
+                format.emit_enum_adjacent(
+                    ectx,
+                    &variants,
+                    tk,
+                    ck,
+                    &mut emit_standard_variant_body,
+                );
+            }
+
+            // r[impl deser.json.enum.internal]
+            // Internally tagged: { "tag_key": "Variant", ...variant_fields... }
+            (Some(tk), None, false) => {
+                format.emit_enum_internal(
+                    ectx,
+                    &variants,
+                    tk,
+                    &mut |ectx, variant| {
+                        ectx.emit_write_discriminant(variant.rust_discriminant, disc_size);
+                    },
+                    &mut |ectx, variant, field| {
+                        let nested = &nested_labels[variant.index];
+                        emit_field(ectx, format, field, &variant.fields, nested);
+                    },
+                );
+            }
+
+            // Untagged: not this milestone
+            (_, _, true) => {
+                panic!("untagged enums not yet supported by fad");
+            }
+
+            // Invalid: content without tag
+            (None, Some(_), _) => {
+                panic!("content attribute without tag attribute is invalid");
+            }
+        }
 
         self.ectx.end_func(error_exit);
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
     }
 }
 
+// r[impl deser.flatten]
+// r[impl deser.flatten.offset-accumulation]
+// r[impl deser.flatten.inline]
+
 fn collect_fields(shape: &'static Shape) -> Vec<FieldEmitInfo> {
-    match &shape.ty {
-        Type::User(UserType::Struct(st)) => st
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| FieldEmitInfo {
-                offset: f.offset,
-                shape: f.shape(),
-                name: f.name,
-                required_index: i,
-            })
-            .collect(),
+    let mut out = Vec::new();
+    collect_fields_recursive(shape, 0, &mut out);
+    check_field_name_collisions(&out);
+    out
+}
+
+fn collect_fields_recursive(
+    shape: &'static Shape,
+    base_offset: usize,
+    out: &mut Vec<FieldEmitInfo>,
+) {
+    let st = match &shape.ty {
+        Type::User(UserType::Struct(st)) => st,
         _ => panic!("unsupported shape: {}", shape.type_identifier),
+    };
+    for f in st.fields {
+        if f.is_flattened() {
+            collect_fields_recursive(f.shape(), base_offset + f.offset, out);
+        } else {
+            out.push(FieldEmitInfo {
+                offset: base_offset + f.offset,
+                shape: f.shape(),
+                name: f.effective_name(),
+                required_index: out.len(),
+            });
+        }
+    }
+}
+
+// r[impl deser.flatten.conflict]
+fn check_field_name_collisions(fields: &[FieldEmitInfo]) {
+    let mut seen = std::collections::HashSet::new();
+    for f in fields {
+        if !seen.insert(f.name) {
+            panic!(
+                "field name collision: \"{}\" (possibly from #[facet(flatten)])",
+                f.name
+            );
+        }
     }
 }
 
@@ -267,18 +344,19 @@ fn collect_variants(enum_type: &'static facet::EnumType) -> Vec<VariantEmitInfo>
         .enumerate()
         .map(|(i, v)| {
             let kind = VariantKind::from_struct_type(&v.data);
-            let fields: Vec<FieldEmitInfo> = v
-                .data
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(j, f)| FieldEmitInfo {
-                    offset: f.offset,
-                    shape: f.shape(),
-                    name: f.name,
-                    required_index: j,
-                })
-                .collect();
+            let mut fields = Vec::new();
+            for f in v.data.fields {
+                if f.is_flattened() {
+                    collect_fields_recursive(f.shape(), f.offset, &mut fields);
+                } else {
+                    fields.push(FieldEmitInfo {
+                        offset: f.offset,
+                        shape: f.shape(),
+                        name: f.effective_name(),
+                        required_index: fields.len(),
+                    });
+                }
+            }
             VariantEmitInfo {
                 index: i,
                 name: v.effective_name(),

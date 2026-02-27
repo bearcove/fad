@@ -281,4 +281,339 @@ impl Format for FadJson {
 
         ectx.bind_label(done_label);
     }
+
+    // r[impl deser.json.enum.adjacent]
+    // r[impl deser.json.enum.adjacent.key-order]
+    // r[impl deser.json.enum.adjacent.unit-variant]
+    // r[impl deser.json.enum.adjacent.tuple-variant]
+    fn emit_enum_adjacent(
+        &self,
+        ectx: &mut EmitCtx,
+        variants: &[VariantEmitInfo],
+        tag_key: &'static str,
+        content_key: &'static str,
+        emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        let done_label = ectx.new_label();
+
+        // expect '{'
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_start as *const u8,
+        );
+
+        // Read first key
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Verify it equals tag_key, error if not
+        let tag_key_bytes = tag_key.as_bytes();
+        ectx.emit_call_pure_4arg(
+            json_intrinsics::fad_json_key_equals as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+            tag_key_bytes.as_ptr(),
+            tag_key_bytes.len() as u32,
+        );
+        let tag_ok = ectx.new_label();
+        ectx.emit_cbnz_x0(tag_ok);
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_error_expected_tag_key as *const u8,
+        );
+        ectx.bind_label(tag_ok);
+
+        // expect ':'
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+
+        // Read variant name string
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Variant name dispatch (linear compare chain)
+        let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
+        for (i, variant) in variants.iter().enumerate() {
+            let name_bytes = variant.name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(variant_labels[i]);
+        }
+        ectx.emit_unknown_variant_error();
+
+        // Variant handlers
+        for (i, variant) in variants.iter().enumerate() {
+            ectx.bind_label(variant_labels[i]);
+            match variant.kind {
+                VariantKind::Unit => {
+                    // Unit variant: discriminant only, content key is optional.
+                    emit_variant_body(ectx, variant);
+
+                    // comma_or_end: '}' means done, ',' means content key follows
+                    ectx.emit_call_intrinsic_ctx_and_stack_out(
+                        json_intrinsics::fad_json_comma_or_end_object as *const u8,
+                        RESULT_BYTE_OFFSET,
+                    );
+                    let unit_done = ectx.new_label();
+                    ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, unit_done);
+
+                    // Had comma → read content_key, ':', skip value (typically null), expect '}'
+                    ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+                        json_intrinsics::fad_json_read_key as *const u8,
+                        KEY_PTR_OFFSET,
+                        KEY_LEN_OFFSET,
+                    );
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_expect_colon as *const u8,
+                    );
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_skip_value as *const u8,
+                    );
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_expect_object_end as *const u8,
+                    );
+
+                    ectx.bind_label(unit_done);
+                }
+                VariantKind::Struct | VariantKind::Tuple => {
+                    // Non-unit: expect comma, content key, colon, then variant body, then '}'
+                    // comma_or_end → expect ','
+                    ectx.emit_call_intrinsic_ctx_and_stack_out(
+                        json_intrinsics::fad_json_comma_or_end_object as *const u8,
+                        RESULT_BYTE_OFFSET,
+                    );
+                    // (If we got '}' here, the next read_key will error — that's fine)
+
+                    // Read content key
+                    ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+                        json_intrinsics::fad_json_read_key as *const u8,
+                        KEY_PTR_OFFSET,
+                        KEY_LEN_OFFSET,
+                    );
+
+                    // Verify it equals content_key (optional check for better errors)
+                    let ck_bytes = content_key.as_bytes();
+                    ectx.emit_call_pure_4arg(
+                        json_intrinsics::fad_json_key_equals as *const u8,
+                        KEY_PTR_OFFSET,
+                        KEY_LEN_OFFSET,
+                        ck_bytes.as_ptr(),
+                        ck_bytes.len() as u32,
+                    );
+                    // We don't error on mismatch for now — just proceed.
+                    // TODO: add ExpectedContentKey error for stricter validation.
+
+                    // expect ':'
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_expect_colon as *const u8,
+                    );
+
+                    // Dispatch variant body (writes discriminant + deserializes struct/tuple)
+                    emit_variant_body(ectx, variant);
+
+                    // expect '}'
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_expect_object_end as *const u8,
+                    );
+                }
+            }
+            ectx.emit_branch(done_label);
+        }
+
+        ectx.bind_label(done_label);
+    }
+
+    // r[impl deser.json.enum.internal]
+    // r[impl deser.json.enum.internal.struct-only]
+    // r[impl deser.json.enum.internal.unit-variant]
+    fn emit_enum_internal(
+        &self,
+        ectx: &mut EmitCtx,
+        variants: &[VariantEmitInfo],
+        tag_key: &'static str,
+        emit_variant_discriminant: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+        emit_variant_field: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo, &FieldEmitInfo),
+    ) {
+        let done_label = ectx.new_label();
+
+        // expect '{'
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_start as *const u8,
+        );
+
+        // Read first key
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Verify it equals tag_key
+        let tag_key_bytes = tag_key.as_bytes();
+        ectx.emit_call_pure_4arg(
+            json_intrinsics::fad_json_key_equals as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+            tag_key_bytes.as_ptr(),
+            tag_key_bytes.len() as u32,
+        );
+        let tag_ok = ectx.new_label();
+        ectx.emit_cbnz_x0(tag_ok);
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_error_expected_tag_key as *const u8,
+        );
+        ectx.bind_label(tag_ok);
+
+        // expect ':'
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+
+        // Read variant name string
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // Variant name dispatch
+        let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
+        for (i, variant) in variants.iter().enumerate() {
+            let name_bytes = variant.name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(variant_labels[i]);
+        }
+        ectx.emit_unknown_variant_error();
+
+        // Variant handlers
+        for (i, variant) in variants.iter().enumerate() {
+            ectx.bind_label(variant_labels[i]);
+            match variant.kind {
+                VariantKind::Unit => {
+                    emit_variant_discriminant(ectx, variant);
+                    // Expect closing '}' (possibly after comma + unknown keys)
+                    ectx.emit_call_intrinsic_ctx_only(
+                        json_intrinsics::fad_json_expect_object_end as *const u8,
+                    );
+                }
+                VariantKind::Struct => {
+                    emit_variant_discriminant(ectx, variant);
+                    // Remaining keys are the variant's fields — use continuation
+                    self.emit_struct_fields_continuation(
+                        ectx,
+                        &variant.fields,
+                        &mut |ectx, field| {
+                            emit_variant_field(ectx, variant, field);
+                        },
+                    );
+                }
+                VariantKind::Tuple => {
+                    // r[impl deser.json.enum.internal.struct-only]
+                    panic!(
+                        "internally tagged enums do not support tuple variants \
+                         (variant \"{}\")",
+                        variant.name
+                    );
+                }
+            }
+            ectx.emit_branch(done_label);
+        }
+
+        ectx.bind_label(done_label);
+    }
+
+    fn emit_struct_fields_continuation(
+        &self,
+        ectx: &mut EmitCtx,
+        fields: &[FieldEmitInfo],
+        emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
+    ) {
+        let after_loop = ectx.new_label();
+        let loop_top = ectx.new_label();
+
+        // Zero the bitset
+        ectx.emit_zero_stack_slot(BITSET_OFFSET);
+
+        // We're already inside the object, right after reading "tag_key": "VariantName".
+        // Next is either ',' (more fields) or '}' (no variant fields).
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_comma_or_end_object as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
+
+        // === loop_top ===
+        ectx.bind_label(loop_top);
+
+        // Read key
+        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
+            json_intrinsics::fad_json_read_key as *const u8,
+            KEY_PTR_OFFSET,
+            KEY_LEN_OFFSET,
+        );
+
+        // expect ':'
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+
+        // Linear key dispatch chain
+        let after_dispatch = ectx.new_label();
+        let match_labels: Vec<_> = fields.iter().map(|_| ectx.new_label()).collect();
+        let unknown_key = ectx.new_label();
+
+        for (i, field) in fields.iter().enumerate() {
+            let name_bytes = field.name.as_bytes();
+            ectx.emit_call_pure_4arg(
+                json_intrinsics::fad_json_key_equals as *const u8,
+                KEY_PTR_OFFSET,
+                KEY_LEN_OFFSET,
+                name_bytes.as_ptr(),
+                name_bytes.len() as u32,
+            );
+            ectx.emit_cbnz_x0(match_labels[i]);
+        }
+
+        ectx.emit_branch(unknown_key);
+
+        // Match handlers
+        for (i, field) in fields.iter().enumerate() {
+            ectx.bind_label(match_labels[i]);
+            emit_field(ectx, field);
+            ectx.emit_set_bit_on_stack(BITSET_OFFSET, field.required_index as u32);
+            ectx.emit_branch(after_dispatch);
+        }
+
+        // Unknown key handler
+        ectx.bind_label(unknown_key);
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+
+        // After dispatch
+        ectx.bind_label(after_dispatch);
+
+        // comma_or_end
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_comma_or_end_object as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
+        ectx.emit_branch(loop_top);
+
+        // === after_loop ===
+        ectx.bind_label(after_loop);
+
+        // Check that all required fields were seen
+        let expected_mask = (1u64 << fields.len()) - 1;
+        ectx.emit_check_bitset(BITSET_OFFSET, expected_mask);
+    }
 }

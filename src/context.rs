@@ -44,6 +44,7 @@ pub enum ErrorCode {
     NumberOutOfRange = 12,
     InvalidBool = 13,
     UnknownVariant = 14,
+    ExpectedTagKey = 15,
 }
 
 impl fmt::Display for ErrorCode {
@@ -64,6 +65,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::NumberOutOfRange => write!(f, "number out of range for target type"),
             ErrorCode::InvalidBool => write!(f, "invalid bool value"),
             ErrorCode::UnknownVariant => write!(f, "unknown enum variant"),
+            ErrorCode::ExpectedTagKey => write!(f, "expected tag key to appear first"),
         }
     }
 }

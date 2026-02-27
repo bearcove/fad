@@ -1004,6 +1004,279 @@ mod tests {
         eprintln!("=== serde postcard enum (AnimalSerde) @ {fn_ptr:?} ===\n{asm}");
     }
 
+    // --- Milestone 7: Flatten ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Metadata {
+        version: u32,
+        author: String,
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct Document {
+        title: String,
+        #[facet(flatten)]
+        meta: Metadata,
+    }
+
+    // r[verify deser.flatten]
+    // r[verify deser.flatten.offset-accumulation]
+    // r[verify deser.flatten.inline]
+    #[test]
+    fn json_flatten_basic() {
+        let input = br#"{"title": "Hello", "version": 1, "author": "Amos"}"#;
+        let deser = compile_deser(Document::SHAPE, &json::FadJson);
+        let result: Document = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Document {
+                title: "Hello".into(),
+                meta: Metadata {
+                    version: 1,
+                    author: "Amos".into(),
+                },
+            }
+        );
+    }
+
+    // r[verify deser.flatten]
+    #[test]
+    fn json_flatten_reversed_keys() {
+        let input = br#"{"author": "Amos", "version": 1, "title": "Hello"}"#;
+        let deser = compile_deser(Document::SHAPE, &json::FadJson);
+        let result: Document = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Document {
+                title: "Hello".into(),
+                meta: Metadata {
+                    version: 1,
+                    author: "Amos".into(),
+                },
+            }
+        );
+    }
+
+    // r[verify deser.flatten]
+    #[test]
+    fn postcard_flatten_basic() {
+        // Postcard flatten: fields appear in declaration order at parent level.
+        // Document = { title: String, meta: Metadata { version: u32, author: String } }
+        // With flatten, wire order is: title, version, author
+        //
+        // title="Hi" → varint(2)=0x02 + b"Hi"
+        // version=1 → varint 0x01
+        // author="A" → varint(1)=0x01 + b"A"
+        let input = [0x02, b'H', b'i', 0x01, 0x01, b'A'];
+        let deser = compile_deser(Document::SHAPE, &postcard::FadPostcard);
+        let result: Document = deserialize(&deser, &input).unwrap();
+        assert_eq!(
+            result,
+            Document {
+                title: "Hi".into(),
+                meta: Metadata {
+                    version: 1,
+                    author: "A".into(),
+                },
+            }
+        );
+    }
+
+    // r[verify deser.flatten.conflict]
+    #[test]
+    #[should_panic(expected = "field name collision")]
+    fn flatten_name_collision() {
+        #[derive(Facet)]
+        struct Collider {
+            x: u32,
+        }
+
+        #[derive(Facet)]
+        struct HasCollision {
+            x: u32,
+            #[facet(flatten)]
+            inner: Collider,
+        }
+
+        compile_deser(HasCollision::SHAPE, &json::FadJson);
+    }
+
+    // --- Milestone 7: Adjacently tagged enums ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(tag = "type", content = "data")]
+    #[repr(u8)]
+    enum AdjAnimal {
+        Cat,
+        Dog { name: String, good_boy: bool },
+        Parrot(String),
+    }
+
+    // r[verify deser.json.enum.adjacent]
+    // r[verify deser.json.enum.adjacent.unit-variant]
+    #[test]
+    fn json_adjacent_unit_no_content() {
+        let input = br#"{"type": "Cat"}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result: AdjAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, AdjAnimal::Cat);
+    }
+
+    // r[verify deser.json.enum.adjacent]
+    // r[verify deser.json.enum.adjacent.unit-variant]
+    #[test]
+    fn json_adjacent_unit_with_null_content() {
+        let input = br#"{"type": "Cat", "data": null}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result: AdjAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, AdjAnimal::Cat);
+    }
+
+    // r[verify deser.json.enum.adjacent]
+    #[test]
+    fn json_adjacent_struct_variant() {
+        let input = br#"{"type": "Dog", "data": {"name": "Rex", "good_boy": true}}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result: AdjAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            AdjAnimal::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.adjacent]
+    #[test]
+    fn json_adjacent_struct_variant_reversed_fields() {
+        let input = br#"{"type": "Dog", "data": {"good_boy": true, "name": "Rex"}}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result: AdjAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            AdjAnimal::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.adjacent]
+    // r[verify deser.json.enum.adjacent.tuple-variant]
+    #[test]
+    fn json_adjacent_tuple_variant() {
+        let input = br#"{"type": "Parrot", "data": "Polly"}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result: AdjAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, AdjAnimal::Parrot("Polly".into()));
+    }
+
+    // r[verify deser.json.enum.adjacent]
+    #[test]
+    fn json_adjacent_unknown_variant() {
+        let input = br#"{"type": "Snake", "data": null}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result = deserialize::<AdjAnimal>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
+    }
+
+    // r[verify deser.json.enum.adjacent.key-order]
+    #[test]
+    fn json_adjacent_wrong_first_key() {
+        let input = br#"{"data": null, "type": "Cat"}"#;
+        let deser = compile_deser(AdjAnimal::SHAPE, &json::FadJson);
+        let result = deserialize::<AdjAnimal>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::ExpectedTagKey);
+    }
+
+    // --- Milestone 7: Internally tagged enums ---
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(tag = "type")]
+    #[repr(u8)]
+    enum IntAnimal {
+        Cat,
+        Dog { name: String, good_boy: bool },
+    }
+
+    // r[verify deser.json.enum.internal]
+    // r[verify deser.json.enum.internal.unit-variant]
+    #[test]
+    fn json_internal_unit_variant() {
+        let input = br#"{"type": "Cat"}"#;
+        let deser = compile_deser(IntAnimal::SHAPE, &json::FadJson);
+        let result: IntAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(result, IntAnimal::Cat);
+    }
+
+    // r[verify deser.json.enum.internal]
+    #[test]
+    fn json_internal_struct_variant() {
+        let input = br#"{"type": "Dog", "name": "Rex", "good_boy": true}"#;
+        let deser = compile_deser(IntAnimal::SHAPE, &json::FadJson);
+        let result: IntAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            IntAnimal::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.internal]
+    #[test]
+    fn json_internal_struct_variant_reversed_fields() {
+        let input = br#"{"type": "Dog", "good_boy": true, "name": "Rex"}"#;
+        let deser = compile_deser(IntAnimal::SHAPE, &json::FadJson);
+        let result: IntAnimal = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            IntAnimal::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            }
+        );
+    }
+
+    // r[verify deser.json.enum.internal]
+    #[test]
+    fn json_internal_unknown_variant() {
+        let input = br#"{"type": "Snake"}"#;
+        let deser = compile_deser(IntAnimal::SHAPE, &json::FadJson);
+        let result = deserialize::<IntAnimal>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
+    }
+
+    // r[verify deser.json.enum.internal]
+    #[test]
+    fn json_internal_wrong_first_key() {
+        let input = br#"{"name": "Rex", "type": "Dog", "good_boy": true}"#;
+        let deser = compile_deser(IntAnimal::SHAPE, &json::FadJson);
+        let result = deserialize::<IntAnimal>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::ExpectedTagKey);
+    }
+
+    // r[verify deser.json.enum.internal.struct-only]
+    #[test]
+    #[should_panic(expected = "tuple variants")]
+    fn json_internal_tuple_variant_panics() {
+        #[derive(Facet)]
+        #[facet(tag = "type")]
+        #[repr(u8)]
+        enum BadInternal {
+            #[allow(dead_code)]
+            Wrapper(String),
+        }
+
+        compile_deser(BadInternal::SHAPE, &json::FadJson);
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {

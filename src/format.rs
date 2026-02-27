@@ -101,4 +101,54 @@ pub trait Format {
         variants: &[VariantEmitInfo],
         emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
     );
+
+    // r[impl deser.json.enum.adjacent]
+
+    /// Emit code to deserialize an adjacently tagged enum.
+    ///
+    /// Wire format: `{ "tag_key": "VariantName", "content_key": value }`
+    fn emit_enum_adjacent(
+        &self,
+        _ectx: &mut EmitCtx,
+        _variants: &[VariantEmitInfo],
+        _tag_key: &'static str,
+        _content_key: &'static str,
+        _emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+    ) {
+        panic!("adjacently tagged enums not supported by this format");
+    }
+
+    // r[impl deser.json.enum.internal]
+
+    /// Emit code to deserialize an internally tagged enum.
+    ///
+    /// Wire format: `{ "tag_key": "VariantName", ...variant_fields... }`
+    ///
+    /// Takes two callbacks:
+    /// - `emit_variant_discriminant`: writes the Rust discriminant
+    /// - `emit_variant_field`: deserializes one field (compiler resolves nested labels)
+    fn emit_enum_internal(
+        &self,
+        _ectx: &mut EmitCtx,
+        _variants: &[VariantEmitInfo],
+        _tag_key: &'static str,
+        _emit_variant_discriminant: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
+        _emit_variant_field: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo, &FieldEmitInfo),
+    ) {
+        panic!("internally tagged enums not supported by this format");
+    }
+
+    /// Emit code to deserialize struct fields from an already-open JSON object.
+    ///
+    /// Used by internally tagged enums: after reading the tag key-value pair,
+    /// the remaining fields are deserialized from the same object level.
+    /// Starts with comma_or_end (no `{`), ends without consuming `}`.
+    fn emit_struct_fields_continuation(
+        &self,
+        _ectx: &mut EmitCtx,
+        _fields: &[FieldEmitInfo],
+        _emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
+    ) {
+        panic!("struct fields continuation not supported by this format");
+    }
 }

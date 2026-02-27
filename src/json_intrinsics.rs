@@ -711,3 +711,11 @@ pub unsafe extern "C" fn fad_json_read_string_value(ctx: *mut DeserContext, out:
     }
     ctx.error.code = ErrorCode::UnterminatedString as u32;
 }
+
+/// Set ExpectedTagKey error. Used when the first key in an adjacently/internally
+/// tagged enum is not the expected tag key.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_error_expected_tag_key(ctx: *mut DeserContext) {
+    let ctx = unsafe { &mut *ctx };
+    ctx.error.code = ErrorCode::ExpectedTagKey as u32;
+}
