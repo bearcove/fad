@@ -622,8 +622,9 @@ mod tests {
         );
     }
 
-    fn disassemble(deser: &CompiledDeser) -> String {
-        let code = deser.code();
+    /// Disassemble a byte slice, marking one offset with a label.
+    /// Stops after the second `ret` (to capture both success and error paths).
+    fn disasm_bytes(code: &[u8], base_addr: u64, marker_offset: Option<usize>) -> String {
         let mut out = String::new();
         use std::fmt::Write;
         use yaxpeax_arch::{Decoder, U8Reader};
@@ -635,20 +636,29 @@ mod tests {
             let decoder = InstDecoder::default();
             let mut reader = U8Reader::new(code);
             let mut offset = 0usize;
+            let mut ret_count = 0u32;
             while offset + 4 <= code.len() {
-                let marker = if offset == deser.entry_offset() {
-                    " <entry>"
-                } else {
-                    ""
+                let marker = match marker_offset {
+                    Some(m) if m == offset => " <entry>",
+                    _ => "",
                 };
                 match decoder.decode(&mut reader) {
                     Ok(inst) => {
-                        writeln!(&mut out, "{offset:4x}:{marker}  {inst}").unwrap();
+                        let addr = base_addr + offset as u64;
+                        writeln!(&mut out, "{addr:12x}:{marker}  {inst}").unwrap();
+                        let text = format!("{inst}");
+                        if text.trim() == "ret" {
+                            ret_count += 1;
+                            if ret_count >= 2 {
+                                break;
+                            }
+                        }
                     }
                     Err(e) => {
                         let word =
                             u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
-                        writeln!(&mut out, "{offset:4x}:{marker}  <{e}> (0x{word:08x})").unwrap();
+                        let addr = base_addr + offset as u64;
+                        writeln!(&mut out, "{addr:12x}:{marker}  <{e}> (0x{word:08x})").unwrap();
                     }
                 }
                 offset += 4;
@@ -662,22 +672,31 @@ mod tests {
             let decoder = InstDecoder::default();
             let mut reader = U8Reader::new(code);
             let mut offset = 0usize;
+            let mut ret_count = 0u32;
             while offset < code.len() {
-                let marker = if offset == deser.entry_offset() {
-                    " <entry>"
-                } else {
-                    ""
+                let marker = match marker_offset {
+                    Some(m) if m == offset => " <entry>",
+                    _ => "",
                 };
                 match decoder.decode(&mut reader) {
                     Ok(inst) => {
                         let len = inst.len().to_const() as usize;
-                        writeln!(&mut out, "{offset:4x}:{marker}  {inst}").unwrap();
+                        let addr = base_addr + offset as u64;
+                        writeln!(&mut out, "{addr:12x}:{marker}  {inst}").unwrap();
+                        let text = format!("{inst}");
+                        if text.trim() == "ret" {
+                            ret_count += 1;
+                            if ret_count >= 2 {
+                                break;
+                            }
+                        }
                         offset += len;
                     }
                     Err(_) => {
+                        let addr = base_addr + offset as u64;
                         writeln!(
                             &mut out,
-                            "{offset:4x}:{marker}  <decode error> (0x{:02x})",
+                            "{addr:12x}:{marker}  <decode error> (0x{:02x})",
                             code[offset]
                         )
                         .unwrap();
@@ -690,25 +709,62 @@ mod tests {
         out
     }
 
+    /// Disassemble a CompiledDeser's JIT code buffer.
+    fn disasm_jit(deser: &CompiledDeser) -> String {
+        let code = deser.code();
+        let base = code.as_ptr() as u64;
+        disasm_bytes(code, base, Some(deser.entry_offset()))
+    }
+
+    /// Disassemble a native function starting at `fn_ptr` for up to `max_bytes`.
+    /// Stops at the second `ret` instruction or when `max_bytes` is exhausted.
+    ///
+    /// # Safety
+    /// `fn_ptr` must point to valid executable code. `max_bytes` must not extend
+    /// past the end of the mapped region.
+    unsafe fn disasm_native(fn_ptr: *const u8, max_bytes: usize) -> String {
+        let code = unsafe { std::slice::from_raw_parts(fn_ptr, max_bytes) };
+        disasm_bytes(code, fn_ptr as u64, Some(0))
+    }
+
     #[test]
     fn disasm_postcard_deep_nested() {
         let deser = compile_deser(Outer::SHAPE, &postcard::FadPostcard);
-        let asm = disassemble(&deser);
-        eprintln!("=== postcard deep_nested (Outer) ===\n{asm}");
+        eprintln!("=== fad postcard deep_nested (Outer) ===\n{}", disasm_jit(&deser));
     }
 
     #[test]
     fn disasm_postcard_flat() {
         let deser = compile_deser(Friend::SHAPE, &postcard::FadPostcard);
-        let asm = disassemble(&deser);
-        eprintln!("=== postcard flat (Friend) ===\n{asm}");
+        eprintln!("=== fad postcard flat (Friend) ===\n{}", disasm_jit(&deser));
     }
 
     #[test]
     fn disasm_json_nested() {
         let deser = compile_deser(Person::SHAPE, &json::FadJson);
-        let asm = disassemble(&deser);
-        eprintln!("=== json nested (Person) ===\n{asm}");
+        eprintln!("=== fad json nested (Person) ===\n{}", disasm_jit(&deser));
+    }
+
+    #[test]
+    fn disasm_serde_postcard_deep_nested() {
+        // Force monomorphization of the serde path so we can disassemble it
+        fn serde_deser(data: &[u8]) -> OuterSerde {
+            ::postcard::from_bytes(data).unwrap()
+        }
+
+        #[derive(serde::Deserialize, Debug)]
+        #[allow(dead_code)]
+        struct InnerSerde { x: u32 }
+        #[derive(serde::Deserialize, Debug)]
+        #[allow(dead_code)]
+        struct MiddleSerde { inner: InnerSerde, y: u32 }
+        #[derive(serde::Deserialize, Debug)]
+        #[allow(dead_code)]
+        struct OuterSerde { middle: MiddleSerde, z: u32 }
+
+        let fn_ptr = serde_deser as *const u8;
+        let asm = unsafe { disasm_native(fn_ptr, 2048) };
+        eprintln!("=== serde postcard deep_nested (OuterSerde) @ {fn_ptr:?} ===\n{asm}");
     }
 
     // r[verify compiler.recursive.one-func-per-shape]
