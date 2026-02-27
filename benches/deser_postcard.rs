@@ -84,6 +84,24 @@ struct OuterFacet {
     z: u32,
 }
 
+// ── Shared types: flatten ─────────────────────────────────────────────────
+// serde+postcard can't do flatten: #[serde(flatten)] calls deserialize_any,
+// which postcard returns WontImplement from (no self-describing type info).
+// fad handles this fine since it knows the schema at JIT compile time.
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct MetadataFacet {
+    version: u32,
+    author: String,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct DocumentFacet {
+    title: String,
+    #[facet(flatten)]
+    meta: MetadataFacet,
+}
+
 // ── Shared types: enum ────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
@@ -135,6 +153,24 @@ static DEEP_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
     .unwrap()
 });
 
+// Equivalent non-flattened struct for producing the test bytes
+// (same wire format: fields inlined in declaration order).
+#[derive(serde::Serialize)]
+struct DocumentSerdeFlat {
+    title: String,
+    version: u32,
+    author: String,
+}
+
+static FLATTEN_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    postcard::to_allocvec(&DocumentSerdeFlat {
+        title: "Hello".into(),
+        version: 1,
+        author: "Amos".into(),
+    })
+    .unwrap()
+});
+
 static ENUM_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
     postcard::to_allocvec(&AnimalSerde::Dog {
         name: "Rex".into(),
@@ -155,6 +191,10 @@ static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(OuterFacet::SHAPE, &fad::postcard::FadPostcard)
+});
+
+static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(DocumentFacet::SHAPE, &fad::postcard::FadPostcard)
 });
 
 static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
@@ -273,6 +313,23 @@ mod deep_nested_struct {
         let deser = &*FAD_DEEP;
         bencher.bench(|| {
             black_box(fad::deserialize::<OuterFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: flatten ───────────────────────────────────────────────────
+
+mod flatten {
+    use super::*;
+
+    // No postcard_serde bench: serde+postcard returns WontImplement for flatten.
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*FLATTEN_ENCODED;
+        let deser = &*FAD_FLATTEN;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<DocumentFacet>(deser, black_box(data)).unwrap())
         });
     }
 }

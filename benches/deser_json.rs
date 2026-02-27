@@ -84,7 +84,7 @@ struct OuterFacet {
     z: u32,
 }
 
-// ── Shared types: enum ────────────────────────────────────────────────────
+// ── Shared types: enum (externally tagged) ──────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
 #[repr(u8)]
@@ -102,6 +102,72 @@ enum AnimalFacet {
     Parrot(String),
 }
 
+// ── Shared types: flatten ─────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct MetadataSerde {
+    version: u32,
+    author: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct DocumentSerde {
+    title: String,
+    #[serde(flatten)]
+    meta: MetadataSerde,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct MetadataFacet {
+    version: u32,
+    author: String,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct DocumentFacet {
+    title: String,
+    #[facet(flatten)]
+    meta: MetadataFacet,
+}
+
+// ── Shared types: enum (adjacently tagged) ────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(tag = "type", content = "data")]
+#[repr(u8)]
+enum AdjAnimalSerde {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[facet(tag = "type", content = "data")]
+#[repr(u8)]
+enum AdjAnimalFacet {
+    Cat,
+    Dog { name: String, good_boy: bool },
+    Parrot(String),
+}
+
+// ── Shared types: enum (internally tagged) ────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(tag = "type")]
+#[repr(u8)]
+enum IntAnimalSerde {
+    Cat,
+    Dog { name: String, good_boy: bool },
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+#[facet(tag = "type")]
+#[repr(u8)]
+enum IntAnimalFacet {
+    Cat,
+    Dog { name: String, good_boy: bool },
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_JSON: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
@@ -112,6 +178,13 @@ static NESTED_JSON: &[u8] =
 static DEEP_JSON: &[u8] = br#"{"middle": {"inner": {"x": 1}, "y": 2}, "z": 3}"#;
 
 static ENUM_JSON: &[u8] = br#"{"Dog": {"name": "Rex", "good_boy": true}}"#;
+
+static FLATTEN_JSON: &[u8] = br#"{"title": "Hello", "version": 1, "author": "Amos"}"#;
+
+static ADJ_ENUM_JSON: &[u8] =
+    br#"{"type": "Dog", "data": {"name": "Rex", "good_boy": true}}"#;
+
+static INT_ENUM_JSON: &[u8] = br#"{"type": "Dog", "name": "Rex", "good_boy": true}"#;
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
@@ -129,6 +202,18 @@ static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(AnimalFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(DocumentFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_ADJ_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(AdjAnimalFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_INT_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(IntAnimalFacet::SHAPE, &fad::json::FadJson)
 });
 
 static FACET_JSON_JIT_FLAT: LazyLock<
@@ -235,10 +320,10 @@ mod deep_nested_struct {
     }
 }
 
-// ── Benchmarks: enum (struct variant) ─────────────────────────────────────
+// ── Benchmarks: enum (externally tagged, struct variant) ──────────────────
 
 #[divan::bench_group(sample_size = 65536)]
-mod enum_struct_variant {
+mod enum_external {
     use super::*;
 
     #[divan::bench]
@@ -253,6 +338,81 @@ mod enum_struct_variant {
         let deser = &*FAD_ENUM;
         bencher.bench(|| {
             black_box(fad::deserialize::<AnimalFacet>(deser, black_box(ENUM_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: flatten ───────────────────────────────────────────────────
+
+mod flatten {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<DocumentSerde>(black_box(FLATTEN_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_FLATTEN;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<DocumentFacet>(deser, black_box(FLATTEN_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: enum (adjacently tagged, struct variant) ──────────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_adjacent {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<AdjAnimalSerde>(black_box(ADJ_ENUM_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_ADJ_ENUM;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<AdjAnimalFacet>(deser, black_box(ADJ_ENUM_JSON)).unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: enum (internally tagged, struct variant) ──────────────────
+
+#[divan::bench_group(sample_size = 65536)]
+mod enum_internal {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<IntAnimalSerde>(black_box(INT_ENUM_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_INT_ENUM;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<IntAnimalFacet>(deser, black_box(INT_ENUM_JSON)).unwrap(),
+            )
         });
     }
 }
