@@ -1,10 +1,12 @@
 use dynasmrt::DynamicLabel;
 use facet::{ScalarType, Type, UserType};
 
-use crate::arch::EmitCtx;
+use crate::arch::{EmitCtx, BASE_FRAME};
 use crate::context::ErrorCode;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
+use crate::intrinsics;
 use crate::json_intrinsics;
+use crate::malum::VecOffsets;
 use crate::solver::{JsonValueType, LoweredSolver};
 
 // r[impl deser.json.struct]
@@ -178,6 +180,145 @@ impl Format for FadJson {
             crate::intrinsics::fad_option_init_none as *const u8,
             init_none_fn,
             offset as u32,
+        );
+
+        ectx.bind_label(done_label);
+    }
+
+    fn vec_extra_stack_space(&self) -> u32 {
+        // JSON Vec needs: result_byte + saved_out + buf + len + cap = 40 bytes
+        // plus the base JSON slots (bitset, key_ptr, key_len) = 24 bytes
+        // Total: 64 bytes (offsets 48..112 from sp)
+        64
+    }
+
+    // r[impl deser.json.seq]
+    // r[impl seq.malum.json]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_vec(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        elem_shape: &'static facet::Shape,
+        _elem_label: Option<DynamicLabel>,
+        vec_offsets: &VecOffsets,
+        _option_scratch_offset: u32,
+        emit_elem: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        let elem_layout = elem_shape
+            .layout
+            .sized_layout()
+            .expect("Vec element must be Sized");
+        let elem_size = elem_layout.size() as u32;
+        let elem_align = elem_layout.align() as u32;
+
+        // Stack slot offsets (relative to sp)
+        let saved_out_slot = BASE_FRAME + 32;  // sp+80
+        let buf_slot = BASE_FRAME + 40;        // sp+88
+        let len_slot = BASE_FRAME + 48;        // sp+96
+        let cap_slot = BASE_FRAME + 56;        // sp+104
+
+        let empty_label = ectx.new_label();
+        let done_label = ectx.new_label();
+        let loop_label = ectx.new_label();
+        let grow_label = ectx.new_label();
+        let after_grow = ectx.new_label();
+        let write_vec_label = ectx.new_label();
+        let error_cleanup = ectx.new_label();
+
+        // Expect '['
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_array_start as *const u8,
+        );
+
+        // Peek: check for empty array ']'
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b']', empty_label);
+
+        // Initial allocation: cap=4
+        let initial_cap: u32 = 4;
+        ectx.emit_call_json_vec_initial_alloc(
+            intrinsics::fad_vec_alloc as *const u8,
+            initial_cap,
+            elem_size,
+            elem_align,
+        );
+
+        // Save loop state: saved_out, buf (rax/x0), len=0, cap=initial_cap
+        ectx.emit_json_vec_loop_init(saved_out_slot, buf_slot, len_slot, cap_slot, initial_cap);
+
+        // === Loop ===
+        ectx.bind_label(loop_label);
+
+        // Check if len == cap → need to grow
+        ectx.emit_cmp_stack_slots_branch_eq(len_slot, cap_slot, grow_label);
+        ectx.bind_label(after_grow);
+
+        // Compute slot = buf + len * elem_size, redirect out
+        ectx.emit_vec_loop_slot(buf_slot, len_slot, elem_size);
+
+        // Deserialize one element
+        emit_elem(ectx);
+
+        // Check error from element deserialization
+        ectx.emit_check_error_branch(error_cleanup);
+
+        // len += 1
+        ectx.emit_inc_stack_slot(len_slot);
+
+        // comma_or_end_array
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_comma_or_end_array as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        // If result == 1 (']'), we're done
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, write_vec_label);
+        // Otherwise comma → loop back
+        ectx.emit_branch(loop_label);
+
+        // === Growth path ===
+        ectx.bind_label(grow_label);
+        ectx.emit_call_vec_grow(
+            intrinsics::fad_vec_grow as *const u8,
+            buf_slot,
+            len_slot,
+            cap_slot,
+            elem_size,
+            elem_align,
+        );
+        ectx.emit_branch(after_grow);
+
+        // === Write Vec to output ===
+        ectx.bind_label(write_vec_label);
+        ectx.emit_vec_store(
+            offset as u32,
+            saved_out_slot,
+            buf_slot,
+            len_slot,
+            cap_slot,
+            vec_offsets,
+        );
+        ectx.emit_branch(done_label);
+
+        // === Empty path ===
+        ectx.bind_label(empty_label);
+        // Consume the ']'
+        ectx.emit_advance_cursor_by(1);
+        ectx.emit_vec_store_empty_with_align(offset as u32, elem_align, vec_offsets);
+        ectx.emit_branch(done_label);
+
+        // === Error cleanup ===
+        ectx.bind_label(error_cleanup);
+        ectx.emit_vec_error_cleanup(
+            intrinsics::fad_vec_free as *const u8,
+            saved_out_slot,
+            buf_slot,
+            cap_slot,
+            elem_size,
+            elem_align,
         );
 
         ectx.bind_label(done_label);

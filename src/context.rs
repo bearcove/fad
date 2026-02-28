@@ -46,6 +46,7 @@ pub enum ErrorCode {
     UnknownVariant = 14,
     ExpectedTagKey = 15,
     AmbiguousVariant = 16,
+    AllocError = 17,
 }
 
 impl fmt::Display for ErrorCode {
@@ -70,6 +71,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::AmbiguousVariant => {
                 write!(f, "ambiguous variant: multiple variants match")
             }
+            ErrorCode::AllocError => write!(f, "memory allocation failed"),
         }
     }
 }

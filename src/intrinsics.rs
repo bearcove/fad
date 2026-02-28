@@ -292,3 +292,121 @@ pub unsafe extern "C" fn fad_postcard_validate_and_alloc_string(
     };
     unsafe { out.write(s.to_owned()) };
 }
+
+// --- Vec intrinsics ---
+
+// r[impl seq.malum.alloc-compat]
+
+/// Allocate a buffer for `count` elements of `elem_size` bytes, `elem_align` alignment.
+///
+/// Uses `std::alloc::alloc` with `Layout::from_size_align(count * elem_size, elem_align)` —
+/// the same allocator and layout that `Vec<T>` would use, so the resulting buffer can be
+/// owned by a Vec and deallocated normally.
+///
+/// Returns a pointer to the allocated buffer. On allocation failure, sets an error on ctx
+/// and returns a null pointer.
+///
+/// # Safety
+/// - `count` must be > 0 (caller handles the empty case)
+/// - `elem_size` and `elem_align` must be valid for `Layout::from_size_align`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_vec_alloc(
+    ctx: *mut DeserContext,
+    count: usize,
+    elem_size: usize,
+    elem_align: usize,
+) -> *mut u8 {
+    let size = count.checked_mul(elem_size).unwrap_or(0);
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+    let layout = match std::alloc::Layout::from_size_align(size, elem_align) {
+        Ok(layout) => layout,
+        Err(_) => {
+            let ctx = unsafe { &mut *ctx };
+            ctx.error.code = ErrorCode::AllocError as u32;
+            return core::ptr::null_mut();
+        }
+    };
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        let ctx = unsafe { &mut *ctx };
+        ctx.error.code = ErrorCode::AllocError as u32;
+    }
+    ptr
+}
+
+/// Grow a Vec buffer: allocate a new buffer of `new_cap * elem_size`, copy
+/// `len * elem_size` bytes from `old_buf`, and deallocate `old_buf`.
+///
+/// Returns the new buffer pointer. On allocation failure, the old buffer is NOT freed
+/// and an error is set on ctx.
+///
+/// # Safety
+/// - `old_buf` must have been allocated with `Layout::from_size_align(old_cap * elem_size, elem_align)`
+/// - `len <= old_cap`
+/// - `new_cap > old_cap`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_vec_grow(
+    ctx: *mut DeserContext,
+    old_buf: *mut u8,
+    len: usize,
+    old_cap: usize,
+    new_cap: usize,
+    elem_size: usize,
+    elem_align: usize,
+) -> *mut u8 {
+    let new_size = new_cap * elem_size;
+    let new_layout = match std::alloc::Layout::from_size_align(new_size, elem_align) {
+        Ok(layout) => layout,
+        Err(_) => {
+            let ctx = unsafe { &mut *ctx };
+            ctx.error.code = ErrorCode::AllocError as u32;
+            return old_buf;
+        }
+    };
+    let new_buf = unsafe { std::alloc::alloc(new_layout) };
+    if new_buf.is_null() {
+        let ctx = unsafe { &mut *ctx };
+        ctx.error.code = ErrorCode::AllocError as u32;
+        return old_buf;
+    }
+
+    // Copy existing elements.
+    let copy_size = len * elem_size;
+    if copy_size > 0 {
+        unsafe { core::ptr::copy_nonoverlapping(old_buf, new_buf, copy_size) };
+    }
+
+    // Free old buffer.
+    let old_size = old_cap * elem_size;
+    if old_size > 0 {
+        let old_layout = unsafe {
+            std::alloc::Layout::from_size_align_unchecked(old_size, elem_align)
+        };
+        unsafe { std::alloc::dealloc(old_buf, old_layout) };
+    }
+
+    new_buf
+}
+
+/// Free a Vec buffer. Called on error paths to clean up partially-built Vecs.
+///
+/// # Safety
+/// - `buf` must have been allocated with `Layout::from_size_align(cap * elem_size, elem_align)`
+/// - `buf` must not be null (caller checks)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_vec_free(
+    buf: *mut u8,
+    cap: usize,
+    elem_size: usize,
+    elem_align: usize,
+) {
+    let size = cap * elem_size;
+    if size > 0 && !buf.is_null() {
+        let layout = unsafe {
+            std::alloc::Layout::from_size_align_unchecked(size, elem_align)
+        };
+        unsafe { std::alloc::dealloc(buf, layout) };
+    }
+}

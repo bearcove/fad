@@ -1,6 +1,8 @@
+use dynasmrt::DynamicLabel;
 use facet::{ScalarType, StructKind};
 
 use crate::arch::EmitCtx;
+use crate::malum::VecOffsets;
 
 // r[impl no-ir.format-trait]
 
@@ -58,6 +60,13 @@ pub trait Format {
     /// Extra bytes of stack space this format needs beyond the base frame.
     /// JSON needs space for bitset, key_ptr, key_len, peek_byte.
     fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
+        0
+    }
+
+    /// Extra stack bytes needed when deserializing a Vec.
+    /// This is separate from `extra_stack_space` because Vec functions
+    /// need stack slots for buf, count, counter, and saved out pointer.
+    fn vec_extra_stack_space(&self) -> u32 {
         0
     }
 
@@ -185,5 +194,28 @@ pub trait Format {
         _emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     ) {
         panic!("struct fields continuation not supported by this format");
+    }
+
+    /// Emit code to deserialize a `Vec<T>` (sequence of elements).
+    ///
+    /// The format reads the wire sequence (postcard: varint count + elements,
+    /// JSON: `[` elements `]`), allocates a buffer, deserializes elements into it,
+    /// and writes the Vec's `(ptr, len, cap)` at `out + offset` using the
+    /// discovered `vec_offsets`.
+    ///
+    /// `emit_elem`: callback to emit deserialization of one element at the current
+    /// `out` pointer (which has been redirected to the element slot).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_vec(
+        &self,
+        _ectx: &mut EmitCtx,
+        _offset: usize,
+        _elem_shape: &'static facet::Shape,
+        _elem_label: Option<DynamicLabel>,
+        _vec_offsets: &VecOffsets,
+        _option_scratch_offset: u32,
+        _emit_elem: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        panic!("Vec deserialization not supported by this format");
     }
 }

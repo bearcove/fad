@@ -1065,6 +1065,356 @@ impl EmitCtx {
         );
     }
 
+    // =====================================================================
+    // Vec deserialization support
+    // =====================================================================
+
+    /// Call fad_vec_alloc(ctx, count, elem_size, elem_align).
+    ///
+    /// Before call: count is in w9 (from emit_read_postcard_discriminant).
+    /// After call: result (buf pointer) is in x0.
+    /// Flushes cursor, reloads after, checks error.
+    /// Call fad_vec_alloc(ctx, count, elem_size, elem_align).
+    ///
+    /// count is in w9 (from emit_read_postcard_discriminant or JSON parse).
+    /// Result (buf pointer) is in x0.
+    ///
+    /// **Important**: w9 is caller-saved and will be clobbered by the call.
+    /// The count is saved to `count_slot` on the stack before the call so
+    /// it survives across the function call boundary.
+    pub fn emit_call_vec_alloc(
+        &mut self,
+        alloc_fn: *const u8,
+        elem_size: u32,
+        elem_align: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = alloc_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Flush cursor
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            // Args: x0=ctx, x1=count(w9), x2=elem_size, x3=elem_align
+            ; mov x0, x22
+            ; mov x1, x9            // count (zero-extended from w9)
+            ; movz x2, elem_size
+            ; movz x3, elem_align
+            // Call
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            // Reload cursor
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            // Check error
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+        );
+    }
+
+    /// Call fad_vec_grow(ctx, old_buf, len, old_cap, new_cap, elem_size, elem_align).
+    ///
+    /// Reads old_buf, len, old_cap from stack slots. Computes new_cap = old_cap * 2.
+    /// After call: new buf pointer is in x0.
+    pub fn emit_call_vec_grow(
+        &mut self,
+        grow_fn: *const u8,
+        buf_slot: u32,
+        len_slot: u32,
+        cap_slot: u32,
+        elem_size: u32,
+        elem_align: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = grow_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Flush cursor
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            // Compute new_cap = old_cap * 2
+            ; ldr x10, [sp, #cap_slot]
+            ; lsl x10, x10, #1           // new_cap = old_cap << 1
+            // Args: x0=ctx, x1=old_buf, x2=len, x3=old_cap, x4=new_cap, x5=elem_size, x6=elem_align
+            ; mov x0, x22
+            ; ldr x1, [sp, #buf_slot]
+            ; ldr x2, [sp, #len_slot]
+            ; ldr x3, [sp, #cap_slot]
+            ; mov x4, x10                // new_cap
+            ; movz x5, elem_size
+            ; movz x6, elem_align
+            // Call
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            // Reload cursor
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            // Check error
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+            // Update buf and cap on stack
+            ; str x0, [sp, #buf_slot]    // new buf
+            ; ldr x10, [sp, #cap_slot]
+            ; lsl x10, x10, #1
+            ; str x10, [sp, #cap_slot]   // new cap
+        );
+    }
+
+    /// Call fad_vec_alloc with a constant count (for JSON initial allocation).
+    ///
+    /// Result (buf pointer) is in x0.
+    pub fn emit_call_json_vec_initial_alloc(
+        &mut self,
+        alloc_fn: *const u8,
+        count: u32,
+        elem_size: u32,
+        elem_align: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = alloc_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Flush cursor
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            // Args: x0=ctx, x1=count, x2=elem_size, x3=elem_align
+            ; mov x0, x22
+            ; movz x1, count
+            ; movz x2, elem_size
+            ; movz x3, elem_align
+            // Call
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            // Reload cursor
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            // Check error
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+        );
+    }
+
+    /// Initialize JSON Vec loop state: buf from x0, len=0, cap=initial_cap.
+    pub fn emit_json_vec_loop_init(
+        &mut self,
+        saved_out_slot: u32,
+        buf_slot: u32,
+        len_slot: u32,
+        cap_slot: u32,
+        initial_cap: u32,
+    ) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; str x21, [sp, #saved_out_slot]        // save out pointer
+            ; str x0, [sp, #buf_slot]               // buf = alloc result
+            ; str xzr, [sp, #len_slot]              // len = 0
+            ; movz x10, initial_cap
+            ; str x10, [sp, #cap_slot]              // cap = initial_cap
+        );
+    }
+
+    /// Check ctx.error.code and branch to label if nonzero.
+    pub fn emit_check_error_branch(&mut self, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>label
+        );
+    }
+
+    /// Save the count register (w9 on aarch64, r10d on x64) to a stack slot.
+    ///
+    /// Used to preserve the count across a function call (w9/r10 are caller-saved).
+    pub fn emit_save_count_to_stack(&mut self, slot: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; str x9, [sp, #slot]
+        );
+    }
+
+    /// Initialize Vec loop state after allocation.
+    ///
+    /// Saves: out pointer, buf (alloc result in x0), counter=0.
+    /// Count must already be stored at count_slot (via emit_save_w9_to_stack).
+    pub fn emit_vec_loop_init(
+        &mut self,
+        saved_out_slot: u32,
+        buf_slot: u32,
+        _count_slot: u32,
+        counter_slot: u32,
+    ) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; str x21, [sp, #saved_out_slot]   // save out pointer
+            ; str x0, [sp, #buf_slot]          // buf = alloc result
+            // count is already at count_slot (saved before alloc call)
+            ; str xzr, [sp, #counter_slot]     // i = 0
+        );
+    }
+
+    /// Emit Vec loop header: compute slot = buf + i * elem_size, set out = slot.
+    ///
+    /// Reads buf and i from stack slots.
+    pub fn emit_vec_loop_slot(&mut self, buf_slot: u32, counter_slot: u32, elem_size: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x21, [sp, #buf_slot]         // buf
+            ; ldr x10, [sp, #counter_slot]     // i
+            ; movz x11, elem_size
+            ; madd x21, x10, x11, x21          // out = buf + i * elem_size
+        );
+    }
+
+    /// Emit Vec loop footer: increment i, compare with count, branch back if i < count.
+    /// Also checks error after element deserialization.
+    pub fn emit_vec_loop_advance(
+        &mut self,
+        counter_slot: u32,
+        count_slot: u32,
+        loop_label: DynamicLabel,
+        error_cleanup_label: DynamicLabel,
+    ) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Check error from element deserialization
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_cleanup_label
+            // i += 1
+            ; ldr x10, [sp, #counter_slot]
+            ; add x10, x10, #1
+            ; str x10, [sp, #counter_slot]
+            // Compare with count
+            ; ldr x11, [sp, #count_slot]
+            ; cmp x10, x11
+            ; b.lo =>loop_label
+        );
+    }
+
+    /// Write Vec fields (ptr, len, cap) to out + base_offset using discovered offsets.
+    /// Reads buf and count from stack slots.
+    pub fn emit_vec_store(
+        &mut self,
+        base_offset: u32,
+        saved_out_slot: u32,
+        buf_slot: u32,
+        len_slot: u32,    // stack slot holding len (or count for postcard)
+        cap_slot: u32,    // stack slot holding cap (or count for postcard)
+        offsets: &crate::malum::VecOffsets,
+    ) {
+        let ptr_off = base_offset + offsets.ptr_offset;
+        let len_off = base_offset + offsets.len_offset;
+        let cap_off = base_offset + offsets.cap_offset;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Restore out pointer
+            ; ldr x21, [sp, #saved_out_slot]
+            // Load values
+            ; ldr x10, [sp, #buf_slot]     // ptr
+            ; ldr x11, [sp, #len_slot]     // len
+            ; ldr x12, [sp, #cap_slot]     // cap
+            // Store at out + discovered offsets
+            ; str x10, [x21, #ptr_off]
+            ; str x11, [x21, #len_off]
+            ; str x12, [x21, #cap_off]
+        );
+    }
+
+    /// Write an empty Vec to out + base_offset with proper dangling pointer.
+    pub fn emit_vec_store_empty_with_align(
+        &mut self,
+        base_offset: u32,
+        elem_align: u32,
+        offsets: &crate::malum::VecOffsets,
+    ) {
+        let ptr_off = base_offset + offsets.ptr_offset;
+        let len_off = base_offset + offsets.len_offset;
+        let cap_off = base_offset + offsets.cap_offset;
+
+        // Vec::new() writes: ptr = NonNull::dangling() = elem_align as *mut T, len = 0, cap = 0.
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; movz x10, elem_align    // dangling pointer = alignment
+            ; str x10, [x21, #ptr_off]
+            ; str xzr, [x21, #len_off]
+            ; str xzr, [x21, #cap_off]
+        );
+    }
+
+    /// Emit error cleanup for Vec: free the buffer and branch to error exit.
+    /// Called when element deserialization fails mid-loop.
+    pub fn emit_vec_error_cleanup(
+        &mut self,
+        free_fn: *const u8,
+        saved_out_slot: u32,
+        buf_slot: u32,
+        cap_slot: u32,
+        elem_size: u32,
+        elem_align: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = free_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Restore out pointer first
+            ; ldr x21, [sp, #saved_out_slot]
+            // Args: x0=buf, x1=cap, x2=elem_size, x3=elem_align
+            ; ldr x0, [sp, #buf_slot]
+            ; ldr x1, [sp, #cap_slot]
+            ; movz x2, elem_size
+            ; movz x3, elem_align
+            // Call fad_vec_free
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            ; b =>error_exit
+        );
+    }
+
+    /// Compare the count register (w9 on aarch64, r10d on x64) with zero
+    /// and branch to label if equal.
+    pub fn emit_cbz_count(&mut self, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cbz w9, =>label
+        );
+    }
+
+    /// Compare two stack slot values and branch if equal (len == cap for growth check).
+    pub fn emit_cmp_stack_slots_branch_eq(
+        &mut self,
+        slot_a: u32,
+        slot_b: u32,
+        label: DynamicLabel,
+    ) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x10, [sp, #slot_a]
+            ; ldr x11, [sp, #slot_b]
+            ; cmp x10, x11
+            ; b.eq =>label
+        );
+    }
+
+    /// Increment a stack slot value by 1.
+    pub fn emit_inc_stack_slot(&mut self, slot: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x10, [sp, #slot]
+            ; add x10, x10, #1
+            ; str x10, [sp, #slot]
+        );
+    }
+
     /// Commit and finalize the assembler, returning the executable buffer.
     ///
     /// All functions must have been completed with `end_func` before calling this.

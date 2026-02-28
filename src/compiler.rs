@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use dynasmrt::{AssemblyOffset, DynamicLabel};
-use facet::{Def, EnumRepr, OptionDef, ScalarType, Shape, Type, UserType};
+use facet::{Def, EnumRepr, ListDef, OptionDef, ScalarType, Shape, Type, UserType};
 
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
@@ -88,6 +88,13 @@ impl<'fmt> Compiler<'fmt> {
             },
         );
 
+        // Check for List (Vec<T>) first — it's detected by Def, not Type.
+        // Vec<T> has Type::User(UserType::Opaque) + Def::List.
+        if let Def::List(list_def) = &shape.def {
+            self.compile_vec(shape, list_def, entry_label);
+            return entry_label;
+        }
+
         match &shape.ty {
             Type::User(UserType::Struct(_)) => {
                 self.compile_struct(shape, entry_label);
@@ -121,7 +128,11 @@ impl<'fmt> Compiler<'fmt> {
                 .iter()
                 .map(|f| {
                     let target = option_inner_or_self(f.shape);
-                    if matches!(&target.ty, Type::User(UserType::Enum(_))) {
+                    // Lists (Vec<T>) always need pre-compilation.
+                    // Enums always need pre-compilation (can't be inlined).
+                    if matches!(&target.ty, Type::User(UserType::Enum(_)))
+                        || matches!(&target.def, Def::List(_))
+                    {
                         Some(self.compile_shape(target))
                     } else {
                         None
@@ -160,6 +171,52 @@ impl<'fmt> Compiler<'fmt> {
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
     }
 
+    // r[impl seq.malum]
+
+    /// Compile a Vec<T> shape into a function.
+    fn compile_vec(
+        &mut self,
+        shape: &'static Shape,
+        list_def: &'static ListDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+
+        // Discover Vec<T> layout at JIT-compile time using vtable probing.
+        let vec_offsets = crate::malum::discover_vec_offsets(list_def, shape);
+
+        let elem_shape = list_def.t;
+
+        // Pre-compile element shape if it's composite (struct/enum/vec).
+        let elem_label = if needs_precompilation(elem_shape) {
+            Some(self.compile_shape(elem_shape))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_func();
+
+        let format = self.format;
+        let option_scratch_offset = self.option_scratch_offset;
+
+        format.emit_vec(
+            &mut self.ectx,
+            0, // offset=0: function receives out pointing to the Vec slot
+            elem_shape,
+            elem_label,
+            &vec_offsets,
+            option_scratch_offset,
+            &mut |ectx| {
+                // Emit element deserialization. Out is already redirected to the slot.
+                emit_elem(ectx, format, elem_shape, elem_label, option_scratch_offset);
+            },
+        );
+
+        self.ectx.end_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
     // r[impl deser.postcard.enum]
     // r[impl deser.json.enum.external]
 
@@ -187,7 +244,9 @@ impl<'fmt> Compiler<'fmt> {
                         .iter()
                         .map(|f| {
                             let target = option_inner_or_self(f.shape);
-                            if matches!(&target.ty, Type::User(UserType::Enum(_))) {
+                            if matches!(&target.ty, Type::User(UserType::Enum(_)))
+                                || matches!(&target.def, Def::List(_))
+                            {
                                 Some(self.compile_shape(target))
                             } else {
                                 None
@@ -418,12 +477,18 @@ fn is_struct(shape: &'static Shape) -> bool {
     matches!(&shape.ty, Type::User(UserType::Struct(_)))
 }
 
-/// Returns true if the shape needs its own compiled function (struct or enum).
+/// Returns true if the shape needs its own compiled function (struct, enum, or vec).
 fn is_composite(shape: &'static Shape) -> bool {
     matches!(
         &shape.ty,
         Type::User(UserType::Struct(_) | UserType::Enum(_))
-    )
+    ) || matches!(&shape.def, Def::List(_))
+}
+
+/// Returns true if the shape needs pre-compilation as a separate function.
+/// This includes structs, enums, and lists (Vec<T>).
+fn needs_precompilation(shape: &'static Shape) -> bool {
+    is_composite(shape)
 }
 
 /// Emit code for a single field, dispatching to nested struct calls, inline
@@ -503,6 +568,35 @@ fn emit_field(
     }
 }
 
+/// Emit deserialization code for a single element (used by Vec loop).
+/// Out pointer has already been redirected to the element slot at offset 0.
+fn emit_elem(
+    ectx: &mut EmitCtx,
+    format: &dyn Format,
+    elem_shape: &'static Shape,
+    elem_label: Option<DynamicLabel>,
+    option_scratch_offset: u32,
+) {
+    if let Some(label) = elem_label {
+        ectx.emit_call_emitted_func(label, 0);
+    } else if is_struct(elem_shape) && format.supports_inline_nested() {
+        emit_inline_struct(ectx, format, elem_shape, 0, option_scratch_offset);
+    } else {
+        match elem_shape.scalar_type() {
+            Some(ScalarType::String) => {
+                format.emit_read_string(ectx, 0);
+            }
+            Some(st) => {
+                format.emit_read_scalar(ectx, 0, st);
+            }
+            None => panic!(
+                "unsupported Vec element type: {}",
+                elem_shape.type_identifier,
+            ),
+        }
+    }
+}
+
 /// Inline a nested struct's fields into the parent function.
 ///
 /// Instead of emitting a function call, we collect the nested struct's fields,
@@ -544,6 +638,11 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
 
     let mut max_size = 0usize;
 
+    // Walk through List element types too.
+    if let Def::List(list_def) = &shape.def {
+        max_size = max_size.max(max_option_inner_size(list_def.t, visited));
+    }
+
     match &shape.ty {
         Type::User(UserType::Struct(st)) => {
             for f in st.fields {
@@ -580,36 +679,83 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
     max_size
 }
 
+/// Check if a shape tree contains any List (Vec<T>) types.
+fn has_list_in_tree(shape: &'static Shape, visited: &mut std::collections::HashSet<*const Shape>) -> bool {
+    let key = shape as *const Shape;
+    if !visited.insert(key) {
+        return false;
+    }
+
+    if matches!(&shape.def, Def::List(_)) {
+        return true;
+    }
+
+    match &shape.ty {
+        Type::User(UserType::Struct(st)) => {
+            for f in st.fields {
+                let target = option_inner_or_self(f.shape());
+                if has_list_in_tree(target, visited) {
+                    return true;
+                }
+            }
+        }
+        Type::User(UserType::Enum(enum_type)) => {
+            for v in enum_type.variants {
+                for f in v.data.fields {
+                    let target = option_inner_or_self(f.shape());
+                    if has_list_in_tree(target, visited) {
+                        return true;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    false
+}
+
 /// Compile a deserializer for the given shape and format.
 pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDeser {
     // Compute extra stack space. For structs, pass fields. For enums, we need
     // the max across all variant bodies. Use empty fields for enums since JSON
     // enum handling computes its own stack needs.
-    let format_extra = match &shape.ty {
-        Type::User(UserType::Struct(_)) => {
-            let fields = collect_fields(shape);
-            format.extra_stack_space(&fields)
-        }
-        Type::User(UserType::Enum(enum_type)) => {
-            // For enums, the format might need extra stack for variant body
-            // deserialization (e.g., JSON struct variant key matching).
-            // Compute the max across all variants.
-            let mut max_extra = 0u32;
-            for v in enum_type.variants {
-                let fields: Vec<FieldEmitInfo> = v.data.fields.iter().enumerate().map(|(j, f)| {
-                    FieldEmitInfo {
-                        offset: f.offset,
-                        shape: f.shape(),
-                        name: f.name,
-                        required_index: j,
-                    }
-                }).collect();
-                max_extra = max_extra.max(format.extra_stack_space(&fields));
+    let mut format_extra = if matches!(&shape.def, Def::List(_)) {
+        // Vec<T> as root shape — format needs stack space for vec loop state.
+        format.extra_stack_space(&[])
+    } else {
+        match &shape.ty {
+            Type::User(UserType::Struct(_)) => {
+                let fields = collect_fields(shape);
+                format.extra_stack_space(&fields)
             }
-            max_extra
+            Type::User(UserType::Enum(enum_type)) => {
+                // For enums, the format might need extra stack for variant body
+                // deserialization (e.g., JSON struct variant key matching).
+                // Compute the max across all variants.
+                let mut max_extra = 0u32;
+                for v in enum_type.variants {
+                    let fields: Vec<FieldEmitInfo> = v.data.fields.iter().enumerate().map(|(j, f)| {
+                        FieldEmitInfo {
+                            offset: f.offset,
+                            shape: f.shape(),
+                            name: f.name,
+                            required_index: j,
+                        }
+                    }).collect();
+                    max_extra = max_extra.max(format.extra_stack_space(&fields));
+                }
+                max_extra
+            }
+            _ => panic!("unsupported root shape: {}", shape.type_identifier),
         }
-        _ => panic!("unsupported root shape: {}", shape.type_identifier),
     };
+
+    // If the shape tree contains any Vec types, ensure we have enough stack
+    // for Vec loop state (buf_ptr, count/cap, counter, saved_out).
+    if has_list_in_tree(shape, &mut std::collections::HashSet::new()) {
+        format_extra = format_extra.max(format.vec_extra_stack_space());
+    }
 
     // Compute Option scratch space: 8 bytes for saved out pointer + max inner T size.
     // The scratch area lives after the base frame and format's extra stack.

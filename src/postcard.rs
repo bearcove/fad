@@ -1,8 +1,10 @@
+use dynasmrt::DynamicLabel;
 use facet::ScalarType;
 
-use crate::arch::EmitCtx;
+use crate::arch::{EmitCtx, BASE_FRAME};
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo};
 use crate::intrinsics;
+use crate::malum::VecOffsets;
 
 // r[impl deser.postcard.struct]
 
@@ -119,6 +121,107 @@ impl Format for FadPostcard {
             intrinsics::fad_option_init_none as *const u8,
             init_none_fn,
             offset as u32,
+        );
+
+        ectx.bind_label(done_label);
+    }
+
+    fn vec_extra_stack_space(&self) -> u32 {
+        // varint scratch (8) + saved_out (8) + buf (8) + count (8) + counter (8) = 40
+        40
+    }
+
+    // r[impl deser.postcard.seq]
+    // r[impl seq.malum.postcard]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_vec(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        elem_shape: &'static facet::Shape,
+        _elem_label: Option<DynamicLabel>,
+        vec_offsets: &VecOffsets,
+        _option_scratch_offset: u32,
+        emit_elem: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        let elem_layout = elem_shape
+            .layout
+            .sized_layout()
+            .expect("Vec element must be Sized");
+        let elem_size = elem_layout.size() as u32;
+        let elem_align = elem_layout.align() as u32;
+
+        // Stack slot offsets (relative to sp)
+        let saved_out_slot = BASE_FRAME + 8;
+        let buf_slot = BASE_FRAME + 16;
+        let count_slot = BASE_FRAME + 24;
+        let counter_slot = BASE_FRAME + 32;
+
+        let empty_label = ectx.new_label();
+        let done_label = ectx.new_label();
+        let loop_label = ectx.new_label();
+        let error_cleanup = ectx.new_label();
+
+        // Read element count (varint → w9)
+        ectx.emit_read_postcard_discriminant(intrinsics::fad_read_varint_u32 as *const u8);
+
+        // r[impl seq.malum.empty]
+        // If count == 0, write empty Vec and skip
+        ectx.emit_cbz_count(empty_label);
+
+        // Save count to stack before alloc call (caller-saved reg, clobbered by call)
+        ectx.emit_save_count_to_stack(count_slot);
+
+        // Allocate: fad_vec_alloc(ctx, count, elem_size, elem_align)
+        // count is in w9, result in x0
+        ectx.emit_call_vec_alloc(
+            intrinsics::fad_vec_alloc as *const u8,
+            elem_size,
+            elem_align,
+        );
+
+        // Save loop state: buf (x0), i=0, saved out (x21)
+        // count is already on the stack from emit_save_w9_to_stack above
+        ectx.emit_vec_loop_init(saved_out_slot, buf_slot, count_slot, counter_slot);
+
+        // === Loop body ===
+        ectx.bind_label(loop_label);
+
+        // Set out = buf + i * elem_size
+        ectx.emit_vec_loop_slot(buf_slot, counter_slot, elem_size);
+
+        // Deserialize one element at out (offset 0)
+        emit_elem(ectx);
+
+        // Check error, increment i, branch back if i < count
+        ectx.emit_vec_loop_advance(counter_slot, count_slot, loop_label, error_cleanup);
+
+        // === Write Vec to output ===
+        // For postcard, len == cap == count (exact allocation)
+        ectx.emit_vec_store(
+            offset as u32,
+            saved_out_slot,
+            buf_slot,
+            count_slot, // len = count
+            count_slot, // cap = count
+            vec_offsets,
+        );
+        ectx.emit_branch(done_label);
+
+        // === Empty path ===
+        ectx.bind_label(empty_label);
+        ectx.emit_vec_store_empty_with_align(offset as u32, elem_align, vec_offsets);
+        ectx.emit_branch(done_label);
+
+        // === Error cleanup ===
+        ectx.bind_label(error_cleanup);
+        ectx.emit_vec_error_cleanup(
+            intrinsics::fad_vec_free as *const u8,
+            saved_out_slot,
+            buf_slot,
+            count_slot,
+            elem_size,
+            elem_align,
         );
 
         ectx.bind_label(done_label);

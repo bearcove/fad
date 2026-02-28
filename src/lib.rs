@@ -5,6 +5,7 @@ pub mod format;
 pub mod intrinsics;
 pub mod json;
 pub mod json_intrinsics;
+pub mod malum;
 pub mod postcard;
 pub mod solver;
 
@@ -1929,6 +1930,112 @@ mod tests {
         );
     }
 
+    // r[verify deser.postcard.seq]
+    #[test]
+    fn postcard_vec_u32() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct NumsSerde {
+            vals: Vec<u32>,
+        }
+
+        let source = NumsSerde { vals: vec![1, 2, 3] };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Nums::SHAPE, &postcard::FadPostcard);
+        let result: Nums = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Nums { vals: vec![1, 2, 3] });
+    }
+
+    // r[verify deser.postcard.seq]
+    #[test]
+    fn postcard_vec_empty() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct NumsSerde {
+            vals: Vec<u32>,
+        }
+
+        let source = NumsSerde { vals: vec![] };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Nums::SHAPE, &postcard::FadPostcard);
+        let result: Nums = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Nums { vals: vec![] });
+    }
+
+    // r[verify deser.postcard.seq]
+    #[test]
+    fn postcard_vec_string() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Names {
+            items: Vec<String>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct NamesSerde {
+            items: Vec<String>,
+        }
+
+        let source = NamesSerde {
+            items: vec!["hello".into(), "world".into()],
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Names::SHAPE, &postcard::FadPostcard);
+        let result: Names = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            Names {
+                items: vec!["hello".into(), "world".into()],
+            }
+        );
+    }
+
+    // r[verify deser.postcard.seq]
+    #[test]
+    fn postcard_vec_nested_struct() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct AddressList {
+            addrs: Vec<Address>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct AddrSerde {
+            city: String,
+            zip: u32,
+        }
+
+        #[derive(serde::Serialize)]
+        struct AddressListSerde {
+            addrs: Vec<AddrSerde>,
+        }
+
+        let source = AddressListSerde {
+            addrs: vec![
+                AddrSerde { city: "Portland".into(), zip: 97201 },
+                AddrSerde { city: "Seattle".into(), zip: 98101 },
+            ],
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(AddressList::SHAPE, &postcard::FadPostcard);
+        let result: AddressList = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            AddressList {
+                addrs: vec![
+                    Address { city: "Portland".into(), zip: 97201 },
+                    Address { city: "Seattle".into(), zip: 98101 },
+                ],
+            }
+        );
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {
@@ -1955,5 +2062,89 @@ mod tests {
                 },
             }
         );
+    }
+
+    // r[verify deser.json.seq]
+    #[test]
+    fn json_vec_u32() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        let input = br#"{"vals": [1, 2, 3]}"#;
+        let deser = compile_deser(Nums::SHAPE, &json::FadJson);
+        let result: Nums = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Nums { vals: vec![1, 2, 3] });
+    }
+
+    // r[verify deser.json.seq]
+    #[test]
+    fn json_vec_empty() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        let input = br#"{"vals": []}"#;
+        let deser = compile_deser(Nums::SHAPE, &json::FadJson);
+        let result: Nums = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Nums { vals: vec![] });
+    }
+
+    // r[verify deser.json.seq]
+    #[test]
+    fn json_vec_string() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Names {
+            items: Vec<String>,
+        }
+
+        let input = br#"{"items": ["hello", "world"]}"#;
+        let deser = compile_deser(Names::SHAPE, &json::FadJson);
+        let result: Names = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Names {
+                items: vec!["hello".into(), "world".into()],
+            }
+        );
+    }
+
+    // r[verify deser.json.seq]
+    #[test]
+    fn json_vec_nested_struct() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct AddressList {
+            addrs: Vec<Address>,
+        }
+
+        let input = br#"{"addrs": [{"city": "Portland", "zip": 97201}, {"city": "Seattle", "zip": 98101}]}"#;
+        let deser = compile_deser(AddressList::SHAPE, &json::FadJson);
+        let result: AddressList = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            AddressList {
+                addrs: vec![
+                    Address { city: "Portland".into(), zip: 97201 },
+                    Address { city: "Seattle".into(), zip: 98101 },
+                ],
+            }
+        );
+    }
+
+    // r[verify seq.malum.json]
+    #[test]
+    fn json_vec_growth() {
+        // More than 4 elements exercises the growth path (initial cap=4)
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        let input = br#"{"vals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}"#;
+        let deser = compile_deser(Nums::SHAPE, &json::FadJson);
+        let result: Nums = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Nums { vals: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10] });
     }
 }
