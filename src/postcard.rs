@@ -160,6 +160,7 @@ impl Format for FadPostcard {
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
+        let loop_done_label = ectx.new_label(); // loop finished → write Vec to output
         let loop_label = ectx.new_label();
         let error_cleanup = ectx.new_label();
 
@@ -194,32 +195,54 @@ impl Format for FadPostcard {
         // === Loop body ===
         ectx.bind_label(loop_label);
 
-        // Set out = cursor (register move, no memory)
-        ectx.emit_vec_loop_load_cursor(save_x23_slot);
+        // Check if we can use the tight varint loop (writes directly to cursor
+        // register, no mov to out, slow path out-of-line).
+        let varint_info = elem_shape.scalar_type().and_then(|st| {
+            match st {
+                ScalarType::U16 => Some((2, false, intrinsics::fad_read_u16 as *const u8)),
+                ScalarType::U32 => Some((4, false, intrinsics::fad_read_varint_u32 as *const u8)),
+                ScalarType::U64 => Some((8, false, intrinsics::fad_read_u64 as *const u8)),
+                ScalarType::I16 => Some((2, true, intrinsics::fad_read_i16 as *const u8)),
+                ScalarType::I32 => Some((4, true, intrinsics::fad_read_i32 as *const u8)),
+                ScalarType::I64 => Some((8, true, intrinsics::fad_read_i64 as *const u8)),
+                _ => None,
+            }
+        });
 
-        // Redirect error_exit to error_cleanup during element emission.
-        // This way, inline scalar error paths (EOF, invalid varint) branch
-        // directly to the Vec cleanup code, making the per-iteration error
-        // check in the loop tail redundant.
-        let saved_error_exit = ectx.error_exit;
-        ectx.error_exit = error_cleanup;
+        if let Some((store_width, zigzag, intrinsic_fn_ptr)) = varint_info {
+            // Tight varint loop: writes directly to cursor register,
+            // no mov x21/r14, slow path placed out-of-line.
+            ectx.emit_vec_varint_loop(
+                store_width,
+                zigzag,
+                intrinsic_fn_ptr,
+                elem_size,
+                save_x24_slot,
+                loop_label,
+                loop_done_label,
+                error_cleanup,
+            );
+        } else {
+            // Generic path for non-varint elements (strings, structs, etc.)
+            ectx.emit_vec_loop_load_cursor(save_x23_slot);
 
-        // Deserialize one element at out (offset 0)
-        emit_elem(ectx);
+            // Redirect error_exit to error_cleanup during element emission.
+            let saved_error_exit = ectx.error_exit;
+            ectx.error_exit = error_cleanup;
 
-        ectx.error_exit = saved_error_exit;
+            emit_elem(ectx);
 
-        // Advance cursor register, branch back if cursor < end.
-        // No error check needed: inline scalar paths branch to error_cleanup
-        // directly on error, and sub-function calls (composite elements) also
-        // propagate errors through error_exit which we redirected above.
-        ectx.emit_vec_loop_advance_no_error_check(
-            save_x24_slot,
-            elem_size,
-            loop_label,
-        );
+            ectx.error_exit = saved_error_exit;
 
-        // === Write Vec to output ===
+            ectx.emit_vec_loop_advance_no_error_check(
+                save_x24_slot,
+                elem_size,
+                loop_label,
+            );
+        }
+
+        // === Write Vec to output (reached after loop completes) ===
+        ectx.bind_label(loop_done_label);
         // For postcard, len == cap == count (exact allocation)
         ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
         ectx.emit_vec_store(

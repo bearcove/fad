@@ -1194,6 +1194,98 @@ impl EmitCtx {
         );
     }
 
+    /// Emit a tight varint Vec loop body for x64. Writes directly to `[rbx]`
+    /// (the cursor register). The slow path and EOF are placed out-of-line.
+    pub fn emit_vec_varint_loop(
+        &mut self,
+        store_width: u32,
+        zigzag: bool,
+        intrinsic_fn_ptr: *const u8,
+        elem_size: u32,
+        end_slot: u32,
+        loop_label: DynamicLabel,
+        done_label: DynamicLabel,
+        error_cleanup: DynamicLabel,
+    ) {
+        let slow_path = self.ops.new_dynamic_label();
+        let eof_label = self.ops.new_dynamic_label();
+        let ptr_val = intrinsic_fn_ptr as i64;
+
+        // === Hot loop ===
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>eof_label
+            ; movzx r10d, BYTE [r12]
+            ; add r12, 1
+            ; test r10d, 0x80
+            ; jnz =>slow_path
+        );
+
+        if zigzag {
+            dynasm!(self.ops
+                ; .arch x64
+                ; mov r11d, r10d
+                ; shr r11d, 1
+                ; and r10d, 1
+                ; neg r10d
+                ; xor r10d, r11d
+            );
+        }
+
+        // Store directly to cursor (rbx)
+        match store_width {
+            2 => dynasm!(self.ops ; .arch x64 ; mov WORD [rbx], r10w),
+            4 => dynasm!(self.ops ; .arch x64 ; mov DWORD [rbx], r10d),
+            8 => dynasm!(self.ops ; .arch x64 ; mov QWORD [rbx], r10),
+            _ => panic!("unsupported varint store width: {store_width}"),
+        }
+
+        // Advance cursor, loop back
+        dynasm!(self.ops
+            ; .arch x64
+            ; add rbx, elem_size as i32
+            ; cmp rbx, [rsp + end_slot as i32]
+            ; jb =>loop_label
+            ; jmp =>done_label
+        );
+
+        // === Slow path (out-of-line) ===
+        dynasm!(self.ops
+            ; .arch x64
+            ; =>slow_path
+            // Undo the add r12, 1 (intrinsic expects r12 at varint start)
+            ; sub r12, 1
+            // Flush input pointer to ctx
+            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            // Args: rdi = ctx, rsi = out (cursor)
+            ; mov rdi, r15
+            ; mov rsi, rbx
+            // Call intrinsic
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            // Reload input pointer
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            // Check error
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_cleanup
+            // Advance cursor, loop back
+            ; add rbx, elem_size as i32
+            ; cmp rbx, [rsp + end_slot as i32]
+            ; jb =>loop_label
+            ; jmp =>done_label
+        );
+
+        // === EOF (cold) ===
+        dynasm!(self.ops
+            ; .arch x64
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_cleanup
+        );
+    }
+
     /// Restore rbx from stack. Must be called on every exit path from a Vec loop.
     pub fn emit_vec_restore_callee_saved(&mut self, save_rbx_slot: u32, _end_slot: u32) {
         dynasm!(self.ops

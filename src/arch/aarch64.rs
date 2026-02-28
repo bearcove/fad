@@ -1318,6 +1318,115 @@ impl EmitCtx {
         );
     }
 
+    /// Emit a tight varint Vec loop body: read a varint scalar, store to cursor,
+    /// advance, loop. Writes directly to `[x23]` (the cursor register) and uses
+    /// post-indexed addressing to combine load+advance. The slow path and EOF
+    /// are placed out-of-line after the loop.
+    ///
+    /// `store_width`: 2/4/8 bytes to write at the cursor.
+    /// `zigzag`: true for signed integers (zigzag decode before store).
+    /// `intrinsic_fn_ptr`: slow-path multi-byte varint reader.
+    /// `loop_label`: label at the top of the loop (already bound by caller).
+    /// `done_label`: label to branch to after the loop completes.
+    /// `error_cleanup`: label for error/cleanup path.
+    pub fn emit_vec_varint_loop(
+        &mut self,
+        store_width: u32,
+        zigzag: bool,
+        intrinsic_fn_ptr: *const u8,
+        elem_size: u32,
+        _end_slot: u32,
+        loop_label: DynamicLabel,
+        done_label: DynamicLabel,
+        error_cleanup: DynamicLabel,
+    ) {
+        let slow_path = self.ops.new_dynamic_label();
+        let eof_label = self.ops.new_dynamic_label();
+        let ptr_val = intrinsic_fn_ptr as u64;
+
+        // === Hot loop (all fast-path instructions) ===
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Bounds check
+            ; cmp x19, x20
+            ; b.hs =>eof_label
+            // Load byte + advance input pointer (post-indexed)
+            ; ldrb w9, [x19], #1
+            // Test continuation bit
+            ; tbnz w9, #7, =>slow_path
+        );
+
+        if zigzag {
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; lsr w10, w9, #1
+                ; and w11, w9, #1
+                ; neg w11, w11
+                ; eor w9, w10, w11
+            );
+        }
+
+        // Store directly to cursor (x23), no mov x21 needed
+        match store_width {
+            2 => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x23]),
+            4 => dynasm!(self.ops ; .arch aarch64 ; str w9, [x23]),
+            8 => dynasm!(self.ops ; .arch aarch64 ; str x9, [x23]),
+            _ => panic!("unsupported varint store width: {store_width}"),
+        }
+
+        // Advance cursor, loop back
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; add x23, x23, elem_size
+            ; cmp x23, x24
+            ; b.lo =>loop_label
+        );
+        // Fall through = loop done
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; b =>done_label
+        );
+
+        // === Slow path (out-of-line) ===
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; =>slow_path
+            // Undo the post-increment (ldrb advanced x19 by 1, but the
+            // intrinsic expects x19 at the start of the varint)
+            ; sub x19, x19, #1
+            // Flush cursor back to ctx
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            // Args: x0 = ctx, x1 = out (cursor)
+            ; mov x0, x22
+            ; mov x1, x23
+            // Call intrinsic
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            // Reload input pointer
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            // Check error
+            ; ldr w9, [x22, #CTX_ERROR_CODE]
+            ; cbnz w9, =>error_cleanup
+            // Advance cursor, loop back
+            ; add x23, x23, elem_size
+            ; cmp x23, x24
+            ; b.lo =>loop_label
+            ; b =>done_label
+        );
+
+        // === EOF (cold) ===
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; =>eof_label
+            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_cleanup
+        );
+    }
+
     /// Restore x23/x24 from stack. Must be called on every exit path from a Vec loop.
     pub fn emit_vec_restore_callee_saved(&mut self, save_x23_slot: u32, save_x24_slot: u32) {
         dynasm!(self.ops
