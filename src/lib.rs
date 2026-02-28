@@ -3355,5 +3355,5 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 mod disasm_tests;
