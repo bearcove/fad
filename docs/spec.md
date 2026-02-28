@@ -1453,11 +1453,79 @@ r[format-state.zero-cost]
 If a format needs no scratch space (e.g., postcard), `format_state` is null
 and no allocation cost is paid.
 
+## Assumed layout mode (`malum`)
+
+r[malum]
+fad has a feature called `malum` (Latin for "the fruit of the tree of the
+knowledge of good and evil") that enables direct manipulation of standard
+library types whose memory layouts are not guaranteed by the language but
+are de facto stable. This includes `Vec<T>`, `String`, `Box<T>`, and
+potentially `HashMap<K,V>`.
+
+r[malum.default-on]
+`malum` is enabled by default (`default = ["malum"]`). It can be disabled
+via `default-features = false` for maximum safety at the cost of
+performance.
+
+r[malum.what-it-enables]
+When `malum` is enabled, fad writes directly into the memory representation
+of standard library types instead of going through vtable function pointers
+or intermediate staging areas. For example, `Vec<T>` is known to be
+`(ptr, len, cap)` — 24 bytes on 64-bit — and fad writes those three words
+directly.
+
+r[malum.jit-time-validation]
+At JIT-compile time, `malum` validates its assumptions by constructing
+real values and checking their layouts match expectations. For `Vec<T>`,
+the validator:
+
+1. Creates a `Vec<T>` with known contents via `Vec::from_raw_parts`
+2. Reads `ptr`, `len`, `cap` from known offsets (0, 8, 16)
+3. Asserts they match the values that were written
+4. Repeats with different element types (`u8`, `String`, a struct)
+
+If any assertion fails, compilation panics with a message identifying
+exactly which layout assumption broke. This catches rustc layout changes
+at JIT-compile time, not at runtime.
+
+```rust
+fn validate_vec_layout() {
+    // Build a Vec we control, read its guts at known offsets
+    let mut v: Vec<u32> = Vec::with_capacity(10);
+    v.extend_from_slice(&[1, 2, 3]);
+    let raw = &v as *const Vec<u32> as *const u8;
+    unsafe {
+        let ptr = *(raw.add(0) as *const *const u32);
+        let len = *(raw.add(8) as *const usize);
+        let cap = *(raw.add(16) as *const usize);
+        assert_eq!(ptr, v.as_ptr());
+        assert_eq!(len, 3);
+        assert_eq!(cap, 10);
+    }
+    std::mem::forget(v);
+}
+```
+
+r[malum.compile-time-guards]
+In addition to JIT-time validation, `malum` includes compile-time
+`const` assertions:
+
+```rust
+const _: () = assert!(size_of::<Vec<u8>>() == 24);
+const _: () = assert!(align_of::<Vec<u8>>() == 8);
+```
+
+These catch changes before any code runs.
+
+r[malum.fallback]
+When `malum` is disabled, fad falls back to the chunk-chain strategy
+(see below) for all collection types. This is slower but makes zero
+assumptions about standard library internals.
+
 ## Sequences and arrays
 
 r[deser.json.vec]
-For JSON, `Vec<T>` is deserialized from a JSON array using the chunk-chain
-strategy described below.
+For JSON, `Vec<T>` is deserialized from a JSON array.
 
 r[deser.postcard.vec]
 For postcard, `Vec<T>` is deserialized as a varint length followed by that
@@ -1492,18 +1560,102 @@ The required-field bitset doubles as a "fields initialized" tracker for
 drop-safety purposes: on error, only fields whose bits are set need to be
 dropped.
 
-## Sequence construction
-
-r[seq.chunk-chain]
-Deserializing variable-length collections (`Vec<T>`, `HashSet<T>`, etc.)
-uses a chunk chain: a linked list of fixed-size buffers. Elements are
-constructed in-place in the current chunk. When a chunk fills up, a new one
-is allocated and linked. No existing chunk ever moves.
+## Vec deserialization strategy
 
 r[seq.no-vec-push]
-fad does NOT use `Vec::push` during deserialization. `Vec::push` may
-reallocate, invalidating pointers into the buffer — fatal for in-place
-element construction.
+fad does NOT use `Vec::push` or `Vec::with_capacity` + push during
+deserialization. `Vec::push` requires a staging area per element and a
+vtable call per push — both unacceptable for a JIT deserializer.
+
+### Fast path: direct layout (`malum`)
+
+r[seq.malum]
+When the `malum` feature is enabled, fad writes `Vec<T>` directly as
+`(ptr, len, cap)` — 24 bytes at the output location. The emitted code
+manages its own backing buffer, deserializes elements in-place, and writes
+the three words when done.
+
+r[seq.malum.postcard]
+For postcard, the element count is known upfront (varint length prefix).
+The emitted code allocates a single buffer of exactly `count * size_of(T)`
+bytes (using the global allocator, same layout as `Vec` would use),
+deserializes all elements directly into it, and writes
+`(buf_ptr, count, count)` to the output — zero copy, zero finalization.
+
+```
+deser_Vec_Friend:                      ; postcard, malum
+    count = read_varint()
+    buf = alloc(count * size_of(Friend), align_of(Friend))
+    i = 0
+loop:
+    if i >= count: break
+    slot = buf + i * size_of(Friend)
+    call deser_Friend(slot, ctx)
+    check_error
+    i += 1
+    goto loop
+    ; Write Vec<Friend> directly: ptr, len, cap
+    store(out + 0, buf)
+    store(out + 8, count)
+    store(out + 16, count)
+    ret
+```
+
+r[seq.malum.json]
+For JSON, the element count is unknown. The emitted code allocates an
+initial buffer, deserializes elements into it, and grows it when full.
+Growth allocates a new buffer (double capacity), `memcpy`s existing
+elements, frees the old buffer. When done, writes `(ptr, len, cap)` to
+the output.
+
+```
+deser_Vec_Friend:                      ; JSON, malum
+    expect('[')
+    cap = 16
+    buf = alloc(cap * size_of(Friend), align_of(Friend))
+    len = 0
+loop:
+    skip_whitespace()
+    if peek() == ']': break
+    if len == cap:
+        new_cap = cap * 2
+        new_buf = alloc(new_cap * size_of(Friend), align_of(Friend))
+        memcpy(new_buf, buf, len * size_of(Friend))
+        free(buf, cap * size_of(Friend), align_of(Friend))
+        buf = new_buf
+        cap = new_cap
+    slot = buf + len * size_of(Friend)
+    call deser_Friend(slot, ctx)
+    check_error
+    len += 1
+    skip_comma()
+    goto loop
+    expect(']')
+    store(out + 0, buf)
+    store(out + 8, len)
+    store(out + 16, cap)
+    ret
+```
+
+r[seq.malum.alloc-compat]
+Buffers allocated by the emitted code MUST use the same allocator and
+layout that `Vec<T>` would use (`std::alloc::alloc` with
+`Layout::array::<T>(cap)`). This ensures the resulting `Vec` can be
+dropped, resized, and deallocated normally by Rust code that receives it.
+
+r[seq.malum.empty]
+An empty array (`[]` in JSON, count=0 in postcard) writes
+`(dangling_ptr, 0, 0)` to the output — same as `Vec::new()`. No
+allocation is performed.
+
+### Slow path: chunk chain (no `malum`)
+
+r[seq.chunk-chain]
+When `malum` is disabled, deserializing variable-length collections
+(`Vec<T>`, `HashSet<T>`, etc.) uses a chunk chain: a linked list of
+fixed-size buffers. Elements are constructed in-place in the current chunk.
+When a chunk fills up, a new one is allocated and linked. No existing chunk
+ever moves.
 
 ```rust
 #[repr(C)]
@@ -1527,51 +1679,31 @@ struct FullChunk {
 }
 ```
 
-### How the emitted code uses it
-
 r[seq.chain-lifecycle]
 The emitted code allocates a chain, loops to get slots and deserialize
 elements in-place, commits each element, then finalizes the chain into the
 target collection.
 
 ```
-deser_Vec_Friend:
-    ; Allocate the chain (on the format arena or heap).
-    ; size_hint comes from the format: postcard gives exact count,
-    ; JSON gives 0 (unknown).
+deser_Vec_Friend:                      ; chunk chain fallback
     call intrinsic_chain_new(ctx, size_of(Friend), align_of(Friend), size_hint)
-
-    ; chain_ptr is in a callee-saved register or spilled to stack.
 loop:
     ; Format-specific: check for end of array.
-    ; (JSON: skip_whitespace, break if ']')
-    ; (postcard: decrement remaining count, break if 0)
-
-    ; Get a slot to write into. If current chunk is full, this
-    ; allocates a new chunk — but never moves existing ones.
     slot = call intrinsic_chain_next_slot(ctx, chain_ptr, size_of(Friend), align_of(Friend))
-
-    ; Deserialize the element in-place at `slot`.
-    ; `slot` stays valid for the entire element's construction.
     call deser_Friend(slot, ctx)
     check_error
-
-    ; Mark the slot as committed (increment current_len).
     call intrinsic_chain_commit(ctx, chain_ptr)
-
     goto loop
-
-    ; Finalize: build the Vec from the chain.
     call intrinsic_chain_to_vec(ctx, chain_ptr, out, size_of(Friend), align_of(Friend))
     ret
 ```
 
-### Finalization
+### Finalization (chunk chain)
 
 r[seq.finalize.one-chunk]
 If the chain has a single chunk, its buffer is transferred directly to the
-`Vec` (pointer, length, capacity) — zero copy. The chunk must be allocated
-with the same allocator and layout that `Vec` expects.
+`Vec` via vtable — the chain was allocated with a compatible layout. No
+copy if the vtable can accept ownership of the buffer.
 
 r[seq.finalize.multi-chunk]
 If the chain has multiple chunks, a single buffer of `total_len` capacity is
@@ -1581,26 +1713,29 @@ is built from that — one copy total.
 ### Size hints
 
 r[seq.size-hint.postcard]
-Postcard provides an exact element count (length-prefixed). The chain is
-initialized with a single chunk of exactly the right capacity, so
+Postcard provides an exact element count (length-prefixed). With `malum`,
+this means a single allocation of exact size. With chunk chain, the chain
+is initialized with a single chunk of exactly the right capacity, so
 finalization is always the zero-copy one-chunk path.
 
 r[seq.size-hint.json]
-JSON doesn't know the count upfront. The chain starts with a reasonable
-chunk size (e.g., 16 elements), doubles on each new chunk, and pays at most
-one copy at the end during finalization.
+JSON doesn't know the count upfront. With `malum`, the buffer starts at a
+reasonable size (e.g., 16 elements) and doubles on growth. With chunk
+chain, the chain starts at a reasonable chunk size and adds chunks as
+needed.
 
-### Drop safety
+### Drop safety (sequences)
 
 r[seq.drop-safety]
 If deserialization fails mid-array, the error path must:
 1. Drop the N-1 fully committed elements (by calling their drop glue).
 2. Drop any partially constructed fields of element N.
-3. Free the chain's buffers.
+3. Free the backing buffer(s).
 
 r[seq.drop-safety.committed-count]
-The chain tracks `current_len` (committed elements) separately from the
-write cursor, so it knows exactly how many elements to drop.
+Both the `malum` path and the chunk chain track committed element count
+separately from the write cursor, so they know exactly how many elements
+to drop.
 
 ## Option, Result, and opaque types
 
