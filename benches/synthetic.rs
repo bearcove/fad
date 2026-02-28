@@ -301,6 +301,17 @@ struct BoolField {
     value: bool,
 }
 
+// ── Option wrappers ──────────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+struct OptionScalar { value: Option<u32> }
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+struct OptionStr { value: Option<String> }
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+struct OptionStruct { value: Option<Friend> }
+
 // ── Enums (JSON only — postcard enum tagging differs) ───────────────────────
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
@@ -559,7 +570,16 @@ mod postcard_flatten {
     }
 }
 
-// ── Collections (deser only, both formats) ──────────────────────────────────
+// ── Options (both formats, deser only — encoder doesn't support Option yet) ──
+
+bench!(option_none, OptionScalar, OptionScalar { value: None });
+bench!(option_scalar, OptionScalar, OptionScalar { value: Some(42) });
+bench!(option_string, OptionStr, OptionStr { value: Some("hello world".into()) });
+bench!(option_struct, OptionStruct, OptionStruct {
+    value: Some(Friend { age: 25, name: "Alice".into() }),
+});
+
+// ── Collections (both formats, deser only — encoder doesn't support Vec yet) ─
 
 bench!(vec_scalar_small, ScalarVec, ScalarVec {
     values: vec![1, 2, 3],
@@ -567,6 +587,10 @@ bench!(vec_scalar_small, ScalarVec, ScalarVec {
 
 bench!(vec_scalar_medium, ScalarVec, ScalarVec {
     values: (0..100).collect(),
+});
+
+bench!(vec_scalar_large, ScalarVec, ScalarVec {
+    values: (0..10_000).collect(),
 });
 
 bench!(vec_struct, StructVec, StructVec {
@@ -582,16 +606,16 @@ bench!(vec_string, StringVec, StringVec {
         "alice".into(), "bob".into(), "carol".into(), "dave".into(),
         "eve".into(), "frank".into(), "grace".into(), "henry".into(),
     ],
-}, json_only);
+});
 
 bench!(map_small, ScalarMap, ScalarMap {
     scores: [("alice", 42), ("bob", 7), ("carol", 99), ("dave", 15)]
         .into_iter().map(|(k, v)| (k.into(), v)).collect(),
-}, json_only);
+});
 
 bench!(map_medium, ScalarMap, ScalarMap {
     scores: (0..16u32).map(|i| (format!("player{i}"), i * 10)).collect(),
-}, json_only);
+});
 
 bench!(map_struct, StructMap, StructMap {
     roster: [
@@ -599,15 +623,15 @@ bench!(map_struct, StructMap, StructMap {
         ("bob", Friend { age: 30, name: "Bob".into() }),
         ("carol", Friend { age: 35, name: "Carol".into() }),
     ].into_iter().map(|(k, v)| (k.into(), v)).collect(),
-}, json_only);
+});
 
-// ── String-heavy (1024 strings, JSON only — tests trusted UTF-8 path) ──────
+// ── String-heavy (1024 strings) ──────────────────────────────────────────────
 
 bench!(string_heavy, StringBag, StringBag {
     values: (0..1024)
         .map(|i| format!("user-{i:04}-alpha-beta-gamma-delta-epsilon-zeta-theta-lambda"))
         .collect(),
-}, json_only);
+});
 
 // ── String escaping (JSON only, hand-crafted payloads) ──────────────────────
 
