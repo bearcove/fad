@@ -27,6 +27,53 @@ pub(crate) const RESULT_BYTE_OFFSET: u32 = BASE_FRAME + 24;
 pub(crate) const SAVED_CURSOR_OFFSET: u32 = BASE_FRAME + 32;
 pub(crate) const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
 
+/// Emit an inline key read using the vectorized string scan.
+///
+/// After this, KEY_PTR_OFFSET and KEY_LEN_OFFSET on the stack contain the
+/// key pointer and length. The cursor is past the closing `"`.
+///
+/// Fast path (no escapes): entirely JIT'd, no intrinsic calls.
+/// Slow path (escapes): calls fad_json_key_slow_from_jit.
+fn emit_read_key_inline(ectx: &mut EmitCtx) {
+    let found_quote = ectx.new_label();
+    let found_escape = ectx.new_label();
+    let unterminated = ectx.new_label();
+    let done = ectx.new_label();
+
+    // 1. Skip whitespace, expect and consume opening '"'
+    ectx.emit_json_expect_quote_after_ws(
+        json_intrinsics::fad_json_skip_ws as *const u8,
+    );
+
+    // 2. Save start position to KEY_PTR_OFFSET
+    //    (for the fast path, this IS the key pointer — zero-copy)
+    ectx.emit_save_cursor_to_stack(KEY_PTR_OFFSET);
+
+    // 3. Vectorized scan for '"' or '\'
+    ectx.emit_json_string_scan(found_quote, found_escape, unterminated);
+
+    // 4. Fast path: found closing '"' — entirely JIT'd
+    ectx.bind_label(found_quote);
+    ectx.emit_compute_key_len_and_advance(KEY_PTR_OFFSET, KEY_LEN_OFFSET);
+    ectx.emit_branch(done);
+
+    // 5. Slow path: found '\' — call key unescape intrinsic
+    ectx.bind_label(found_escape);
+    ectx.emit_call_key_slow_from_jit(
+        json_intrinsics::fad_json_key_slow_from_jit as *const u8,
+        KEY_PTR_OFFSET,
+        KEY_PTR_OFFSET,
+        KEY_LEN_OFFSET,
+    );
+    ectx.emit_branch(done);
+
+    // 6. Unterminated string
+    ectx.bind_label(unterminated);
+    ectx.emit_set_error(ErrorCode::UnterminatedString);
+
+    ectx.bind_label(done);
+}
+
 /// JSON wire format — key-value pairs, linear key dispatch.
 pub struct FadJson;
 
@@ -69,11 +116,7 @@ impl Decoder for FadJson {
         ectx.bind_label(loop_top);
 
         // Read key → (key_ptr, key_len) on stack
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // expect ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -566,15 +609,88 @@ impl Decoder for FadJson {
         ectx: &mut EmitCtx,
         offset: usize,
         scalar_type: ScalarType,
-        _string_offsets: &crate::malum::StringOffsets,
+        string_offsets: &crate::malum::StringOffsets,
     ) {
-        let fn_ptr = match scalar_type {
-            ScalarType::String => json_intrinsics::fad_json_read_string_value as *const u8,
-            ScalarType::Str => json_intrinsics::fad_json_read_str_value as *const u8,
-            ScalarType::CowStr => json_intrinsics::fad_json_read_cow_str_value as *const u8,
+        let found_quote = ectx.new_label();
+        let found_escape = ectx.new_label();
+        let unterminated = ectx.new_label();
+        let done = ectx.new_label();
+
+        // 1. Skip whitespace, expect and consume opening '"'
+        ectx.emit_json_expect_quote_after_ws(
+            json_intrinsics::fad_json_skip_ws as *const u8,
+        );
+
+        // 2. Save start position to stack
+        ectx.emit_save_cursor_to_stack(SAVED_CURSOR_OFFSET);
+
+        // 3. Vectorized scan for '"' or '\'
+        ectx.emit_json_string_scan(found_quote, found_escape, unterminated);
+
+        // 4. Fast path: found closing '"' (no escapes)
+        ectx.bind_label(found_quote);
+        match scalar_type {
+            ScalarType::String => {
+                // Malum path: validate + alloc + copy, then write ptr/len/cap directly
+                ectx.emit_call_validate_alloc_copy_from_scan(
+                    intrinsics::fad_string_validate_alloc_copy as *const u8,
+                    SAVED_CURSOR_OFFSET,
+                    CANDIDATES_OFFSET, // reuse as temp for len
+                );
+                ectx.emit_write_malum_string_and_advance(
+                    offset as u32,
+                    string_offsets,
+                    CANDIDATES_OFFSET,
+                );
+            }
+            ScalarType::Str => {
+                ectx.emit_call_string_finish(
+                    json_intrinsics::fad_json_finish_str_fast as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
+            ScalarType::CowStr => {
+                ectx.emit_call_string_finish(
+                    json_intrinsics::fad_json_finish_cow_str_fast as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
             _ => panic!("unsupported JSON string scalar: {:?}", scalar_type),
-        };
-        ectx.emit_call_intrinsic(fn_ptr, offset as u32);
+        }
+        ectx.emit_branch(done);
+
+        // 5. Slow path: found '\' (escapes)
+        ectx.bind_label(found_escape);
+        match scalar_type {
+            ScalarType::String => {
+                ectx.emit_call_string_escape(
+                    json_intrinsics::fad_json_string_with_escapes as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
+            ScalarType::Str => {
+                // &str cannot represent escaped strings — error
+                ectx.emit_set_error(ErrorCode::InvalidEscapeSequence);
+            }
+            ScalarType::CowStr => {
+                ectx.emit_call_string_escape(
+                    json_intrinsics::fad_json_cow_str_with_escapes as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
+            _ => panic!("unsupported JSON string scalar: {:?}", scalar_type),
+        }
+        ectx.emit_branch(done);
+
+        // 6. Unterminated string
+        ectx.bind_label(unterminated);
+        ectx.emit_set_error(ErrorCode::UnterminatedString);
+
+        ectx.bind_label(done);
     }
 
     // r[impl deser.json.enum.external]
@@ -603,11 +719,7 @@ impl Decoder for FadJson {
         // ══════════════════════════════════════════════════════════════════
         // Bare string path: read the quoted string, match unit variants.
         // ══════════════════════════════════════════════════════════════════
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Compare against unit variant names.
         let unit_labels: Vec<_> = variants
@@ -647,11 +759,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read the variant name key.
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Consume ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -722,11 +830,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read first key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Verify it equals tag_key, error if not
         let tag_key_bytes = tag_key.as_bytes();
@@ -748,11 +852,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Read variant name string
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Variant name dispatch (linear compare chain)
         let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
@@ -864,11 +964,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read first key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Verify it equals tag_key
         let tag_key_bytes = tag_key.as_bytes();
@@ -890,11 +986,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Read variant name string
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Variant name dispatch
         let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
@@ -1215,11 +1307,7 @@ impl Decoder for FadJson {
         ectx.bind_label(loop_top);
 
         // Read key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // expect ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -1345,11 +1433,7 @@ impl FadJson {
         ectx.bind_label(scan_loop);
 
         // Read key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Consume ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -1581,11 +1665,7 @@ impl FadJson {
         ectx.bind_label(sub_scan_loop);
 
         // Read inner key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
         ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
 

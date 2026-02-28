@@ -19,6 +19,7 @@ pub struct CompiledDecoder {
     entry: AssemblyOffset,
     func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext),
     trusted_utf8_input: bool,
+    _jit_registration: Option<crate::jit_debug::JitRegistration>,
 }
 
 impl CompiledDecoder {
@@ -1516,11 +1517,14 @@ pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> Compiled
     let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
         unsafe { core::mem::transmute(buf.ptr(entry_offset)) };
 
+    let registration = register_jit_symbols(&compiler.shapes, &buf, "decode");
+
     CompiledDecoder {
         buf,
         entry: entry_offset,
         func,
         trusted_utf8_input: decoder.supports_trusted_utf8_input(),
+        _jit_registration: Some(registration),
     }
 }
 
@@ -1533,6 +1537,7 @@ pub struct CompiledEncoder {
     buf: dynasmrt::ExecutableBuffer,
     entry: AssemblyOffset,
     func: unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext),
+    _jit_registration: Option<crate::jit_debug::JitRegistration>,
 }
 
 impl CompiledEncoder {
@@ -2249,9 +2254,51 @@ pub fn compile_encoder(shape: &'static Shape, encoder: &dyn Encoder) -> Compiled
     let func: unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext) =
         unsafe { core::mem::transmute(buf.ptr(entry_offset)) };
 
+    let registration = register_jit_symbols(&compiler.shapes, &buf, "encode");
+
     CompiledEncoder {
         buf,
         entry: entry_offset,
         func,
+        _jit_registration: Some(registration),
     }
+}
+
+/// Collect symbols from the compiler's shape map and register them with the
+/// GDB JIT interface so debugger backtraces show function names.
+fn register_jit_symbols(
+    shapes: &HashMap<*const Shape, ShapeEntry>,
+    buf: &dynasmrt::ExecutableBuffer,
+    direction: &str,
+) -> crate::jit_debug::JitRegistration {
+    let buf_len = buf.len();
+    let buf_base = buf.as_ptr();
+
+    // Collect (name, offset) pairs, sorted by offset.
+    let mut entries: Vec<(String, usize)> = shapes
+        .iter()
+        .filter_map(|(&shape_ptr, entry)| {
+            entry.offset.map(|off| {
+                let shape = unsafe { &*shape_ptr };
+                (format!("fad::{direction}::{}", shape.type_identifier), off.0)
+            })
+        })
+        .collect();
+    entries.sort_by_key(|&(_, off)| off);
+
+    // Compute sizes from gaps between consecutive offsets.
+    let symbols: Vec<crate::jit_debug::JitSymbolEntry> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, (name, offset))| {
+            let next_offset = entries.get(i + 1).map_or(buf_len, |e| e.1);
+            crate::jit_debug::JitSymbolEntry {
+                name: name.clone(),
+                offset: *offset,
+                size: next_offset.saturating_sub(*offset),
+            }
+        })
+        .collect();
+
+    crate::jit_debug::register_jit_code(buf_base, buf_len, &symbols)
 }
