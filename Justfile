@@ -1,6 +1,9 @@
 image_name := "fad-test-x86_64"
 docker_platform := "linux/amd64"
 
+list:
+    just --list
+
 # Build the x86_64 Docker test image
 docker-build:
     docker build --platform {{docker_platform}} -t {{image_name}} .

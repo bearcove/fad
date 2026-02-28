@@ -229,20 +229,6 @@ body{
   font-family:var(--mono);font-size:13px;
   padding:24px 20px;max-width:960px;margin:0 auto;
 }
-header{
-  display:flex;align-items:flex-start;gap:16px;
-  margin-bottom:20px;
-}
-.title-block{flex:1}
-h1{
-  font-family:var(--sans);
-  font-size:20px;font-weight:700;letter-spacing:-.02em;
-  color:var(--bright);
-}
-.meta{font-size:13px;color:var(--bright);margin-top:5px;letter-spacing:.01em;font-family:var(--mono)}
-.legend{display:flex;gap:12px;align-items:center;padding-top:6px}
-.legend-item{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text)}
-.swatch{width:8px;height:8px;border-radius:1px;flex-shrink:0}
 /* tabs */
 .tabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid rgba(255,255,255,0.07)}
 .tab{
@@ -255,27 +241,24 @@ h1{
 .tab.active{color:var(--bright);border-bottom-color:var(--fad)}
 .panel{display:none}
 .panel.active{display:block}
-/* summary */
-.summary{
-  font-family:var(--sans);font-size:14px;font-weight:700;
-  text-align:center;margin-bottom:16px;
-  color:var(--text);
-}
-.summary .fad-n{color:#3DB858}
-.summary .ref-n{color:var(--ref)}
-.summary .pipe{color:var(--dim);margin:0 10px}
-/* bench rows */
+/* bench rows — 5 cols: name | ratio | fad-time | bar | serde-time */
 .bench-row{
   display:grid;
-  grid-template-columns:180px 64px 1fr 64px;
+  grid-template-columns:180px 44px 64px 1fr 64px;
   gap:0 10px;align-items:center;margin-bottom:10px;
 }
 .bench-row:last-child{margin-bottom:0}
-.group{margin-bottom:4px}
 .bname{
   font-size:12px;font-weight:600;color:#A0B8CC;
   letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
+.ratio-col{
+  font-size:11px;font-weight:600;
+  font-variant-numeric:tabular-nums;
+  text-align:right;white-space:nowrap;
+}
+.ratio-col.win{color:#3DB858}
+.ratio-col.lose{color:#C05050}
 .t-fad{
   font-size:12px;font-weight:500;color:var(--bright);
   text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;
@@ -285,15 +268,7 @@ h1{
   font-variant-numeric:tabular-nums;white-space:nowrap;
 }
 .unit{font-size:11px;color:var(--text);font-weight:400}
-/* bar cell: ratio label sits above the track */
-.bar-cell{display:flex;flex-direction:column;gap:3px}
-.ratio-above{
-  font-family:var(--mono);font-size:11px;font-weight:600;
-  font-variant-numeric:tabular-nums;text-align:center;line-height:1;
-}
-.ratio-above.win{color:#3DB858}
-.ratio-above.lose{color:#C05050}
-/* the track */
+/* bar cell */
 .delta-track{
   position:relative;height:8px;
   background:var(--track);border-radius:4px;
@@ -306,23 +281,23 @@ h1{
 .delta-fill{position:absolute;top:0;bottom:0}
 .delta-fill.fad-side{right:50%;border-radius:4px 0 0 4px;background:var(--fad)}
 .delta-fill.ref-side{left:50%;border-radius:0 4px 4px 0;background:var(--ref)}
+/* summary row — lives in the bar column */
+.summary-cell{
+  font-family:var(--sans);font-size:13px;font-weight:700;
+  text-align:center;padding-bottom:6px;color:var(--text);
+}
+.summary-cell .fad-n{color:#3DB858}
+.summary-cell .ref-n{color:var(--ref)}
+.summary-cell .pipe{color:var(--dim);margin:0 10px}
+/* footer */
+footer{
+  margin-top:24px;padding-top:12px;
+  border-top:1px solid var(--border);
+  font-size:12px;color:var(--dim);
+}
 </style>
 </head>
 <body>
-<header>
-  <div class="title-block">
-    <h1>Bench Report</h1>
-    <div class="meta">"#);
-
-    write!(h, "{} · {} · {}", esc(&meta.datetime), esc(&meta.commit), esc(&meta.platform)).unwrap();
-
-    h.push_str(r#"</div>
-  </div>
-  <div class="legend">
-    <div class="legend-item"><div class="swatch" style="background:var(--fad)"></div>fad</div>
-    <div class="legend-item"><div class="swatch" style="background:var(--ref)"></div>serde</div>
-  </div>
-</header>
 "#);
 
     // Tabs
@@ -344,7 +319,7 @@ h1{
             .collect();
         groups.sort_by(|a, b| group_sort_key(b).partial_cmp(&group_sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Win summary
+        // Win summary row — in bar column
         let comparable_total = groups.iter().filter(|g| {
             g.rows.iter().any(|r| r.name.starts_with("fad")) &&
             g.rows.iter().any(|r| is_reference(&r.name))
@@ -363,7 +338,7 @@ h1{
                 .unwrap_or_else(|| "serde".to_string());
             let serde_wins = comparable_total - fad_wins;
             write!(h,
-                r#"<div class="summary">fad wins <span class="fad-n">{fad_wins}</span><span class="pipe">|</span>{ref_name} wins <span class="ref-n">{serde_wins}</span></div>"#,
+                r#"<div class="bench-row"><span></span><span></span><span></span><div class="summary-cell">fad wins <span class="fad-n">{fad_wins}</span><span class="pipe">|</span>{ref_name} wins <span class="ref-n">{serde_wins}</span></div><span></span></div>"#,
             ).unwrap();
         }
 
@@ -389,7 +364,7 @@ h1{
             if fad_rows.is_empty() { continue; }
 
             for fad_row in &fad_rows {
-                let (bar_fill, ratio_above) = match ref_row {
+                let (bar_fill, ratio_html) = match ref_row {
                     Some(rr) => {
                         let ratio = rr.median_ns / fad_row.median_ns;
                         let (fill, fad_wins) = delta_fill(ratio);
@@ -397,7 +372,7 @@ h1{
                         let ratio_cls = if fad_wins { "win" } else { "lose" };
                         (
                             format!(r#"<div class="{fill_class}" style="width:{fill:.1}%"></div>"#),
-                            format!(r#"<span class="ratio-above {ratio_cls}">{:.2}×</span>"#, ratio),
+                            format!(r#"<span class="ratio-col {ratio_cls}">{:.2}×</span>"#, ratio),
                         )
                     }
                     None => (
@@ -409,7 +384,7 @@ h1{
                 let ref_time = ref_row.map(|r| fmt_time_html(r.median_ns)).unwrap_or_else(|| "—".to_string());
 
                 write!(h,
-                    r#"<div class="bench-row"><span class="bname">{}</span><span class="t-fad">{}</span><div class="bar-cell">{ratio_above}<div class="delta-track">{bar_fill}</div></div><span class="t-ref">{ref_time}</span></div>"#,
+                    r#"<div class="bench-row"><span class="bname">{}</span>{ratio_html}<span class="t-fad">{}</span><div class="delta-track">{bar_fill}</div><span class="t-ref">{ref_time}</span></div>"#,
                     esc(&group.name), fmt_time_html(fad_row.median_ns),
                 ).unwrap();
             }
@@ -417,6 +392,10 @@ h1{
 
         h.push_str("</div>\n");
     }
+
+    h.push_str("<footer>");
+    write!(h, "{} · {} · {}", esc(&meta.datetime), esc(&meta.commit), esc(&meta.platform)).unwrap();
+    h.push_str("</footer>\n");
 
     h.push_str(r#"<script>
 function switchTab(label) {
