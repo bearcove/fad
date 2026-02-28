@@ -12,7 +12,7 @@ mod pow10tab;
 pub mod recipe;
 pub mod solver;
 
-use compiler::CompiledDecoder;
+use compiler::{CompiledDecoder, CompiledEncoder};
 use context::{DeserContext, ErrorCode};
 
 // r[impl api.compile]
@@ -22,6 +22,14 @@ pub fn compile_decoder(
     decoder: &dyn format::Decoder,
 ) -> CompiledDecoder {
     compiler::compile_decoder(shape, decoder)
+}
+
+/// Compile an encoder (serializer) for the given shape and format.
+pub fn compile_encoder(
+    shape: &'static facet::Shape,
+    encoder: &dyn format::Encoder,
+) -> CompiledEncoder {
+    compiler::compile_encoder(shape, encoder)
 }
 
 // r[impl api.output]

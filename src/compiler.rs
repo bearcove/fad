@@ -7,7 +7,10 @@ use facet::{
 };
 
 use crate::arch::EmitCtx;
-use crate::format::{Decoder, FieldEmitInfo, SkippedFieldInfo, VariantEmitInfo, VariantKind};
+use crate::format::{
+    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, SkippedFieldInfo, VariantEmitInfo,
+    VariantEncodeInfo, VariantKind,
+};
 use crate::malum::StringOffsets;
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
@@ -53,7 +56,7 @@ struct ShapeEntry {
 }
 
 /// Compiler state for emitting one function per shape into a shared buffer.
-struct Compiler<'fmt> {
+struct DecoderCompiler<'fmt> {
     ectx: EmitCtx,
     decoder: &'fmt dyn Decoder,
     /// All shapes we've started or finished compiling.
@@ -67,14 +70,14 @@ struct Compiler<'fmt> {
     string_offsets: StringOffsets,
 }
 
-impl<'fmt> Compiler<'fmt> {
+impl<'fmt> DecoderCompiler<'fmt> {
     fn new(
         extra_stack: u32,
         option_scratch_offset: u32,
         string_offsets: StringOffsets,
         decoder: &'fmt dyn Decoder,
     ) -> Self {
-        Compiler {
+        DecoderCompiler {
             ectx: EmitCtx::new(extra_stack),
             decoder,
             shapes: HashMap::new(),
@@ -1407,7 +1410,7 @@ pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> Compiled
     // Discover String layout offsets (cached after first call).
     let string_offsets = crate::malum::discover_string_offsets();
 
-    let mut compiler = Compiler::new(extra_stack, option_scratch_offset, string_offsets, decoder);
+    let mut compiler = DecoderCompiler::new(extra_stack, option_scratch_offset, string_offsets, decoder);
     compiler.compile_shape(shape);
 
     // Get the entry offset for the root shape.
@@ -1425,5 +1428,737 @@ pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> Compiled
         entry: entry_offset,
         func,
         trusted_utf8_input: decoder.supports_trusted_utf8_input(),
+    }
+}
+
+// =============================================================================
+// Encoder compiler — serialization direction
+// =============================================================================
+
+/// A compiled encoder. Owns the executable buffer containing JIT'd machine code.
+pub struct CompiledEncoder {
+    buf: dynasmrt::ExecutableBuffer,
+    entry: AssemblyOffset,
+    func: unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext),
+}
+
+impl CompiledEncoder {
+    pub(crate) fn func(&self) -> unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext) {
+        self.func
+    }
+
+    /// The raw executable code buffer.
+    pub fn code(&self) -> &[u8] {
+        &self.buf
+    }
+
+    /// Byte offset of the entry point within the code buffer.
+    pub fn entry_offset(&self) -> usize {
+        self.entry.0
+    }
+}
+
+/// Collect fields for encode — produces lean FieldEncodeInfo (no defaults, no required_index).
+fn collect_encode_fields(shape: &'static Shape) -> Vec<FieldEncodeInfo> {
+    let mut out = Vec::new();
+    collect_encode_fields_recursive(shape, 0, &mut out);
+    out
+}
+
+fn collect_encode_fields_recursive(
+    shape: &'static Shape,
+    base_offset: usize,
+    out: &mut Vec<FieldEncodeInfo>,
+) {
+    let st = match &shape.ty {
+        Type::User(UserType::Struct(st)) => st,
+        _ => panic!("unsupported shape for encode: {}", shape.type_identifier),
+    };
+    for f in st.fields {
+        if f.is_flattened() {
+            collect_encode_fields_recursive(f.shape(), base_offset + f.offset, out);
+            continue;
+        }
+        // Skip fields marked skip_serializing
+        if f.should_skip_serializing_unconditional() {
+            continue;
+        }
+        out.push(FieldEncodeInfo {
+            offset: base_offset + f.offset,
+            shape: f.shape(),
+            name: f.effective_name(),
+        });
+    }
+}
+
+/// Collect variants for encode — produces VariantEncodeInfo.
+fn collect_encode_variants(enum_type: &'static facet::EnumType) -> Vec<VariantEncodeInfo> {
+    enum_type
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let kind = VariantKind::from_struct_type(&v.data);
+            let mut fields = Vec::new();
+            for f in v.data.fields {
+                if f.is_flattened() {
+                    collect_encode_fields_recursive(f.shape(), f.offset, &mut fields);
+                } else if f.should_skip_serializing_unconditional() {
+                    continue;
+                } else {
+                    fields.push(FieldEncodeInfo {
+                        offset: f.offset,
+                        shape: f.shape(),
+                        name: f.effective_name(),
+                    });
+                }
+            }
+            VariantEncodeInfo {
+                index: i,
+                name: v.effective_name(),
+                rust_discriminant: v.discriminant.expect(
+                    "enum variant must have a known discriminant (use #[repr(u8)] or similar)",
+                ),
+                fields,
+                kind,
+            }
+        })
+        .collect()
+}
+
+/// Compiler state for emitting encode functions (one per shape).
+struct EncoderCompiler<'fmt> {
+    ectx: EmitCtx,
+    encoder: &'fmt dyn Encoder,
+    shapes: HashMap<*const Shape, ShapeEntry>,
+    string_offsets: StringOffsets,
+}
+
+impl<'fmt> EncoderCompiler<'fmt> {
+    fn new(extra_stack: u32, string_offsets: StringOffsets, encoder: &'fmt dyn Encoder) -> Self {
+        EncoderCompiler {
+            ectx: EmitCtx::new(extra_stack),
+            encoder,
+            shapes: HashMap::new(),
+            string_offsets,
+        }
+    }
+
+    /// Compile an encoder for `shape`. Returns the entry label.
+    fn compile_shape(&mut self, shape: &'static Shape) -> DynamicLabel {
+        let key = shape as *const Shape;
+
+        if let Some(entry) = self.shapes.get(&key) {
+            return entry.label;
+        }
+
+        let entry_label = self.ectx.new_label();
+        self.shapes.insert(
+            key,
+            ShapeEntry {
+                label: entry_label,
+                offset: None,
+            },
+        );
+
+        // Transparent wrappers — serialize as the inner type.
+        if shape.is_transparent() {
+            self.compile_transparent(shape, entry_label);
+            return entry_label;
+        }
+
+        // Vec<T>
+        if let Def::List(list_def) = &shape.def {
+            self.compile_vec(shape, list_def, entry_label);
+            return entry_label;
+        }
+
+        // Map<K,V>
+        if let Def::Map(map_def) = &shape.def {
+            self.compile_map(shape, map_def, entry_label);
+            return entry_label;
+        }
+
+        // Smart pointers (Box<T>, Arc<T>, Rc<T>)
+        if let Some(ptr_def) = get_pointer_def(shape) {
+            self.compile_pointer(shape, ptr_def, entry_label);
+            return entry_label;
+        }
+
+        match &shape.ty {
+            Type::User(UserType::Struct(_)) => {
+                self.compile_struct(shape, entry_label);
+            }
+            Type::User(UserType::Enum(enum_type)) => {
+                self.compile_enum(shape, enum_type, entry_label);
+            }
+            _ => panic!("unsupported shape for encode: {}", shape.type_identifier),
+        }
+
+        entry_label
+    }
+
+    fn compile_struct(&mut self, shape: &'static Shape, entry_label: DynamicLabel) {
+        let key = shape as *const Shape;
+        let fields = collect_encode_fields(shape);
+        let inline = self.encoder.supports_inline_nested();
+
+        // Pre-compile nested composite fields.
+        let nested: Vec<Option<DynamicLabel>> = if inline {
+            fields
+                .iter()
+                .map(|f| {
+                    let target = unwrap_inner_or_self(f.shape);
+                    if matches!(&target.ty, Type::User(UserType::Enum(_)))
+                        || matches!(&target.def, Def::List(_) | Def::Map(_))
+                    {
+                        Some(self.compile_shape(target))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            fields
+                .iter()
+                .map(|f| {
+                    let target = unwrap_inner_or_self(f.shape);
+                    if is_composite(target) {
+                        Some(self.compile_shape(target))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_encode_func();
+
+        let encoder = self.encoder;
+        let string_offsets = &self.string_offsets;
+        let ectx = &mut self.ectx;
+
+        encoder.emit_encode_struct_fields(ectx, &fields, &mut |ectx, field| {
+            emit_encode_field(ectx, encoder, field, &fields, &nested, string_offsets);
+        });
+
+        self.ectx.end_encode_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    fn compile_transparent(&mut self, shape: &'static Shape, entry_label: DynamicLabel) {
+        let key = shape as *const Shape;
+
+        let inner_shape = shape.inner.unwrap_or_else(|| {
+            panic!(
+                "transparent shape {} has no inner shape",
+                shape.type_identifier
+            )
+        });
+
+        let field_offset = match &shape.ty {
+            Type::User(UserType::Struct(st)) => {
+                assert!(
+                    st.fields.len() == 1,
+                    "transparent struct {} has {} fields, expected 1",
+                    shape.type_identifier,
+                    st.fields.len()
+                );
+                st.fields[0].offset
+            }
+            _ => 0,
+        };
+
+        let inner_label = if needs_precompilation(inner_shape) {
+            Some(self.compile_shape(inner_shape))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_encode_func();
+
+        if let Some(label) = inner_label {
+            self.ectx
+                .emit_enc_call_emitted_func(label, field_offset as u32);
+        } else {
+            match inner_shape.scalar_type() {
+                Some(st) if is_string_like_scalar(st) => {
+                    self.encoder.emit_encode_string(
+                        &mut self.ectx,
+                        field_offset,
+                        st,
+                        &self.string_offsets,
+                    );
+                }
+                Some(st) => {
+                    self.encoder
+                        .emit_encode_scalar(&mut self.ectx, field_offset, st);
+                }
+                None => panic!(
+                    "unsupported transparent inner type for encode: {}",
+                    inner_shape.type_identifier,
+                ),
+            }
+        }
+
+        self.ectx.end_encode_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    fn compile_vec(
+        &mut self,
+        shape: &'static Shape,
+        list_def: &'static ListDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+        let vec_offsets = crate::malum::discover_vec_offsets(list_def, shape);
+        let elem_shape = list_def.t;
+
+        let elem_label = if needs_precompilation(elem_shape) {
+            Some(self.compile_shape(elem_shape))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_encode_func();
+
+        let encoder = self.encoder;
+        let string_offsets = &self.string_offsets;
+
+        encoder.emit_encode_vec(
+            &mut self.ectx,
+            0,
+            elem_shape,
+            elem_label,
+            &vec_offsets,
+            &mut |ectx| {
+                emit_encode_elem(ectx, encoder, elem_shape, elem_label, string_offsets);
+            },
+        );
+
+        self.ectx.end_encode_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    fn compile_map(
+        &mut self,
+        shape: &'static Shape,
+        map_def: &'static MapDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+        let k_shape = map_def.k;
+        let v_shape = map_def.v;
+
+        let k_label = if needs_precompilation(k_shape) {
+            Some(self.compile_shape(k_shape))
+        } else {
+            None
+        };
+        let v_label = if needs_precompilation(v_shape) {
+            Some(self.compile_shape(v_shape))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_encode_func();
+
+        let encoder = self.encoder;
+        let string_offsets = &self.string_offsets;
+
+        encoder.emit_encode_map(
+            &mut self.ectx,
+            0,
+            map_def,
+            k_shape,
+            v_shape,
+            k_label,
+            v_label,
+            &mut |ectx| {
+                emit_encode_elem(ectx, encoder, k_shape, k_label, string_offsets);
+            },
+            &mut |ectx| {
+                emit_encode_elem(ectx, encoder, v_shape, v_label, string_offsets);
+            },
+        );
+
+        self.ectx.end_encode_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    fn compile_pointer(
+        &mut self,
+        shape: &'static Shape,
+        ptr_def: &'static PointerDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+
+        let pointee = ptr_def
+            .pointee
+            .unwrap_or_else(|| panic!("pointer {} has no pointee", shape.type_identifier));
+
+        // Pre-compile inner type if composite.
+        let inner_label = if needs_precompilation(pointee) {
+            Some(self.compile_shape(pointee))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_encode_func();
+
+        // For encoding, the pointer field at [input + 0] contains a raw pointer
+        // to the pointee. Load that pointer, then serialize the pointee through it.
+        // The Encoder trait's emit_encode_* methods will handle dereferencing.
+        //
+        // For now, smart pointer encoding follows the same pattern as transparent:
+        // call through to the inner type's encoder with the dereferenced pointer.
+        // The actual dereference intrinsic will be added when we implement a concrete
+        // encoder format.
+        if let Some(label) = inner_label {
+            self.ectx.emit_enc_call_emitted_func(label, 0);
+        } else {
+            match pointee.scalar_type() {
+                Some(st) if is_string_like_scalar(st) => {
+                    self.encoder.emit_encode_string(
+                        &mut self.ectx,
+                        0,
+                        st,
+                        &self.string_offsets,
+                    );
+                }
+                Some(st) => {
+                    self.encoder.emit_encode_scalar(&mut self.ectx, 0, st);
+                }
+                None => panic!(
+                    "unsupported pointer inner type for encode: {}",
+                    pointee.type_identifier,
+                ),
+            }
+        }
+
+        self.ectx.end_encode_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    fn compile_enum(
+        &mut self,
+        shape: &'static Shape,
+        enum_type: &'static facet::EnumType,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+        let variants = collect_encode_variants(enum_type);
+        let inline = self.encoder.supports_inline_nested();
+
+        // Pre-compile nested composite types in variant fields.
+        let nested_labels: Vec<Vec<Option<DynamicLabel>>> = if inline {
+            variants
+                .iter()
+                .map(|v| {
+                    v.fields
+                        .iter()
+                        .map(|f| {
+                            let target = unwrap_inner_or_self(f.shape);
+                            if matches!(&target.ty, Type::User(UserType::Enum(_)))
+                                || matches!(&target.def, Def::List(_) | Def::Map(_))
+                            {
+                                Some(self.compile_shape(target))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            variants
+                .iter()
+                .map(|v| {
+                    v.fields
+                        .iter()
+                        .map(|f| {
+                            let target = unwrap_inner_or_self(f.shape);
+                            if is_composite(target) {
+                                Some(self.compile_shape(target))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_encode_func();
+
+        let encoder = self.encoder;
+        let string_offsets = &self.string_offsets;
+        let ectx = &mut self.ectx;
+
+        let tag_key = shape.get_tag_attr();
+        let content_key = shape.get_content_attr();
+
+        let mut emit_variant_body = |ectx: &mut EmitCtx, variant: &VariantEncodeInfo| {
+            if variant.kind == VariantKind::Unit {
+                return;
+            }
+
+            let nested = &nested_labels[variant.index];
+
+            for (fi, field) in variant.fields.iter().enumerate() {
+                if let Some(label) = nested[fi] {
+                    ectx.emit_enc_call_emitted_func(label, field.offset as u32);
+                } else {
+                    match field.shape.scalar_type() {
+                        Some(st) if is_string_like_scalar(st) => {
+                            encoder.emit_encode_string(ectx, field.offset, st, string_offsets);
+                        }
+                        Some(st) => {
+                            encoder.emit_encode_scalar(ectx, field.offset, st);
+                        }
+                        None if is_struct(field.shape) && encoder.supports_inline_nested() => {
+                            emit_inline_encode_struct(
+                                ectx,
+                                encoder,
+                                field.shape,
+                                field.offset,
+                                string_offsets,
+                            );
+                        }
+                        None => panic!(
+                            "unsupported variant field type for encode: {}",
+                            field.shape.type_identifier,
+                        ),
+                    }
+                }
+            }
+        };
+
+        match (tag_key, content_key, shape.is_untagged()) {
+            (None, None, false) => {
+                encoder.emit_encode_enum(ectx, &variants, &mut emit_variant_body);
+            }
+            (Some(tk), Some(ck), false) => {
+                encoder.emit_encode_enum_adjacent(
+                    ectx,
+                    &variants,
+                    tk,
+                    ck,
+                    &mut emit_variant_body,
+                );
+            }
+            (Some(tk), None, false) => {
+                encoder.emit_encode_enum_internal(
+                    ectx,
+                    &variants,
+                    tk,
+                    &mut emit_variant_body,
+                );
+            }
+            (_, _, true) => {
+                encoder.emit_encode_enum_untagged(ectx, &variants, &mut emit_variant_body);
+            }
+            (None, Some(_), _) => {
+                panic!("content attribute without tag attribute is invalid");
+            }
+        }
+
+        self.ectx.end_encode_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+}
+
+/// Emit code for a single field during encode.
+fn emit_encode_field(
+    ectx: &mut EmitCtx,
+    encoder: &dyn Encoder,
+    field: &FieldEncodeInfo,
+    all_fields: &[FieldEncodeInfo],
+    nested: &[Option<DynamicLabel>],
+    string_offsets: &StringOffsets,
+) {
+    let idx = all_fields
+        .iter()
+        .position(|f| f.offset == field.offset)
+        .expect("field not found in all_fields");
+
+    // Option<T>
+    if let Some(opt_def) = get_option_def(field.shape) {
+        let inner_shape = opt_def.t;
+
+        encoder.emit_encode_option(ectx, field.offset, &mut |ectx| {
+            // Emit inner T serialization. The encoder has already set up
+            // the input pointer to point at the Some payload.
+            if let Some(label) = nested[idx] {
+                ectx.emit_enc_call_emitted_func(label, 0);
+            } else if is_struct(inner_shape) && encoder.supports_inline_nested() {
+                emit_inline_encode_struct(ectx, encoder, inner_shape, 0, string_offsets);
+            } else {
+                match inner_shape.scalar_type() {
+                    Some(st) if is_string_like_scalar(st) => {
+                        encoder.emit_encode_string(ectx, 0, st, string_offsets);
+                    }
+                    Some(st) => {
+                        encoder.emit_encode_scalar(ectx, 0, st);
+                    }
+                    None => panic!(
+                        "unsupported Option inner type for encode: {}",
+                        inner_shape.type_identifier,
+                    ),
+                }
+            }
+        });
+        return;
+    }
+
+    // Smart pointers (Box<T>, Arc<T>, Rc<T>)
+    if let Some(_ptr_def) = get_pointer_def(field.shape) {
+        // For now, pointer encoding will be handled by the format's intrinsics
+        // when a concrete encoder is implemented. The compiler just calls through
+        // to the inner type's label if pre-compiled.
+        if let Some(label) = nested[idx] {
+            ectx.emit_enc_call_emitted_func(label, field.offset as u32);
+        } else {
+            panic!(
+                "smart pointer field encode not yet fully supported: {}",
+                field.shape.type_identifier,
+            );
+        }
+        return;
+    }
+
+    if let Some(label) = nested[idx] {
+        ectx.emit_enc_call_emitted_func(label, field.offset as u32);
+        return;
+    }
+
+    if is_struct(field.shape) && encoder.supports_inline_nested() {
+        emit_inline_encode_struct(ectx, encoder, field.shape, field.offset, string_offsets);
+        return;
+    }
+
+    match field.shape.scalar_type() {
+        Some(st) if is_string_like_scalar(st) => {
+            encoder.emit_encode_string(ectx, field.offset, st, string_offsets);
+        }
+        Some(st) => {
+            encoder.emit_encode_scalar(ectx, field.offset, st);
+        }
+        None => panic!(
+            "unsupported field type for encode: {} (scalar_type={:?})",
+            field.shape.type_identifier,
+            field.shape.scalar_type()
+        ),
+    }
+}
+
+/// Emit encode code for a single element (used by Vec/Map loops).
+fn emit_encode_elem(
+    ectx: &mut EmitCtx,
+    encoder: &dyn Encoder,
+    elem_shape: &'static Shape,
+    elem_label: Option<DynamicLabel>,
+    string_offsets: &StringOffsets,
+) {
+    if let Some(label) = elem_label {
+        ectx.emit_enc_call_emitted_func(label, 0);
+    } else if is_struct(elem_shape) && encoder.supports_inline_nested() {
+        emit_inline_encode_struct(ectx, encoder, elem_shape, 0, string_offsets);
+    } else {
+        match elem_shape.scalar_type() {
+            Some(st) if is_string_like_scalar(st) => {
+                encoder.emit_encode_string(ectx, 0, st, string_offsets);
+            }
+            Some(st) => {
+                encoder.emit_encode_scalar(ectx, 0, st);
+            }
+            None => panic!(
+                "unsupported Vec/Map element type for encode: {}",
+                elem_shape.type_identifier,
+            ),
+        }
+    }
+}
+
+/// Inline a nested struct's fields into the parent encode function.
+fn emit_inline_encode_struct(
+    ectx: &mut EmitCtx,
+    encoder: &dyn Encoder,
+    shape: &'static Shape,
+    base_offset: usize,
+    string_offsets: &StringOffsets,
+) {
+    let inner_fields = collect_encode_fields(shape);
+
+    let adjusted: Vec<FieldEncodeInfo> = inner_fields
+        .into_iter()
+        .map(|f| FieldEncodeInfo {
+            offset: base_offset + f.offset,
+            shape: f.shape,
+            name: f.name,
+        })
+        .collect();
+
+    let no_nested = vec![None; adjusted.len()];
+
+    encoder.emit_encode_struct_fields(ectx, &adjusted, &mut |ectx, field| {
+        emit_encode_field(ectx, encoder, field, &adjusted, &no_nested, string_offsets);
+    });
+}
+
+/// Compile an encoder for the given shape and format.
+pub fn compile_encoder(shape: &'static Shape, encoder: &dyn Encoder) -> CompiledEncoder {
+    let format_extra = match &shape.ty {
+        Type::User(UserType::Struct(_)) => {
+            let fields = collect_encode_fields(shape);
+            encoder.extra_stack_space(&fields)
+        }
+        Type::User(UserType::Enum(enum_type)) => {
+            let mut max_extra = 0u32;
+            for v in enum_type.variants {
+                let fields: Vec<FieldEncodeInfo> = v
+                    .data
+                    .fields
+                    .iter()
+                    .filter(|f| !f.should_skip_serializing_unconditional())
+                    .map(|f| FieldEncodeInfo {
+                        offset: f.offset,
+                        shape: f.shape(),
+                        name: f.effective_name(),
+                    })
+                    .collect();
+                max_extra = max_extra.max(encoder.extra_stack_space(&fields));
+            }
+            max_extra
+        }
+        _ => encoder.extra_stack_space(&[]),
+    };
+
+    let string_offsets = crate::malum::discover_string_offsets();
+
+    let mut compiler = EncoderCompiler::new(format_extra, string_offsets, encoder);
+    compiler.compile_shape(shape);
+
+    let key = shape as *const Shape;
+    let entry_offset = compiler.shapes[&key]
+        .offset
+        .expect("root shape was not fully compiled");
+
+    let buf = compiler.ectx.finalize();
+    let func: unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext) =
+        unsafe { core::mem::transmute(buf.ptr(entry_offset)) };
+
+    CompiledEncoder {
+        buf,
+        entry: entry_offset,
+        func,
     }
 }
