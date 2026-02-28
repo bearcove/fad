@@ -50,8 +50,8 @@ macro_rules! bench {
             use super::*;
             use std::sync::LazyLock;
 
-            static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
-                serde_json::to_vec(&super::make_value()).unwrap()
+            static DATA: LazyLock<String> = LazyLock::new(|| {
+                serde_json::to_string(&super::make_value()).unwrap()
             });
 
             static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
@@ -61,20 +61,20 @@ macro_rules! bench {
             #[divan::bench]
             fn serde_deser(bencher: Bencher) {
                 let data = &*DATA;
-                bencher.bench(|| black_box(serde_json::from_slice::<$Type>(black_box(data)).unwrap()));
+                bencher.bench(|| black_box(serde_json::from_str::<$Type>(black_box(data)).unwrap()));
             }
 
             #[divan::bench]
             fn facet_deser(bencher: Bencher) {
                 let data = &*DATA;
-                bencher.bench(|| black_box(facet_json::from_slice::<$Type>(black_box(data)).unwrap()));
+                bencher.bench(|| black_box(facet_json::from_str::<$Type>(black_box(data)).unwrap()));
             }
 
             #[divan::bench]
             fn fad_deser(bencher: Bencher) {
                 let data = &*DATA;
                 let deser = &*DECODER;
-                bencher.bench(|| black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap()));
+                bencher.bench(|| black_box(fad::from_str::<$Type>(deser, black_box(data)).unwrap()));
             }
         }
     };
@@ -87,8 +87,8 @@ macro_rules! bench {
             use super::*;
             use std::sync::LazyLock;
 
-            static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
-                serde_json::to_vec(&super::make_value()).unwrap()
+            static DATA: LazyLock<String> = LazyLock::new(|| {
+                serde_json::to_string(&super::make_value()).unwrap()
             });
 
             static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
@@ -102,20 +102,20 @@ macro_rules! bench {
             #[divan::bench]
             fn serde_deser(bencher: Bencher) {
                 let data = &*DATA;
-                bencher.bench(|| black_box(serde_json::from_slice::<$Type>(black_box(data)).unwrap()));
+                bencher.bench(|| black_box(serde_json::from_str::<$Type>(black_box(data)).unwrap()));
             }
 
             #[divan::bench]
             fn facet_deser(bencher: Bencher) {
                 let data = &*DATA;
-                bencher.bench(|| black_box(facet_json::from_slice::<$Type>(black_box(data)).unwrap()));
+                bencher.bench(|| black_box(facet_json::from_str::<$Type>(black_box(data)).unwrap()));
             }
 
             #[divan::bench]
             fn fad_deser(bencher: Bencher) {
                 let data = &*DATA;
                 let deser = &*DECODER;
-                bencher.bench(|| black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap()));
+                bencher.bench(|| black_box(fad::from_str::<$Type>(deser, black_box(data)).unwrap()));
             }
 
             #[divan::bench]
