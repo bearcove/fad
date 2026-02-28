@@ -1,0 +1,154 @@
+---
+source: src/disasm_tests.rs
+expression: out
+---
+=== json/vec ===
+000000:  sub sp, sp, #0x70
+000004:  stp x29, x30, [sp]
+000008:  stp x19, x20, [sp, #0x10]
+00000c:  stp x21, x22, [sp, #0x20]
+000010:  mov x29, sp
+000014:  mov x21, x0
+000018:  mov x22, x1
+00001c:  ldr x19, [x22]
+000020:  ldr x20, [x22, #0x8]
+000024:  str x19, [x22]
+000028:  mov x0, x22
+00002c:  mov x8, #<imm>
+000030:  movk x8, #<imm>, lsl #16
+000034:  movk x8, #<imm>, lsl #32
+000038:  movk x8, #<imm>, lsl #48
+00003c:  blr x8
+000040:  ldr x19, [x22]
+000044:  ldr w9, [x22, #0x10]
+000048:  cbnz w9, $+0x1f8
+00004c:  str x19, [x22]
+000050:  mov x0, x22
+000054:  add x1, sp, #0x48
+000058:  mov x8, #<imm>
+00005c:  movk x8, #<imm>, lsl #16
+000060:  movk x8, #<imm>, lsl #32
+000064:  movk x8, #<imm>, lsl #48
+000068:  blr x8
+00006c:  ldr x19, [x22]
+000070:  ldr w9, [x22, #0x10]
+000074:  cbnz w9, $+0x1cc
+000078:  ldrb w9, [sp, #0x48]
+00007c:  cmp w9, #0x5d
+000080:  b.eq $+0x164
+000084:  str x19, [x22]
+000088:  mov x0, x22
+00008c:  mov x1, #<imm>
+000090:  mov x2, #<imm>
+000094:  mov x3, #<imm>
+000098:  mov x8, #<imm>
+00009c:  movk x8, #<imm>, lsl #16
+0000a0:  movk x8, #<imm>, lsl #32
+0000a4:  movk x8, #<imm>, lsl #48
+0000a8:  blr x8
+0000ac:  ldr x19, [x22]
+0000b0:  ldr w10, [x22, #0x10]
+0000b4:  cbnz w10, $+0x18c
+0000b8:  str x21, [sp, #0x50]
+0000bc:  str x0, [sp, #0x58]
+0000c0:  str xzr, [sp, #0x60]
+0000c4:  mov x10, #<imm>
+0000c8:  str x10, [sp, #0x68]
+0000cc:  ldr x10, [sp, #0x60]
+0000d0:  ldr x11, [sp, #0x68]
+0000d4:  cmp x10, x11
+0000d8:  b.eq $+0x90
+0000dc:  ldr x21, [sp, #0x58]
+0000e0:  ldr x10, [sp, #0x60]
+0000e4:  mov x11, #<imm>
+0000e8:  madd x21, x10, x11, x21
+0000ec:  str x19, [x22]
+0000f0:  mov x0, x22
+0000f4:  add x1, x21, #0x0
+0000f8:  mov x8, #<imm>
+0000fc:  movk x8, #<imm>, lsl #16
+000100:  movk x8, #<imm>, lsl #32
+000104:  movk x8, #<imm>, lsl #48
+000108:  blr x8
+00010c:  ldr x19, [x22]
+000110:  ldr w9, [x22, #0x10]
+000114:  cbnz w9, $+0x12c
+000118:  ldr w10, [x22, #0x10]
+00011c:  cbnz w10, $+0xe0
+000120:  ldr x10, [sp, #0x60]
+000124:  add x10, x10, #0x1
+000128:  str x10, [sp, #0x60]
+00012c:  str x19, [x22]
+000130:  mov x0, x22
+000134:  add x1, sp, #0x48
+000138:  mov x8, #<imm>
+00013c:  movk x8, #<imm>, lsl #16
+000140:  movk x8, #<imm>, lsl #32
+000144:  movk x8, #<imm>, lsl #48
+000148:  blr x8
+00014c:  ldr x19, [x22]
+000150:  ldr w9, [x22, #0x10]
+000154:  cbnz w9, $+0xec
+000158:  ldrb w9, [sp, #0x48]
+00015c:  cmp w9, #0x1
+000160:  b.eq $+0x64
+000164:  b $-0x98
+000168:  str x19, [x22]
+00016c:  ldr x10, [sp, #0x68]
+000170:  lsl x10, x10, #0x1
+000174:  mov x0, x22
+000178:  ldr x1, [sp, #0x58]
+00017c:  ldr x2, [sp, #0x60]
+000180:  ldr x3, [sp, #0x68]
+000184:  mov x4, x10
+000188:  mov x5, #<imm>
+00018c:  mov x6, #<imm>
+000190:  mov x8, #<imm>
+000194:  movk x8, #<imm>, lsl #16
+000198:  movk x8, #<imm>, lsl #32
+00019c:  movk x8, #<imm>, lsl #48
+0001a0:  blr x8
+0001a4:  ldr x19, [x22]
+0001a8:  ldr w10, [x22, #0x10]
+0001ac:  cbnz w10, $+0x94
+0001b0:  str x0, [sp, #0x58]
+0001b4:  ldr x10, [sp, #0x68]
+0001b8:  lsl x10, x10, #0x1
+0001bc:  str x10, [sp, #0x68]
+0001c0:  b $-0xe4
+0001c4:  ldr x21, [sp, #0x50]
+0001c8:  ldr x10, [sp, #0x58]
+0001cc:  ldr x11, [sp, #0x60]
+0001d0:  ldr x12, [sp, #0x68]
+0001d4:  str x10, [x21, #0x8]
+0001d8:  str x11, [x21, #0x10]
+0001dc:  str x12, [x21]
+0001e0:  b $+0x48
+0001e4:  add x19, x19, #0x1
+0001e8:  mov x10, #<imm>
+0001ec:  str x10, [x21, #0x8]
+0001f0:  str xzr, [x21, #0x10]
+0001f4:  str xzr, [x21]
+0001f8:  b $+0x30
+0001fc:  ldr x21, [sp, #0x50]
+000200:  ldr x0, [sp, #0x58]
+000204:  ldr x1, [sp, #0x68]
+000208:  mov x2, #<imm>
+00020c:  mov x3, #<imm>
+000210:  mov x8, #<imm>
+000214:  movk x8, #<imm>, lsl #16
+000218:  movk x8, #<imm>, lsl #32
+00021c:  movk x8, #<imm>, lsl #48
+000220:  blr x8
+000224:  b $+0x1c
+000228:  str x19, [x22]
+00022c:  ldp x21, x22, [sp, #0x20]
+000230:  ldp x19, x20, [sp, #0x10]
+000234:  ldp x29, x30, [sp]
+000238:  add sp, sp, #0x70
+00023c:  ret
+000240:  ldp x21, x22, [sp, #0x20]
+000244:  ldp x19, x20, [sp, #0x10]
+000248:  ldp x29, x30, [sp]
+00024c:  add sp, sp, #0x70
+000250:  ret

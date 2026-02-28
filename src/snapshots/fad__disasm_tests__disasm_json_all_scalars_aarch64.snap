@@ -1,0 +1,696 @@
+---
+source: src/disasm_tests.rs
+expression: out
+---
+=== json/all_scalars ===
+000000: <entry>  sub sp, sp, #0x60
+000004:  stp x29, x30, [sp]
+000008:  stp x19, x20, [sp, #0x10]
+00000c:  stp x21, x22, [sp, #0x20]
+000010:  mov x29, sp
+000014:  mov x21, x0
+000018:  mov x22, x1
+00001c:  ldr x19, [x22]
+000020:  ldr x20, [x22, #0x8]
+000024:  str xzr, [sp, #0x30]
+000028:  str x19, [x22]
+00002c:  mov x0, x22
+000030:  mov x8, #<imm>
+000034:  movk x8, #<imm>, lsl #16
+000038:  movk x8, #<imm>, lsl #32
+00003c:  movk x8, #<imm>, lsl #48
+000040:  blr x8
+000044:  ldr x19, [x22]
+000048:  ldr w9, [x22, #0x10]
+00004c:  cbnz w9, $+0xa6c
+000050:  str x19, [x22]
+000054:  mov x0, x22
+000058:  add x1, sp, #0x48
+00005c:  mov x8, #<imm>
+000060:  movk x8, #<imm>, lsl #16
+000064:  movk x8, #<imm>, lsl #32
+000068:  movk x8, #<imm>, lsl #48
+00006c:  blr x8
+000070:  ldr x19, [x22]
+000074:  ldr w9, [x22, #0x10]
+000078:  cbnz w9, $+0xa40
+00007c:  ldrb w9, [sp, #0x48]
+000080:  cmp w9, #0x7d
+000084:  b.eq $+0x9f8
+000088:  str x19, [x22]
+00008c:  mov x0, x22
+000090:  add x1, sp, #0x38
+000094:  add x2, sp, #0x40
+000098:  mov x8, #<imm>
+00009c:  movk x8, #<imm>, lsl #16
+0000a0:  movk x8, #<imm>, lsl #32
+0000a4:  movk x8, #<imm>, lsl #48
+0000a8:  blr x8
+0000ac:  ldr x19, [x22]
+0000b0:  ldr w9, [x22, #0x10]
+0000b4:  cbnz w9, $+0xa04
+0000b8:  str x19, [x22]
+0000bc:  mov x0, x22
+0000c0:  mov x8, #<imm>
+0000c4:  movk x8, #<imm>, lsl #16
+0000c8:  movk x8, #<imm>, lsl #32
+0000cc:  movk x8, #<imm>, lsl #48
+0000d0:  blr x8
+0000d4:  ldr x19, [x22]
+0000d8:  ldr w9, [x22, #0x10]
+0000dc:  cbnz w9, $+0x9dc
+0000e0:  ldr x0, [sp, #0x38]
+0000e4:  ldr x1, [sp, #0x40]
+0000e8:  mov x2, #<imm>
+0000ec:  movk x2, #<imm>, lsl #16
+0000f0:  movk x2, #<imm>, lsl #32
+0000f4:  movk x2, #<imm>, lsl #48
+0000f8:  mov x3, #<imm>
+0000fc:  mov x8, #<imm>
+000100:  movk x8, #<imm>, lsl #16
+000104:  movk x8, #<imm>, lsl #32
+000108:  movk x8, #<imm>, lsl #48
+00010c:  blr x8
+000110:  cbnz x0, $+0x244
+000114:  ldr x0, [sp, #0x38]
+000118:  ldr x1, [sp, #0x40]
+00011c:  mov x2, #<imm>
+000120:  movk x2, #<imm>, lsl #16
+000124:  movk x2, #<imm>, lsl #32
+000128:  movk x2, #<imm>, lsl #48
+00012c:  mov x3, #<imm>
+000130:  mov x8, #<imm>
+000134:  movk x8, #<imm>, lsl #16
+000138:  movk x8, #<imm>, lsl #32
+00013c:  movk x8, #<imm>, lsl #48
+000140:  blr x8
+000144:  cbnz x0, $+0x250
+000148:  ldr x0, [sp, #0x38]
+00014c:  ldr x1, [sp, #0x40]
+000150:  mov x2, #<imm>
+000154:  movk x2, #<imm>, lsl #16
+000158:  movk x2, #<imm>, lsl #32
+00015c:  movk x2, #<imm>, lsl #48
+000160:  mov x3, #<imm>
+000164:  mov x8, #<imm>
+000168:  movk x8, #<imm>, lsl #16
+00016c:  movk x8, #<imm>, lsl #32
+000170:  movk x8, #<imm>, lsl #48
+000174:  blr x8
+000178:  cbnz x0, $+0x25c
+00017c:  ldr x0, [sp, #0x38]
+000180:  ldr x1, [sp, #0x40]
+000184:  mov x2, #<imm>
+000188:  movk x2, #<imm>, lsl #16
+00018c:  movk x2, #<imm>, lsl #32
+000190:  movk x2, #<imm>, lsl #48
+000194:  mov x3, #<imm>
+000198:  mov x8, #<imm>
+00019c:  movk x8, #<imm>, lsl #16
+0001a0:  movk x8, #<imm>, lsl #32
+0001a4:  movk x8, #<imm>, lsl #48
+0001a8:  blr x8
+0001ac:  cbnz x0, $+0x268
+0001b0:  ldr x0, [sp, #0x38]
+0001b4:  ldr x1, [sp, #0x40]
+0001b8:  mov x2, #<imm>
+0001bc:  movk x2, #<imm>, lsl #16
+0001c0:  movk x2, #<imm>, lsl #32
+0001c4:  movk x2, #<imm>, lsl #48
+0001c8:  mov x3, #<imm>
+0001cc:  mov x8, #<imm>
+0001d0:  movk x8, #<imm>, lsl #16
+0001d4:  movk x8, #<imm>, lsl #32
+0001d8:  movk x8, #<imm>, lsl #48
+0001dc:  blr x8
+0001e0:  cbnz x0, $+0x274
+0001e4:  ldr x0, [sp, #0x38]
+0001e8:  ldr x1, [sp, #0x40]
+0001ec:  mov x2, #<imm>
+0001f0:  movk x2, #<imm>, lsl #16
+0001f4:  movk x2, #<imm>, lsl #32
+0001f8:  movk x2, #<imm>, lsl #48
+0001fc:  mov x3, #<imm>
+000200:  mov x8, #<imm>
+000204:  movk x8, #<imm>, lsl #16
+000208:  movk x8, #<imm>, lsl #32
+00020c:  movk x8, #<imm>, lsl #48
+000210:  blr x8
+000214:  cbnz x0, $+0x280
+000218:  ldr x0, [sp, #0x38]
+00021c:  ldr x1, [sp, #0x40]
+000220:  mov x2, #<imm>
+000224:  movk x2, #<imm>, lsl #16
+000228:  movk x2, #<imm>, lsl #32
+00022c:  movk x2, #<imm>, lsl #48
+000230:  mov x3, #<imm>
+000234:  mov x8, #<imm>
+000238:  movk x8, #<imm>, lsl #16
+00023c:  movk x8, #<imm>, lsl #32
+000240:  movk x8, #<imm>, lsl #48
+000244:  blr x8
+000248:  cbnz x0, $+0x28c
+00024c:  ldr x0, [sp, #0x38]
+000250:  ldr x1, [sp, #0x40]
+000254:  mov x2, #<imm>
+000258:  movk x2, #<imm>, lsl #16
+00025c:  movk x2, #<imm>, lsl #32
+000260:  movk x2, #<imm>, lsl #48
+000264:  mov x3, #<imm>
+000268:  mov x8, #<imm>
+00026c:  movk x8, #<imm>, lsl #16
+000270:  movk x8, #<imm>, lsl #32
+000274:  movk x8, #<imm>, lsl #48
+000278:  blr x8
+00027c:  cbnz x0, $+0x298
+000280:  ldr x0, [sp, #0x38]
+000284:  ldr x1, [sp, #0x40]
+000288:  mov x2, #<imm>
+00028c:  movk x2, #<imm>, lsl #16
+000290:  movk x2, #<imm>, lsl #32
+000294:  movk x2, #<imm>, lsl #48
+000298:  mov x3, #<imm>
+00029c:  mov x8, #<imm>
+0002a0:  movk x8, #<imm>, lsl #16
+0002a4:  movk x8, #<imm>, lsl #32
+0002a8:  movk x8, #<imm>, lsl #48
+0002ac:  blr x8
+0002b0:  cbnz x0, $+0x2a4
+0002b4:  ldr x0, [sp, #0x38]
+0002b8:  ldr x1, [sp, #0x40]
+0002bc:  mov x2, #<imm>
+0002c0:  movk x2, #<imm>, lsl #16
+0002c4:  movk x2, #<imm>, lsl #32
+0002c8:  movk x2, #<imm>, lsl #48
+0002cc:  mov x3, #<imm>
+0002d0:  mov x8, #<imm>
+0002d4:  movk x8, #<imm>, lsl #16
+0002d8:  movk x8, #<imm>, lsl #32
+0002dc:  movk x8, #<imm>, lsl #48
+0002e0:  blr x8
+0002e4:  cbnz x0, $+0x2b0
+0002e8:  ldr x0, [sp, #0x38]
+0002ec:  ldr x1, [sp, #0x40]
+0002f0:  mov x2, #<imm>
+0002f4:  movk x2, #<imm>, lsl #16
+0002f8:  movk x2, #<imm>, lsl #32
+0002fc:  movk x2, #<imm>, lsl #48
+000300:  mov x3, #<imm>
+000304:  mov x8, #<imm>
+000308:  movk x8, #<imm>, lsl #16
+00030c:  movk x8, #<imm>, lsl #32
+000310:  movk x8, #<imm>, lsl #48
+000314:  blr x8
+000318:  cbnz x0, $+0x2bc
+00031c:  ldr x0, [sp, #0x38]
+000320:  ldr x1, [sp, #0x40]
+000324:  mov x2, #<imm>
+000328:  movk x2, #<imm>, lsl #16
+00032c:  movk x2, #<imm>, lsl #32
+000330:  movk x2, #<imm>, lsl #48
+000334:  mov x3, #<imm>
+000338:  mov x8, #<imm>
+00033c:  movk x8, #<imm>, lsl #16
+000340:  movk x8, #<imm>, lsl #32
+000344:  movk x8, #<imm>, lsl #48
+000348:  blr x8
+00034c:  cbnz x0, $+0x68c
+000350:  b $+0x6c8
+000354:  str x19, [x22]
+000358:  mov x0, x22
+00035c:  add x1, x21, #0x40
+000360:  mov x8, #<imm>
+000364:  movk x8, #<imm>, lsl #16
+000368:  movk x8, #<imm>, lsl #32
+00036c:  movk x8, #<imm>, lsl #48
+000370:  blr x8
+000374:  ldr x19, [x22]
+000378:  ldr w9, [x22, #0x10]
+00037c:  cbnz w9, $+0x73c
+000380:  ldr x9, [sp, #0x30]
+000384:  mov x10, #<imm>
+000388:  orr x9, x9, x10
+00038c:  str x9, [sp, #0x30]
+000390:  b $+0x6b0
+000394:  str x19, [x22]
+000398:  mov x0, x22
+00039c:  add x1, x21, #0x41
+0003a0:  mov x8, #<imm>
+0003a4:  movk x8, #<imm>, lsl #16
+0003a8:  movk x8, #<imm>, lsl #32
+0003ac:  movk x8, #<imm>, lsl #48
+0003b0:  blr x8
+0003b4:  ldr x19, [x22]
+0003b8:  ldr w9, [x22, #0x10]
+0003bc:  cbnz w9, $+0x6fc
+0003c0:  ldr x9, [sp, #0x30]
+0003c4:  mov x10, #<imm>
+0003c8:  orr x9, x9, x10
+0003cc:  str x9, [sp, #0x30]
+0003d0:  b $+0x670
+0003d4:  str x19, [x22]
+0003d8:  mov x0, x22
+0003dc:  add x1, x21, #0x3c
+0003e0:  mov x8, #<imm>
+0003e4:  movk x8, #<imm>, lsl #16
+0003e8:  movk x8, #<imm>, lsl #32
+0003ec:  movk x8, #<imm>, lsl #48
+0003f0:  blr x8
+0003f4:  ldr x19, [x22]
+0003f8:  ldr w9, [x22, #0x10]
+0003fc:  cbnz w9, $+0x6bc
+000400:  ldr x9, [sp, #0x30]
+000404:  mov x10, #<imm>
+000408:  orr x9, x9, x10
+00040c:  str x9, [sp, #0x30]
+000410:  b $+0x630
+000414:  str x19, [x22]
+000418:  mov x0, x22
+00041c:  add x1, x21, #0x30
+000420:  mov x8, #<imm>
+000424:  movk x8, #<imm>, lsl #16
+000428:  movk x8, #<imm>, lsl #32
+00042c:  movk x8, #<imm>, lsl #48
+000430:  blr x8
+000434:  ldr x19, [x22]
+000438:  ldr w9, [x22, #0x10]
+00043c:  cbnz w9, $+0x67c
+000440:  ldr x9, [sp, #0x30]
+000444:  mov x10, #<imm>
+000448:  orr x9, x9, x10
+00044c:  str x9, [sp, #0x30]
+000450:  b $+0x5f0
+000454:  str x19, [x22]
+000458:  mov x0, x22
+00045c:  add x1, x21, #0x18
+000460:  mov x8, #<imm>
+000464:  movk x8, #<imm>, lsl #16
+000468:  movk x8, #<imm>, lsl #32
+00046c:  movk x8, #<imm>, lsl #48
+000470:  blr x8
+000474:  ldr x19, [x22]
+000478:  ldr w9, [x22, #0x10]
+00047c:  cbnz w9, $+0x63c
+000480:  ldr x9, [sp, #0x30]
+000484:  mov x10, #<imm>
+000488:  orr x9, x9, x10
+00048c:  str x9, [sp, #0x30]
+000490:  b $+0x5b0
+000494:  str x19, [x22]
+000498:  mov x0, x22
+00049c:  add x1, x21, #0x42
+0004a0:  mov x8, #<imm>
+0004a4:  movk x8, #<imm>, lsl #16
+0004a8:  movk x8, #<imm>, lsl #32
+0004ac:  movk x8, #<imm>, lsl #48
+0004b0:  blr x8
+0004b4:  ldr x19, [x22]
+0004b8:  ldr w9, [x22, #0x10]
+0004bc:  cbnz w9, $+0x5fc
+0004c0:  ldr x9, [sp, #0x30]
+0004c4:  mov x10, #<imm>
+0004c8:  orr x9, x9, x10
+0004cc:  str x9, [sp, #0x30]
+0004d0:  b $+0x570
+0004d4:  str x19, [x22]
+0004d8:  mov x0, x22
+0004dc:  add x1, x21, #0x3e
+0004e0:  mov x8, #<imm>
+0004e4:  movk x8, #<imm>, lsl #16
+0004e8:  movk x8, #<imm>, lsl #32
+0004ec:  movk x8, #<imm>, lsl #48
+0004f0:  blr x8
+0004f4:  ldr x19, [x22]
+0004f8:  ldr w9, [x22, #0x10]
+0004fc:  cbnz w9, $+0x5bc
+000500:  ldr x9, [sp, #0x30]
+000504:  mov x10, #<imm>
+000508:  orr x9, x9, x10
+00050c:  str x9, [sp, #0x30]
+000510:  b $+0x530
+000514:  str x19, [x22]
+000518:  mov x0, x22
+00051c:  add x1, x21, #0x34
+000520:  mov x8, #<imm>
+000524:  movk x8, #<imm>, lsl #16
+000528:  movk x8, #<imm>, lsl #32
+00052c:  movk x8, #<imm>, lsl #48
+000530:  blr x8
+000534:  ldr x19, [x22]
+000538:  ldr w9, [x22, #0x10]
+00053c:  cbnz w9, $+0x57c
+000540:  ldr x9, [sp, #0x30]
+000544:  mov x10, #<imm>
+000548:  orr x9, x9, x10
+00054c:  str x9, [sp, #0x30]
+000550:  b $+0x4f0
+000554:  str x19, [x22]
+000558:  mov x0, x22
+00055c:  add x1, x21, #0x20
+000560:  mov x8, #<imm>
+000564:  movk x8, #<imm>, lsl #16
+000568:  movk x8, #<imm>, lsl #32
+00056c:  movk x8, #<imm>, lsl #48
+000570:  blr x8
+000574:  ldr x19, [x22]
+000578:  ldr w9, [x22, #0x10]
+00057c:  cbnz w9, $+0x53c
+000580:  ldr x9, [sp, #0x30]
+000584:  mov x10, #<imm>
+000588:  orr x9, x9, x10
+00058c:  str x9, [sp, #0x30]
+000590:  b $+0x4b0
+000594:  str x19, [x22]
+000598:  mov x0, x22
+00059c:  add x1, x21, #0x38
+0005a0:  mov x8, #<imm>
+0005a4:  movk x8, #<imm>, lsl #16
+0005a8:  movk x8, #<imm>, lsl #32
+0005ac:  movk x8, #<imm>, lsl #48
+0005b0:  blr x8
+0005b4:  ldr x19, [x22]
+0005b8:  ldr w9, [x22, #0x10]
+0005bc:  cbnz w9, $+0x4fc
+0005c0:  ldr x9, [sp, #0x30]
+0005c4:  mov x10, #<imm>
+0005c8:  orr x9, x9, x10
+0005cc:  str x9, [sp, #0x30]
+0005d0:  b $+0x470
+0005d4:  cmp x19, x20
+0005d8:  b.hs $+0x28
+0005dc:  ldrb w8, [x19]
+0005e0:  cmp w8, #0x20
+0005e4:  b.eq $+0x14
+0005e8:  cmp w8, #0x9
+0005ec:  b.lo $+0x14
+0005f0:  cmp w8, #0xd
+0005f4:  b.hi $+0xc
+0005f8:  add x19, x19, #0x1
+0005fc:  b $-0x28
+000600:  cmp x19, x20
+000604:  b.hs $+0x3b4
+000608:  mov x0, #<imm>
+00060c:  ldrb w8, [x19]
+000610:  cmp w8, #0x2d
+000614:  b.ne $+0x18
+000618:  mov x0, #<imm>
+00061c:  add x19, x19, #0x1
+000620:  cmp x19, x20
+000624:  b.hs $+0x394
+000628:  ldrb w8, [x19]
+00062c:  mov x9, #<imm>
+000630:  mov x10, #<imm>
+000634:  mov x11, #<imm>
+000638:  mov x12, #<imm>
+00063c:  mov x13, #<imm>
+000640:  cmp w8, #0x30
+000644:  b.ne $+0x1c
+000648:  orr x13, x13, #0x2
+00064c:  add x19, x19, #0x1
+000650:  cmp x19, x20
+000654:  b.hs $+0xc
+000658:  ldrb w8, [x19]
+00065c:  b $-0x1c
+000660:  sub w1, w8, #0x30
+000664:  cmp w1, #0x9
+000668:  b.hi $+0x50
+00066c:  orr x13, x13, #0x2
+000670:  cmp x10, #0x13
+000674:  b.hs $+0x24
+000678:  mov x2, #<imm>
+00067c:  madd x9, x9, x2, x1
+000680:  add x10, x10, #0x1
+000684:  add x19, x19, #0x1
+000688:  cmp x19, x20
+00068c:  b.hs $+0x2c
+000690:  ldrb w8, [x19]
+000694:  b $-0x34
+000698:  add x12, x12, #0x1
+00069c:  add x19, x19, #0x1
+0006a0:  cmp x19, x20
+0006a4:  b.hs $+0x14
+0006a8:  ldrb w8, [x19]
+0006ac:  sub w1, w8, #0x30
+0006b0:  cmp w1, #0x9
+0006b4:  b.ls $-0x1c
+0006b8:  cmp x19, x20
+0006bc:  b.hs $+0xa0
+0006c0:  cmp w8, #0x2e
+0006c4:  b.ne $+0x98
+0006c8:  orr x13, x13, #0x1
+0006cc:  add x19, x19, #0x1
+0006d0:  cmp x19, x20
+0006d4:  b.hs $+0x88
+0006d8:  ldrb w8, [x19]
+0006dc:  cbnz x10, $+0x28
+0006e0:  cmp w8, #0x30
+0006e4:  b.ne $+0x20
+0006e8:  orr x13, x13, #0x2
+0006ec:  add x11, x11, #0x1
+0006f0:  add x19, x19, #0x1
+0006f4:  cmp x19, x20
+0006f8:  b.hs $+0xc
+0006fc:  ldrb w8, [x19]
+000700:  b $-0x20
+000704:  sub w1, w8, #0x30
+000708:  cmp w1, #0x9
+00070c:  b.hi $+0x50
+000710:  orr x13, x13, #0x2
+000714:  cmp x10, #0x13
+000718:  b.hs $+0x28
+00071c:  mov x2, #<imm>
+000720:  madd x9, x9, x2, x1
+000724:  add x10, x10, #0x1
+000728:  add x11, x11, #0x1
+00072c:  add x19, x19, #0x1
+000730:  cmp x19, x20
+000734:  b.hs $+0x28
+000738:  ldrb w8, [x19]
+00073c:  b $-0x38
+000740:  add x19, x19, #0x1
+000744:  cmp x19, x20
+000748:  b.hs $+0x14
+00074c:  ldrb w8, [x19]
+000750:  sub w1, w8, #0x30
+000754:  cmp w1, #0x9
+000758:  b.ls $-0x18
+00075c:  tst x13, #0x2
+000760:  b.eq $+0x24c
+000764:  mov x14, #<imm>
+000768:  cmp x19, x20
+00076c:  b.hs $+0xa8
+000770:  cmp w8, #0x65
+000774:  b.eq $+0x8
+000778:  cmp w8, #0x45
+00077c:  b.ne $+0x98
+000780:  add x19, x19, #0x1
+000784:  cmp x19, x20
+000788:  b.hs $+0x224
+00078c:  ldrb w8, [x19]
+000790:  mov x15, #<imm>
+000794:  cmp w8, #0x2d
+000798:  b.ne $+0x1c
+00079c:  mov x15, #<imm>
+0007a0:  add x19, x19, #0x1
+0007a4:  cmp x19, x20
+0007a8:  b.hs $+0x204
+0007ac:  ldrb w8, [x19]
+0007b0:  b $+0x28
+0007b4:  cmp w8, #0x2b
+0007b8:  b.ne $+0x20
+0007bc:  add x19, x19, #0x1
+0007c0:  cmp x19, x20
+0007c4:  b.hs $+0x1e8
+0007c8:  ldrb w8, [x19]
+0007cc:  sub w1, w8, #0x30
+0007d0:  cmp w1, #0x9
+0007d4:  b.hi $+0x1d8
+0007d8:  sub w1, w8, #0x30
+0007dc:  cmp w1, #0x9
+0007e0:  b.hi $+0x2c
+0007e4:  mov x2, #<imm>
+0007e8:  madd x14, x14, x2, x1
+0007ec:  mov x2, #<imm>
+0007f0:  cmp x14, x2
+0007f4:  csel x14, x2, x14, hi
+0007f8:  add x19, x19, #0x1
+0007fc:  cmp x19, x20
+000800:  b.hs $+0xc
+000804:  ldrb w8, [x19]
+000808:  b $-0x30
+00080c:  cbz x15, $+0x8
+000810:  neg x14, x14
+000814:  add x12, x14, x12
+000818:  sub x12, x12, x11
+00081c:  cbz x9, $+0x2c
+000820:  tst x13, #0x1
+000824:  b.ne $+0x2c
+000828:  cbnz x14, $+0x28
+00082c:  mov x1, #<imm>
+000830:  lsl x1, x1, #0x35
+000834:  cmp x9, x1
+000838:  b.hs $+0x18
+00083c:  ucvtf d0, x9
+000840:  fmov x7, d0
+000844:  b $+0x14c
+000848:  mov x7, #<imm>
+00084c:  b $+0x144
+000850:  cmp w12, #0x15b
+000854:  b.gt $+0x130
+000858:  cmn w12, #0x15c
+00085c:  b.lt $+0x130
+000860:  mov w1, #0xa935
+000864:  movk w1, #0x1, lsl #16
+000868:  smull x14, w12, w1
+00086c:  asr x14, x14, #0xf
+000870:  clz x4, x9
+000874:  sub x6, x4, #0xb
+000878:  sub x6, x6, x14
+00087c:  mov x1, #<imm>
+000880:  cmp x6, x1
+000884:  csel x6, x1, x6, gt
+000888:  sub x3, x4, x6
+00088c:  sub x3, x3, x14
+000890:  sub x3, x3, #0x3
+000894:  lsl x5, x9, x4
+000898:  add w8, w12, #0x15c
+00089c:  mov x1, #<imm>
+0008a0:  movk x1, #<imm>, lsl #16
+0008a4:  movk x1, #<imm>, lsl #32
+0008a8:  movk x1, #<imm>, lsl #48
+0008ac:  add x1, x1, x8, lsl #4
+0008b0:  ldp x1, x2, [x1]
+0008b4:  umulh x4, x5, x1
+0008b8:  mul x8, x5, x1
+0008bc:  and x14, x3, #0x3f
+0008c0:  mov x15, #<imm>
+0008c4:  lsl x15, x15, x14
+0008c8:  sub x15, x15, #0x1
+0008cc:  tst x4, x15
+0008d0:  b.eq $+0xc
+0008d4:  mov x7, #<imm>
+0008d8:  b $+0x20
+0008dc:  umulh x14, x5, x2
+0008e0:  subs x15, x8, x14
+0008e4:  cmp x15, #0x1
+0008e8:  cset x7, hi
+0008ec:  cmp x8, x14
+0008f0:  b.hs $+0x8
+0008f4:  sub x4, x4, #0x1
+0008f8:  lsr x14, x4, x3
+0008fc:  cmp x3, #0x40
+000900:  csel x14, xzr, x14, hs
+000904:  orr x7, x14, x7
+000908:  mov x1, #<imm>
+00090c:  movk x1, #<imm>, lsl #16
+000910:  movk x1, #<imm>, lsl #32
+000914:  movk x1, #<imm>, lsl #48
+000918:  cmp x7, x1
+00091c:  b.lo $+0x14
+000920:  lsr x14, x7, #0x1
+000924:  and x15, x7, #0x1
+000928:  orr x7, x14, x15
+00092c:  sub x6, x6, #0x1
+000930:  lsr x1, x7, #0x2
+000934:  and x1, x1, #0x1
+000938:  add x7, x7, #0x1
+00093c:  add x7, x7, x1
+000940:  lsr x7, x7, #0x2
+000944:  mov x1, #<imm>
+000948:  lsl x1, x1, #0x34
+00094c:  tst x7, x1
+000950:  b.eq $+0x40
+000954:  mov x1, #<imm>
+000958:  sub x1, x1, x6
+00095c:  cmp x1, #0x7ff
+000960:  b.hs $+0x1c
+000964:  mov x8, #<imm>
+000968:  lsl x8, x8, #0x34
+00096c:  bic x7, x7, x8
+000970:  lsl x1, x1, #0x34
+000974:  orr x7, x7, x1
+000978:  b $+0x18
+00097c:  mov x7, #<imm>
+000980:  b $+0x10
+000984:  mov x7, #<imm>
+000988:  b $+0x8
+00098c:  mov x7, #<imm>
+000990:  cbz x0, $+0x10
+000994:  mov x1, #<imm>
+000998:  lsl x1, x1, #0x3f
+00099c:  orr x7, x7, x1
+0009a0:  str x7, [x21, #0x28]
+0009a4:  str x19, [x22]
+0009a8:  b $+0x1c
+0009ac:  mov w8, #0x9
+0009b0:  str w8, [x22, #0x10]
+0009b4:  b $+0x104
+0009b8:  mov w8, #0x1
+0009bc:  str w8, [x22, #0x10]
+0009c0:  b $+0xf8
+0009c4:  ldr x9, [sp, #0x30]
+0009c8:  mov x10, #<imm>
+0009cc:  orr x9, x9, x10
+0009d0:  str x9, [sp, #0x30]
+0009d4:  b $+0x6c
+0009d8:  str x19, [x22]
+0009dc:  mov x0, x22
+0009e0:  add x1, x21, #0x0
+0009e4:  mov x8, #<imm>
+0009e8:  movk x8, #<imm>, lsl #16
+0009ec:  movk x8, #<imm>, lsl #32
+0009f0:  movk x8, #<imm>, lsl #48
+0009f4:  blr x8
+0009f8:  ldr x19, [x22]
+0009fc:  ldr w9, [x22, #0x10]
+000a00:  cbnz w9, $+0xb8
+000a04:  ldr x9, [sp, #0x30]
+000a08:  mov x10, #<imm>
+000a0c:  orr x9, x9, x10
+000a10:  str x9, [sp, #0x30]
+000a14:  b $+0x2c
+000a18:  str x19, [x22]
+000a1c:  mov x0, x22
+000a20:  mov x8, #<imm>
+000a24:  movk x8, #<imm>, lsl #16
+000a28:  movk x8, #<imm>, lsl #32
+000a2c:  movk x8, #<imm>, lsl #48
+000a30:  blr x8
+000a34:  ldr x19, [x22]
+000a38:  ldr w9, [x22, #0x10]
+000a3c:  cbnz w9, $+0x7c
+000a40:  str x19, [x22]
+000a44:  mov x0, x22
+000a48:  add x1, sp, #0x48
+000a4c:  mov x8, #<imm>
+000a50:  movk x8, #<imm>, lsl #16
+000a54:  movk x8, #<imm>, lsl #32
+000a58:  movk x8, #<imm>, lsl #48
+000a5c:  blr x8
+000a60:  ldr x19, [x22]
+000a64:  ldr w9, [x22, #0x10]
+000a68:  cbnz w9, $+0x50
+000a6c:  ldrb w9, [sp, #0x48]
+000a70:  cmp w9, #0x1
+000a74:  b.eq $+0xc
+000a78:  b $-0x9f0
+000a7c:  add x19, x19, #0x1
+000a80:  ldr x9, [sp, #0x30]
+000a84:  mov x10, #<imm>
+000a88:  and x11, x9, x10
+000a8c:  cmp x11, x10
+000a90:  b.eq $+0x10
+000a94:  mov w9, #0xa
+000a98:  str w9, [x22, #0x10]
+000a9c:  b $+0x1c
+000aa0:  str x19, [x22]
+000aa4:  ldp x21, x22, [sp, #0x20]
+000aa8:  ldp x19, x20, [sp, #0x10]
+000aac:  ldp x29, x30, [sp]
+000ab0:  add sp, sp, #0x60
+000ab4:  ret
+000ab8:  ldp x21, x22, [sp, #0x20]
+000abc:  ldp x19, x20, [sp, #0x10]
+000ac0:  ldp x29, x30, [sp]
+000ac4:  add sp, sp, #0x60
+000ac8:  ret

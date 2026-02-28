@@ -1,0 +1,162 @@
+---
+source: src/disasm_tests.rs
+expression: out
+---
+=== postcard/enum_external ===
+000000: <entry>  push rbp
+000001:  sub rsp, 0x40
+000008:  mov qword [rsp], rbp
+00000c:  mov qword [rsp + 0x10], r12
+000011:  mov qword [rsp + 0x18], r13
+000016:  mov qword [rsp + 0x20], r14
+00001b:  mov qword [rsp + 0x28], r15
+000020:  mov r14, rdi
+000023:  mov r15, rsi
+000026:  mov r12, qword [r15]
+00002d:  mov r13, qword [r15 + 0x8]
+000034:  cmp r12, r13
+000037:  jnb $+0x5d
+00003d:  movzx r10d, byte [r12]
+000042:  test r10d, 0x80
+000049:  jnz $+0x9
+00004f:  add r12, 0x1
+000053:  jmp $+0x52
+000058:  mov qword [r15], r12
+00005f:  mov rdi, r15
+000062:  lea rsi, qword [rsp + 0x30]
+00006a:  mov rax, 0x<imm>
+000074:  call rax
+000076:  mov r12, qword [r15]
+00007d:  mov r11d, dword [r15 + 0x10]
+000084:  test r11d, r11d
+000087:  jnz $+0x2b2
+00008d:  mov r10d, dword [rsp + 0x30]
+000095:  jmp $+0x10
+00009a:  mov dword [r15 + 0x10], 0x1
+0000a5:  jmp $+0x295
+0000aa:  cmp r10d, 0x0
+0000b1:  jz $+0x2a
+0000b7:  cmp r10d, 0x1
+0000be:  jz $+0x26
+0000c4:  cmp r10d, 0x2
+0000cb:  jz $+0x159
+0000d1:  mov dword [r15 + 0x10], 0xe
+0000dc:  jmp $+0x25e
+0000e1:  mov byte [r14], 0x0
+0000e5:  jmp $+0x22d
+0000ea:  mov byte [r14], 0x1
+0000ee:  cmp r12, r13
+0000f1:  jnb $+0xcb
+0000f7:  movzx r10d, byte [r12]
+0000fc:  test r10d, 0x80
+000103:  jnz $+0xc
+000109:  add r12, 0x1
+000110:  jmp $+0x3d
+000115:  mov qword [r15], r12
+00011c:  mov rdi, r15
+00011f:  lea rsi, qword [rsp + 0x30]
+000127:  mov rax, 0x<imm>
+000131:  call rax
+000133:  mov r12, qword [r15]
+00013a:  mov r11d, dword [r15 + 0x10]
+000141:  test r11d, r11d
+000144:  jnz $+0x1f5
+00014a:  mov r10d, dword [rsp + 0x30]
+000152:  mov dword [rsp + 0x30], r10d
+00015a:  mov r11, r13
+00015d:  sub r11, r12
+000160:  cmp r11, r10
+000163:  jb $+0x59
+000169:  mov r11, r12
+00016c:  mov qword [r15], r12
+000173:  mov rdi, r15
+000176:  mov rsi, r11
+000179:  mov edx, r10d
+00017c:  mov rax, 0x<imm>
+000186:  call rax
+000188:  mov r11d, dword [r15 + 0x10]
+00018f:  test r11d, r11d
+000192:  jnz $+0x1a7
+000198:  mov r10d, dword [rsp + 0x30]
+0001a0:  mov qword [r14 + 0x10], rax
+0001a7:  mov qword [r14 + 0x18], r10
+0001ae:  mov qword [r14 + 0x8], r10
+0001b5:  add r12, r10
+0001b8:  jmp $+0x0
+0001bd:  jmp $+0x10
+0001c2:  mov dword [r15 + 0x10], 0x1
+0001cd:  jmp $+0x16d
+0001d2:  cmp r12, r13
+0001d5:  jnb $+0x3a
+0001db:  movzx r10d, byte [r12]
+0001e0:  cmp r10d, 0x1
+0001e7:  ja $+0x5
+0001ed:  jmp $+0x10
+0001f2:  mov dword [r15 + 0x10], 0xd
+0001fd:  jmp $+0x13d
+000202:  mov byte [r14 + 0x20], r10b
+000209:  add r12, 0x1
+000210:  jmp $+0x10
+000215:  mov dword [r15 + 0x10], 0x1
+000220:  jmp $+0x11a
+000225:  jmp $+0xed
+00022a:  mov byte [r14], 0x2
+00022e:  cmp r12, r13
+000231:  jnb $+0xcb
+000237:  movzx r10d, byte [r12]
+00023c:  test r10d, 0x80
+000243:  jnz $+0xc
+000249:  add r12, 0x1
+000250:  jmp $+0x3d
+000255:  mov qword [r15], r12
+00025c:  mov rdi, r15
+00025f:  lea rsi, qword [rsp + 0x30]
+000267:  mov rax, 0x<imm>
+000271:  call rax
+000273:  mov r12, qword [r15]
+00027a:  mov r11d, dword [r15 + 0x10]
+000281:  test r11d, r11d
+000284:  jnz $+0xb5
+00028a:  mov r10d, dword [rsp + 0x30]
+000292:  mov dword [rsp + 0x30], r10d
+00029a:  mov r11, r13
+00029d:  sub r11, r12
+0002a0:  cmp r11, r10
+0002a3:  jb $+0x59
+0002a9:  mov r11, r12
+0002ac:  mov qword [r15], r12
+0002b3:  mov rdi, r15
+0002b6:  mov rsi, r11
+0002b9:  mov edx, r10d
+0002bc:  mov rax, 0x<imm>
+0002c6:  call rax
+0002c8:  mov r11d, dword [r15 + 0x10]
+0002cf:  test r11d, r11d
+0002d2:  jnz $+0x67
+0002d8:  mov r10d, dword [rsp + 0x30]
+0002e0:  mov qword [r14 + 0x10], rax
+0002e7:  mov qword [r14 + 0x18], r10
+0002ee:  mov qword [r14 + 0x8], r10
+0002f5:  add r12, r10
+0002f8:  jmp $+0x0
+0002fd:  jmp $+0x10
+000302:  mov dword [r15 + 0x10], 0x1
+00030d:  jmp $+0x2d
+000312:  jmp $+0x0
+000317:  mov qword [r15], r12
+00031e:  mov r15, qword [rsp + 0x28]
+000323:  mov r14, qword [rsp + 0x20]
+000328:  mov r13, qword [rsp + 0x18]
+00032d:  mov r12, qword [rsp + 0x10]
+000332:  mov rbp, qword [rsp]
+000336:  add rsp, 0x40
+00033d:  pop rbp
+00033e:  ret
+00033f:  mov r15, qword [rsp + 0x28]
+000344:  mov r14, qword [rsp + 0x20]
+000349:  mov r13, qword [rsp + 0x18]
+00034e:  mov r12, qword [rsp + 0x10]
+000353:  mov rbp, qword [rsp]
+000357:  add rsp, 0x40
+00035e:  pop rbp
+00035f:  ret
