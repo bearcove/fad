@@ -15,6 +15,8 @@ pub struct DeserContext {
     /// Only accessed by intrinsics (never by JIT code).
     pub key_scratch_ptr: *mut u8,
     pub key_scratch_cap: usize,
+    /// True when input came from `&str` and selected intrinsics may skip UTF-8 revalidation.
+    pub trusted_utf8: bool,
 }
 
 // r[impl error.slot]
@@ -95,6 +97,20 @@ pub const CTX_ERROR_OFFSET: u32 = core::mem::offset_of!(DeserContext, error.offs
 impl DeserContext {
     /// Create a new context pointing at the given input slice.
     pub fn new(input: &[u8]) -> Self {
+        Self::from_bytes(input)
+    }
+
+    /// Create a context for untrusted raw bytes.
+    pub fn from_bytes(input: &[u8]) -> Self {
+        Self::new_with_trust(input, false)
+    }
+
+    /// Create a context for already-validated UTF-8 text input.
+    pub fn from_str(input: &str) -> Self {
+        Self::new_with_trust(input.as_bytes(), true)
+    }
+
+    fn new_with_trust(input: &[u8], trusted_utf8: bool) -> Self {
         let ptr = input.as_ptr();
         DeserContext {
             input_ptr: ptr,
@@ -105,6 +121,7 @@ impl DeserContext {
             },
             key_scratch_ptr: core::ptr::null_mut(),
             key_scratch_cap: 0,
+            trusted_utf8,
         }
     }
 

@@ -987,13 +987,20 @@ pub unsafe extern "C" fn fad_json_read_string_value(ctx: *mut DeserContext, out:
             // Fast path: no escapes
             let len = unsafe { ctx.input_ptr.offset_from(start) as usize };
             let bytes = unsafe { core::slice::from_raw_parts(start, len) };
-            match core::str::from_utf8(bytes) {
-                Ok(s) => {
-                    unsafe { out.write(s.to_owned()) };
-                }
-                Err(_) => {
-                    ctx.error.code = ErrorCode::InvalidUtf8 as u32;
-                    return;
+            if ctx.trusted_utf8 {
+                // SAFETY: trusted mode is enabled only when the caller opted
+                // into pre-validated UTF-8 input for JSON.
+                let s = unsafe { core::str::from_utf8_unchecked(bytes) };
+                unsafe { out.write(s.to_owned()) };
+            } else {
+                match core::str::from_utf8(bytes) {
+                    Ok(s) => {
+                        unsafe { out.write(s.to_owned()) };
+                    }
+                    Err(_) => {
+                        ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                        return;
+                    }
                 }
             }
             ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip closing '"'

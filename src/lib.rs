@@ -30,13 +30,42 @@ pub fn deserialize<'input, T: facet::Facet<'input>>(
     deser: &CompiledDeser,
     input: &'input [u8],
 ) -> Result<T, DeserError> {
-    let mut ctx = DeserContext::new(input);
+    from_bytes(deser, input)
+}
 
+/// Deserialize a value of type `T` from raw bytes.
+pub fn from_bytes<'input, T: facet::Facet<'input>>(
+    deser: &CompiledDeser,
+    input: &'input [u8],
+) -> Result<T, DeserError> {
+    let mut ctx = DeserContext::from_bytes(input);
+    deserialize_with_ctx(deser, &mut ctx)
+}
+
+/// Deserialize a value of type `T` from UTF-8 input text.
+///
+/// Trusted UTF-8 mode is enabled only when the compiled format supports it.
+pub fn from_str<'input, T: facet::Facet<'input>>(
+    deser: &CompiledDeser,
+    input: &'input str,
+) -> Result<T, DeserError> {
+    let mut ctx = if deser.supports_trusted_utf8_input() {
+        DeserContext::from_str(input)
+    } else {
+        DeserContext::from_bytes(input.as_bytes())
+    };
+    deserialize_with_ctx(deser, &mut ctx)
+}
+
+fn deserialize_with_ctx<'input, T: facet::Facet<'input>>(
+    deser: &CompiledDeser,
+    ctx: &mut DeserContext,
+) -> Result<T, DeserError> {
     // Allocate output on the stack as MaybeUninit
     let mut output = core::mem::MaybeUninit::<T>::uninit();
 
     unsafe {
-        (deser.func())(output.as_mut_ptr() as *mut u8, &mut ctx);
+        (deser.func())(output.as_mut_ptr() as *mut u8, ctx);
     }
 
     if ctx.error.code != 0 {
@@ -95,12 +124,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn postcard_from_str_entrypoint() {
+        let bytes = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
+        let input = core::str::from_utf8(&bytes).unwrap();
+        let deser = compile_deser(Friend::SHAPE, &postcard::FadPostcard);
+        let result: Friend = from_str(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
+    }
+
     // r[verify deser.json.struct]
     #[test]
     fn json_flat_struct() {
         let input = br#"{"age": 42, "name": "Alice"}"#;
         let deser = compile_deser(Friend::SHAPE, &json::FadJson);
         let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
+    }
+
+    #[test]
+    fn json_from_str_entrypoint() {
+        let input = r#"{"age": 42, "name": "Alice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = from_str(&deser, input).unwrap();
         assert_eq!(
             result,
             Friend {

@@ -12,6 +12,7 @@ pub struct CompiledDeser {
     buf: dynasmrt::ExecutableBuffer,
     entry: AssemblyOffset,
     func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext),
+    trusted_utf8_input: bool,
 }
 
 impl CompiledDeser {
@@ -27,6 +28,11 @@ impl CompiledDeser {
     /// Byte offset of the entry point within the code buffer.
     pub fn entry_offset(&self) -> usize {
         self.entry.0
+    }
+
+    /// Whether `from_str` can safely enable trusted UTF-8 mode for this format.
+    pub fn supports_trusted_utf8_input(&self) -> bool {
+        self.trusted_utf8_input
     }
 }
 
@@ -1177,5 +1183,6 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
         buf,
         entry: entry_offset,
         func,
+        trusted_utf8_input: format.supports_trusted_utf8_input(),
     }
 }

@@ -35,6 +35,10 @@ impl Format for FadJson {
         48
     }
 
+    fn supports_trusted_utf8_input(&self) -> bool {
+        true
+    }
+
     // r[impl deser.deny-unknown-fields.json]
     fn emit_struct_fields(
         &self,

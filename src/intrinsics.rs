@@ -332,11 +332,17 @@ unsafe fn read_postcard_string_borrowed<'a>(ctx: &'a mut DeserContext) -> Option
     }
 
     let bytes = unsafe { core::slice::from_raw_parts(ctx.input_ptr, len) };
-    let s = match core::str::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
-            return None;
+    let s = if ctx.trusted_utf8 {
+        // SAFETY: trusted mode is enabled only when the caller opted into
+        // pre-validated UTF-8 input for a compatible format.
+        unsafe { core::str::from_utf8_unchecked(bytes) }
+    } else {
+        match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                return None;
+            }
         }
     };
 
@@ -461,12 +467,18 @@ pub unsafe extern "C" fn fad_postcard_validate_and_alloc_string(
 ) {
     let len = data_len as usize;
     let bytes = unsafe { core::slice::from_raw_parts(data_ptr, len) };
-    let s = match core::str::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            let ctx = unsafe { &mut *ctx };
-            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
-            return;
+    let ctx = unsafe { &mut *ctx };
+    let s = if ctx.trusted_utf8 {
+        // SAFETY: trusted mode is enabled only when the caller opted into
+        // pre-validated UTF-8 input for a compatible format.
+        unsafe { core::str::from_utf8_unchecked(bytes) }
+    } else {
+        match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                return;
+            }
         }
     };
     unsafe { out.write(s.to_owned()) };
@@ -495,12 +507,14 @@ pub unsafe extern "C" fn fad_string_validate_alloc_copy(
         return std::mem::align_of::<u8>() as *mut u8;
     }
 
-    // Validate UTF-8.
-    let bytes = unsafe { core::slice::from_raw_parts(data_ptr, len) };
-    if core::str::from_utf8(bytes).is_err() {
-        let ctx = unsafe { &mut *ctx };
-        ctx.error.code = ErrorCode::InvalidUtf8 as u32;
-        return core::ptr::null_mut();
+    // Validate UTF-8 unless input is already trusted.
+    if !unsafe { (*ctx).trusted_utf8 } {
+        let bytes = unsafe { core::slice::from_raw_parts(data_ptr, len) };
+        if core::str::from_utf8(bytes).is_err() {
+            let ctx = unsafe { &mut *ctx };
+            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+            return core::ptr::null_mut();
+        }
     }
 
     // Allocate raw buffer (same allocator String uses).
