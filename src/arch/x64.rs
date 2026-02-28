@@ -2757,7 +2757,7 @@ impl EmitCtx {
             }
             if remaining >= 2 {
                 let val = i16::from_le_bytes(bytes[offset as usize..offset as usize + 2].try_into().unwrap());
-                dynasm!(self.ops ; .arch x64 ; mov WORD [r12 + offset as i32], val as i32);
+                dynasm!(self.ops ; .arch x64 ; mov WORD [r12 + offset as i32], val);
                 offset += 2;
                 remaining -= 2;
             }
