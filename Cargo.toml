@@ -26,6 +26,7 @@ facet-format = { git = "https://github.com/facet-rs/facet", branch = "main", fea
 yaxpeax-arm = { version = "0.4", default-features = false, features = ["std", "fmt"] }
 yaxpeax-x86 = { version = "2", default-features = false, features = ["std", "fmt"] }
 yaxpeax-arch = { version = "0.3", default-features = false, features = ["std"] }
+brotli = "8"
 
 [[bench]]
 name = "deser_postcard"
@@ -33,4 +34,8 @@ harness = false
 
 [[bench]]
 name = "deser_json"
+harness = false
+
+[[bench]]
+name = "canada"
 harness = false

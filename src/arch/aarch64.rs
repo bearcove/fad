@@ -1301,7 +1301,6 @@ impl EmitCtx {
 
         // Shared EOF error label (lazily bound on first use)
         let eof_label = self.ops.new_dynamic_label();
-        let eof_emitted = false;
 
         for op in &recipe.ops {
             match op {
