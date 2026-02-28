@@ -1,6 +1,6 @@
 //! Parse divan bench output from stdin and generate bench_report/index.html.
 //!
-//!   cargo bench --bench deser_json 2>/dev/null | cargo run --example bench_report
+//!   cargo bench --bench synthetic 2>/dev/null | cargo run --example bench_report
 //!   # or via justfile:
 //!   just bench-report
 
@@ -84,54 +84,136 @@ struct Row {
 }
 
 // ── Parser ─────────────────────────────────────────────────────────────────
+//
+// Handles arbitrary nesting depth from divan's tree output.
+// Builds a path stack, then reorganizes leaves into sections by format × direction.
 
 fn parse_divan(s: &str) -> Vec<Section> {
-    let mut sections: Vec<Section> = Vec::new();
+    let mut current_section = String::new();
+    let mut path_stack: Vec<String> = Vec::new();
+    // (original_section_label, full_path, median_ns)
+    let mut entries: Vec<(String, Vec<String>, f64)> = Vec::new();
 
     for line in s.lines() {
         let line = line.trim_end();
         if line.is_empty() { continue; }
 
+        // Section header: "synthetic  fastest │ slowest │ ..."
         if !line.starts_with('│') && !line.starts_with('├') && !line.starts_with('╰')
             && line.contains("fastest")
         {
-            let label = line.split_whitespace().next().unwrap_or("bench").to_string();
-            sections.push(Section { label, groups: Vec::new() });
+            current_section = line.split_whitespace().next().unwrap_or("bench").to_string();
+            path_stack.clear();
             continue;
         }
 
-        if sections.is_empty() {
-            sections.push(Section { label: "bench".to_string(), groups: Vec::new() });
+        if current_section.is_empty() {
+            current_section = "bench".to_string();
         }
 
-        let prefix_len = line.find(|c| c != '│' && c != ' ').unwrap_or(line.len());
-        let prefix = &line[..prefix_len];
-        let content = &line[prefix_len..];
-
-        if content.starts_with('├') || content.starts_with('╰') {
-            if prefix.is_empty() {
-                let segs: Vec<&str> = line.splitn(2, '│').collect();
-                let name = strip_box(segs[0]).trim().to_string();
-                if !name.is_empty() {
-                    sections.last_mut().unwrap().groups.push(Group { name, rows: Vec::new() });
-                }
+        // Compute depth by scanning indent prefix.
+        // Each nesting level is either "   " (3 spaces) or "│  " (│ + 2 spaces = 5 bytes).
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        let mut depth = 0;
+        while pos < bytes.len() {
+            if pos + 4 < bytes.len()
+                && bytes[pos] == 0xe2 && bytes[pos + 1] == 0x94 && bytes[pos + 2] == 0x82
+                && bytes[pos + 3] == b' ' && bytes[pos + 4] == b' '
+            {
+                // "│  " connector (5 bytes)
+                depth += 1;
+                pos += 5;
+            } else if pos + 2 < bytes.len()
+                && bytes[pos] == b' ' && bytes[pos + 1] == b' ' && bytes[pos + 2] == b' '
+            {
+                // "   " indent (3 bytes)
+                depth += 1;
+                pos += 3;
             } else {
-                let segs: Vec<&str> = line.split('│').collect();
-                let s = if segs.first().map_or(true, |s| s.trim().is_empty()) {
-                    &segs[1..]
-                } else {
-                    &segs[..]
-                };
-                if s.len() < 3 { continue; }
-                let name = name_only(strip_box(s[0]).trim());
-                let Some(median_ns) = parse_time(s[2].trim()) else { continue };
-                if !name.is_empty() {
-                    if let Some(g) = sections.last_mut().and_then(|s| s.groups.last_mut()) {
-                        g.rows.push(Row { name, median_ns });
-                    }
-                }
+                break;
             }
         }
+
+        let content = &line[pos..];
+        if !content.starts_with('├') && !content.starts_with('╰') { continue; }
+
+        // Split the content (after tree prefix) on │ to get columns
+        let cols: Vec<&str> = content.split('│').collect();
+        let name = name_only(strip_box(cols[0]).trim());
+        if name.is_empty() { continue; }
+
+        // Try to parse median from column index 2 (name+fastest | slowest | median | ...)
+        let median = cols.get(2).and_then(|s| parse_time(s.trim()));
+
+        if let Some(median_ns) = median {
+            // Leaf node with timing data
+            path_stack.truncate(depth);
+            let mut full_path = path_stack.clone();
+            full_path.push(name);
+            entries.push((current_section.clone(), full_path, median_ns));
+        } else {
+            // Intermediate node (group header)
+            path_stack.truncate(depth);
+            path_stack.push(name);
+        }
+    }
+
+    organize_entries(&entries)
+}
+
+/// Reorganize flat entries into Section/Group/Row hierarchy.
+///
+/// - 3-component paths `[type, format, fn]` from the `bench!` macro:
+///   section = "{format} {direction}", group = type, row = fn
+/// - 2-component paths `[group, fn]` from manual bench groups:
+///   infer format from group name prefix, same routing
+/// - 1-component paths `[fn]` from flat benchmarks (canada, twitter, citm):
+///   section = original section label, group = section label, row = fn
+fn organize_entries(entries: &[(String, Vec<String>, f64)]) -> Vec<Section> {
+    let mut sections: Vec<Section> = Vec::new();
+
+    for (orig_section, path, median_ns) in entries {
+        let (section_label, group_name, row_name) = match path.len() {
+            3 => {
+                let direction = if path[2].ends_with("_ser") { "ser" } else { "deser" };
+                (format!("{} {direction}", path[1]), path[0].clone(), path[2].clone())
+            }
+            2 => {
+                // Manual groups: infer format from group name prefix
+                let (format, clean_name) = if path[0].starts_with("postcard_") {
+                    ("postcard", path[0]["postcard_".len()..].to_string())
+                } else {
+                    ("json", path[0].clone())
+                };
+                let direction = if path[1].ends_with("_ser") { "ser" } else { "deser" };
+                (format!("{format} {direction}"), clean_name, path[1].clone())
+            }
+            1 => {
+                (orig_section.clone(), orig_section.clone(), path[0].clone())
+            }
+            _ => continue,
+        };
+
+        // Find or create section
+        let section = match sections.iter_mut().find(|s| s.label == section_label) {
+            Some(s) => s,
+            None => {
+                sections.push(Section { label: section_label, groups: Vec::new() });
+                sections.last_mut().unwrap()
+            }
+        };
+
+        // Find or create group within section
+        let group = match section.groups.iter_mut().find(|g| g.name == group_name) {
+            Some(g) => g,
+            None => {
+                section.groups.push(Group { name: group_name, rows: Vec::new() });
+                section.groups.last_mut().unwrap()
+            }
+        };
+
+        group.rows.push(Row { name: row_name, median_ns: *median_ns });
     }
 
     sections
@@ -171,9 +253,13 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// Strip _deser/_ser suffix for display, then apply legacy renames.
 fn display_name(name: &str) -> String {
-    if name == "postcard_serde" { return "serde".to_string(); }
-    name.replace("serde_json", "serde")
+    let base = name.strip_suffix("_deser")
+        .or_else(|| name.strip_suffix("_ser"))
+        .unwrap_or(name);
+    if base == "postcard_serde" { return "serde".to_string(); }
+    base.replace("serde_json", "serde").to_string()
 }
 
 // ── HTML ───────────────────────────────────────────────────────────────────
@@ -230,7 +316,7 @@ body{
   padding:24px 20px;max-width:960px;margin:0 auto;
 }
 /* tabs */
-.tabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid rgba(255,255,255,0.07)}
+.tabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid rgba(255,255,255,0.07);flex-wrap:wrap}
 .tab{
   font-family:var(--sans);
   font-size:13px;font-weight:700;letter-spacing:-.01em;
@@ -304,22 +390,24 @@ footer{
     h.push_str(r#"<div class="tabs">"#);
     for (i, section) in active_sections.iter().enumerate() {
         let active = if i == 0 { " active" } else { "" };
+        let tab_id = tab_id(&section.label);
         write!(h, r#"<button class="tab{}" onclick="switchTab('{}')">{}</button>"#,
-            active, esc(&section.label), esc(&section.label)).unwrap();
+            active, tab_id, esc(&section.label)).unwrap();
     }
     h.push_str("</div>\n");
 
     // Panels
     for (i, section) in active_sections.iter().enumerate() {
         let active = if i == 0 { " active" } else { "" };
-        write!(h, r#"<div class="panel{}" id="panel-{}">"#, active, esc(&section.label)).unwrap();
+        let tab_id = tab_id(&section.label);
+        write!(h, r#"<div class="panel{}" id="panel-{}">"#, active, tab_id).unwrap();
 
         let mut groups: Vec<&Group> = section.groups.iter()
             .filter(|g| g.rows.iter().any(|r| !r.name.starts_with("facet")))
             .collect();
         groups.sort_by(|a, b| group_sort_key(b).partial_cmp(&group_sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Win summary row — in bar column
+        // Win summary row
         let comparable_total = groups.iter().filter(|g| {
             g.rows.iter().any(|r| r.name.starts_with("fad")) &&
             g.rows.iter().any(|r| is_reference(&r.name))
@@ -398,9 +486,9 @@ footer{
     h.push_str("</footer>\n");
 
     h.push_str(r#"<script>
-function switchTab(label) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.textContent === label));
-  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + label));
+function switchTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.getAttribute('onclick').includes("'" + id + "'")));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + id));
 }
 </script>
 </body>
@@ -408,4 +496,9 @@ function switchTab(label) {
 "#);
 
     h
+}
+
+/// Produce a CSS-safe ID from a section label (e.g., "json deser" → "json-deser").
+fn tab_id(label: &str) -> String {
+    label.replace(' ', "-")
 }
