@@ -26,7 +26,10 @@ impl JsonValueType {
             Type::User(UserType::Struct(_)) => JsonValueType::Object,
             Type::User(UserType::Enum(_)) => JsonValueType::Object,
             _ => match shape.scalar_type() {
-                Some(ScalarType::String | ScalarType::Char) => JsonValueType::String,
+                Some(ScalarType::Char) => JsonValueType::String,
+                Some(ScalarType::String | ScalarType::Str | ScalarType::CowStr) => {
+                    JsonValueType::String
+                }
                 Some(ScalarType::Bool) => JsonValueType::Bool,
                 Some(
                     ScalarType::U8
@@ -80,11 +83,7 @@ impl SubSolver {
             if key_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            let field = variant
-                .fields
-                .iter()
-                .find(|f| f.name == key_name)
-                .unwrap();
+            let field = variant.fields.iter().find(|f| f.name == key_name).unwrap();
             match &field.shape.ty {
                 Type::User(UserType::Struct(st)) => {
                     for inner_f in st.fields {
@@ -108,11 +107,7 @@ impl SubSolver {
                     if key_mask & (1u64 << bit) == 0 {
                         continue;
                     }
-                    let field = variant
-                        .fields
-                        .iter()
-                        .find(|f| f.name == key_name)
-                        .unwrap();
+                    let field = variant.fields.iter().find(|f| f.name == key_name).unwrap();
                     if let Type::User(UserType::Struct(st)) = &field.shape.ty {
                         if st.fields.iter().any(|f| f.effective_name() == inner_name) {
                             mask |= 1u64 << bit;
@@ -240,7 +235,8 @@ impl LoweredSolver {
                 }
             }
 
-            let vt_masks: Vec<(JsonValueType, u64)> = type_map.iter().map(|(&k, &v)| (k, v)).collect();
+            let vt_masks: Vec<(JsonValueType, u64)> =
+                type_map.iter().map(|(&k, &v)| (k, v)).collect();
             let useful_vt = vt_masks.len() > 1;
 
             // Build sub-solver if all candidates have Object type for this key.

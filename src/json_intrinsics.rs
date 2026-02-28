@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::context::{DeserContext, ErrorCode};
 use core::num::IntErrorKind;
 
@@ -146,8 +148,7 @@ unsafe fn json_unescape_one(ctx: &mut DeserContext, buf: &mut Vec<u8>) -> bool {
                     ctx.error.code = ErrorCode::InvalidEscapeSequence as u32;
                     return false;
                 }
-                let codepoint =
-                    0x10000 + ((cp as u32 - 0xD800) << 10) + (low as u32 - 0xDC00);
+                let codepoint = 0x10000 + ((cp as u32 - 0xD800) << 10) + (low as u32 - 0xDC00);
                 // codepoint is always valid here (0x10000..=0x10FFFF)
                 let ch = char::from_u32(codepoint).unwrap();
                 let mut utf8_buf = [0u8; 4];
@@ -327,7 +328,9 @@ pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
             loop {
                 // Skip key
                 unsafe { fad_json_skip_value(ctx as *mut DeserContext) };
-                if ctx.error.code != 0 { return; }
+                if ctx.error.code != 0 {
+                    return;
+                }
                 // Expect colon
                 unsafe { skip_ws_raw(ctx) };
                 if ctx.input_ptr >= ctx.input_end || unsafe { *ctx.input_ptr } != b':' {
@@ -337,7 +340,9 @@ pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
                 ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
                 // Skip value
                 unsafe { fad_json_skip_value(ctx as *mut DeserContext) };
-                if ctx.error.code != 0 { return; }
+                if ctx.error.code != 0 {
+                    return;
+                }
                 // Comma or end
                 unsafe { skip_ws_raw(ctx) };
                 if ctx.input_ptr >= ctx.input_end {
@@ -346,7 +351,9 @@ pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
                 }
                 let c = unsafe { *ctx.input_ptr };
                 ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
-                if c == b'}' { return; }
+                if c == b'}' {
+                    return;
+                }
                 if c != b',' {
                     ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
                     return;
@@ -363,7 +370,9 @@ pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
             }
             loop {
                 unsafe { fad_json_skip_value(ctx as *mut DeserContext) };
-                if ctx.error.code != 0 { return; }
+                if ctx.error.code != 0 {
+                    return;
+                }
                 unsafe { skip_ws_raw(ctx) };
                 if ctx.input_ptr >= ctx.input_end {
                     ctx.error.code = ErrorCode::UnexpectedEof as u32;
@@ -371,7 +380,9 @@ pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
                 }
                 let c = unsafe { *ctx.input_ptr };
                 ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
-                if c == b']' { return; }
+                if c == b']' {
+                    return;
+                }
                 if c != b',' {
                     ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
                     return;
@@ -498,7 +509,9 @@ unsafe fn json_parse_unsigned(ctx: &mut DeserContext) -> u64 {
         let b = unsafe { *ctx.input_ptr };
         match b {
             b'0'..=b'9' => {
-                let new = result.checked_mul(10).and_then(|r| r.checked_add((b - b'0') as u64));
+                let new = result
+                    .checked_mul(10)
+                    .and_then(|r| r.checked_add((b - b'0') as u64));
                 match new {
                     Some(v) => result = v,
                     None => {
@@ -989,9 +1002,115 @@ pub unsafe extern "C" fn fad_json_read_string_value(ctx: *mut DeserContext, out:
         if b == b'\\' {
             // Slow path: unescape into Vec
             let prefix_len = unsafe { ctx.input_ptr.offset_from(start) as usize };
-            unsafe {
-                json_read_string_value_slow(ctx, start, prefix_len, out);
-            }
+            let s = match unsafe { json_read_string_value_slow_to_string(ctx, start, prefix_len) } {
+                Some(s) => s,
+                None => return,
+            };
+            unsafe { out.write(s) };
+            return;
+        }
+        ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+    }
+    ctx.error.code = ErrorCode::UnterminatedString as u32;
+}
+
+/// Parse a JSON string value ("...") and write it as a borrowed `&str`.
+///
+/// This only supports the no-escape fast path. Escaped strings require
+/// transformation and therefore cannot produce a direct borrow.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_str_value(ctx: *mut DeserContext, out: *mut &str) {
+    unsafe {
+        fad_json_skip_ws(ctx);
+    }
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::ExpectedStringKey as u32;
+        return;
+    }
+    if unsafe { *ctx.input_ptr } != b'"' {
+        ctx.error.code = ErrorCode::ExpectedStringKey as u32;
+        return;
+    }
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip opening '"'
+
+    let start = ctx.input_ptr;
+    while ctx.input_ptr < ctx.input_end {
+        let b = unsafe { *ctx.input_ptr };
+        if b == b'"' {
+            let len = unsafe { ctx.input_ptr.offset_from(start) as usize };
+            let bytes = unsafe { core::slice::from_raw_parts(start, len) };
+            let s = match core::str::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                    return;
+                }
+            };
+            let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+            unsafe { out.write(s_static) };
+            ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip closing '"'
+            return;
+        }
+        if b == b'\\' {
+            // Escapes require unescaping; borrowed &str cannot represent that
+            // without allocation.
+            ctx.error.code = ErrorCode::InvalidEscapeSequence as u32;
+            return;
+        }
+        ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+    }
+    ctx.error.code = ErrorCode::UnterminatedString as u32;
+}
+
+/// Parse a JSON string value ("...") and write it as `Cow<str>`.
+///
+/// Fast path (no escapes): `Cow::Borrowed`.
+/// Slow path (escapes): `Cow::Owned`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_cow_str_value(
+    ctx: *mut DeserContext,
+    out: *mut Cow<'static, str>,
+) {
+    unsafe {
+        fad_json_skip_ws(ctx);
+    }
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::ExpectedStringKey as u32;
+        return;
+    }
+    if unsafe { *ctx.input_ptr } != b'"' {
+        ctx.error.code = ErrorCode::ExpectedStringKey as u32;
+        return;
+    }
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip opening '"'
+
+    let start = ctx.input_ptr;
+    while ctx.input_ptr < ctx.input_end {
+        let b = unsafe { *ctx.input_ptr };
+        if b == b'"' {
+            let len = unsafe { ctx.input_ptr.offset_from(start) as usize };
+            let bytes = unsafe { core::slice::from_raw_parts(start, len) };
+            let s = match core::str::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                    return;
+                }
+            };
+            let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+            unsafe { out.write(Cow::Borrowed(s_static)) };
+            ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip closing '"'
+            return;
+        }
+        if b == b'\\' {
+            let prefix_len = unsafe { ctx.input_ptr.offset_from(start) as usize };
+            let s = match unsafe { json_read_string_value_slow_to_string(ctx, start, prefix_len) } {
+                Some(s) => s,
+                None => return,
+            };
+            unsafe { out.write(Cow::Owned(s)) };
             return;
         }
         ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
@@ -1023,12 +1142,11 @@ pub unsafe extern "C" fn fad_json_read_char(ctx: *mut DeserContext, out: *mut ch
 }
 
 /// Slow path for string value reading: unescapes into a Vec, converts to String.
-unsafe fn json_read_string_value_slow(
+unsafe fn json_read_string_value_slow_to_string(
     ctx: &mut DeserContext,
     prefix_start: *const u8,
     prefix_len: usize,
-    out: *mut String,
-) {
+) -> Option<String> {
     let mut buf = Vec::with_capacity(prefix_len + 32);
     buf.extend_from_slice(unsafe { core::slice::from_raw_parts(prefix_start, prefix_len) });
 
@@ -1037,17 +1155,17 @@ unsafe fn json_read_string_value_slow(
         if b == b'"' {
             ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip closing '"'
             match String::from_utf8(buf) {
-                Ok(s) => unsafe { out.write(s) },
+                Ok(s) => return Some(s),
                 Err(_) => {
                     ctx.error.code = ErrorCode::InvalidUtf8 as u32;
                 }
             }
-            return;
+            return None;
         }
         if b == b'\\' {
             ctx.input_ptr = unsafe { ctx.input_ptr.add(1) }; // skip '\'
             if !unsafe { json_unescape_one(ctx, &mut buf) } {
-                return; // error set
+                return None; // error set
             }
         } else {
             buf.push(b);
@@ -1055,6 +1173,7 @@ unsafe fn json_read_string_value_slow(
         }
     }
     ctx.error.code = ErrorCode::UnterminatedString as u32;
+    None
 }
 
 /// Set ExpectedTagKey error. Used when the first key in an adjacently/internally

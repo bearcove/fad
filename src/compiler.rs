@@ -59,7 +59,12 @@ struct Compiler<'fmt> {
 }
 
 impl<'fmt> Compiler<'fmt> {
-    fn new(extra_stack: u32, option_scratch_offset: u32, string_offsets: StringOffsets, format: &'fmt dyn Format) -> Self {
+    fn new(
+        extra_stack: u32,
+        option_scratch_offset: u32,
+        string_offsets: StringOffsets,
+        format: &'fmt dyn Format,
+    ) -> Self {
         Compiler {
             ectx: EmitCtx::new(extra_stack),
             format,
@@ -126,11 +131,7 @@ impl<'fmt> Compiler<'fmt> {
     }
 
     /// Compile a struct shape into a function.
-    fn compile_struct(
-        &mut self,
-        shape: &'static Shape,
-        entry_label: DynamicLabel,
-    ) {
+    fn compile_struct(&mut self, shape: &'static Shape, entry_label: DynamicLabel) {
         let key = shape as *const Shape;
         let (fields, skipped_fields) = collect_fields(shape);
         let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
@@ -191,7 +192,15 @@ impl<'fmt> Compiler<'fmt> {
         let ectx = &mut self.ectx;
 
         format.emit_struct_fields(ectx, &fields, deny_unknown_fields, &mut |ectx, field| {
-            emit_field(ectx, format, field, &fields, &nested, option_scratch_offset, string_offsets);
+            emit_field(
+                ectx,
+                format,
+                field,
+                &fields,
+                &nested,
+                option_scratch_offset,
+                string_offsets,
+            );
         });
 
         self.ectx.end_func(error_exit);
@@ -249,8 +258,13 @@ impl<'fmt> Compiler<'fmt> {
             self.ectx.emit_call_emitted_func(label, field_offset as u32);
         } else {
             match inner_shape.scalar_type() {
-                Some(ScalarType::String) => {
-                    self.format.emit_read_string(&mut self.ectx, field_offset, &self.string_offsets);
+                Some(st) if is_string_like_scalar(st) => {
+                    self.format.emit_read_string(
+                        &mut self.ectx,
+                        field_offset,
+                        st,
+                        &self.string_offsets,
+                    );
                 }
                 Some(st) => {
                     self.format.emit_read_scalar(&mut self.ectx, field_offset, st);
@@ -305,7 +319,14 @@ impl<'fmt> Compiler<'fmt> {
             option_scratch_offset,
             &mut |ectx| {
                 // Emit element deserialization. Out is already redirected to the slot.
-                emit_elem(ectx, format, elem_shape, elem_label, option_scratch_offset, string_offsets);
+                emit_elem(
+                    ectx,
+                    format,
+                    elem_shape,
+                    elem_label,
+                    option_scratch_offset,
+                    string_offsets,
+                );
             },
         );
 
@@ -355,10 +376,24 @@ impl<'fmt> Compiler<'fmt> {
             v_label,
             option_scratch_offset,
             &mut |ectx| {
-                emit_elem(ectx, format, k_shape, k_label, option_scratch_offset, string_offsets);
+                emit_elem(
+                    ectx,
+                    format,
+                    k_shape,
+                    k_label,
+                    option_scratch_offset,
+                    string_offsets,
+                );
             },
             &mut |ectx| {
-                emit_elem(ectx, format, v_shape, v_label, option_scratch_offset, string_offsets);
+                emit_elem(
+                    ectx,
+                    format,
+                    v_shape,
+                    v_label,
+                    option_scratch_offset,
+                    string_offsets,
+                );
             },
         );
 
@@ -448,13 +483,29 @@ impl<'fmt> Compiler<'fmt> {
 
             if variant.kind == VariantKind::Struct && !inline {
                 format.emit_struct_fields(ectx, &variant.fields, false, &mut |ectx, field| {
-                    emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
+                    emit_field(
+                        ectx,
+                        format,
+                        field,
+                        &variant.fields,
+                        nested,
+                        option_scratch_offset,
+                        string_offsets,
+                    );
                 });
                 return;
             }
 
             for field in &variant.fields {
-                emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
+                emit_field(
+                    ectx,
+                    format,
+                    field,
+                    &variant.fields,
+                    nested,
+                    option_scratch_offset,
+                    string_offsets,
+                );
             }
         };
 
@@ -467,13 +518,7 @@ impl<'fmt> Compiler<'fmt> {
             // r[impl deser.json.enum.adjacent]
             // Adjacently tagged: { "tag_key": "Variant", "content_key": value }
             (Some(tk), Some(ck), false) => {
-                format.emit_enum_adjacent(
-                    ectx,
-                    &variants,
-                    tk,
-                    ck,
-                    &mut emit_standard_variant_body,
-                );
+                format.emit_enum_adjacent(ectx, &variants, tk, ck, &mut emit_standard_variant_body);
             }
 
             // r[impl deser.json.enum.internal]
@@ -488,7 +533,15 @@ impl<'fmt> Compiler<'fmt> {
                     },
                     &mut |ectx, variant, field| {
                         let nested = &nested_labels[variant.index];
-                        emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
+                        emit_field(
+                            ectx,
+                            format,
+                            field,
+                            &variant.fields,
+                            nested,
+                            option_scratch_offset,
+                            string_offsets,
+                        );
                     },
                 );
             }
@@ -721,6 +774,13 @@ fn needs_precompilation(shape: &'static Shape) -> bool {
     is_composite(shape)
 }
 
+fn is_string_like_scalar(scalar_type: ScalarType) -> bool {
+    matches!(
+        scalar_type,
+        ScalarType::String | ScalarType::Str | ScalarType::CowStr
+    )
+}
+
 /// Emit code for a single field, dispatching to nested struct calls, inline
 /// expansion, scalar intrinsics, or Option handling.
 fn emit_field(
@@ -745,28 +805,42 @@ fn emit_field(
         let init_some_fn = opt_def.vtable.init_some as *const u8;
         let inner_shape = opt_def.t;
 
-        format.emit_option(ectx, field.offset, init_none_fn, init_some_fn, option_scratch_offset, &mut |ectx| {
-            // Emit inner T deserialization into the scratch area (out is already redirected).
-            // The inner T's offset is 0 because out now points to the scratch area.
-            if let Some(label) = nested[idx] {
-                ectx.emit_call_emitted_func(label, 0);
-            } else if is_struct(inner_shape) && format.supports_inline_nested() {
-                emit_inline_struct(ectx, format, inner_shape, 0, option_scratch_offset, string_offsets);
-            } else {
-                match inner_shape.scalar_type() {
-                    Some(ScalarType::String) => {
-                        format.emit_read_string(ectx, 0, string_offsets);
+        format.emit_option(
+            ectx,
+            field.offset,
+            init_none_fn,
+            init_some_fn,
+            option_scratch_offset,
+            &mut |ectx| {
+                // Emit inner T deserialization into the scratch area (out is already redirected).
+                // The inner T's offset is 0 because out now points to the scratch area.
+                if let Some(label) = nested[idx] {
+                    ectx.emit_call_emitted_func(label, 0);
+                } else if is_struct(inner_shape) && format.supports_inline_nested() {
+                    emit_inline_struct(
+                        ectx,
+                        format,
+                        inner_shape,
+                        0,
+                        option_scratch_offset,
+                        string_offsets,
+                    );
+                } else {
+                    match inner_shape.scalar_type() {
+                        Some(st) if is_string_like_scalar(st) => {
+                            format.emit_read_string(ectx, 0, st, string_offsets);
+                        }
+                        Some(st) => {
+                            format.emit_read_scalar(ectx, 0, st);
+                        }
+                        None => panic!(
+                            "unsupported Option inner type: {}",
+                            inner_shape.type_identifier,
+                        ),
                     }
-                    Some(st) => {
-                        format.emit_read_scalar(ectx, 0, st);
-                    }
-                    None => panic!(
-                        "unsupported Option inner type: {}",
-                        inner_shape.type_identifier,
-                    ),
                 }
-            }
-        });
+            },
+        );
         return;
     }
 
@@ -780,13 +854,20 @@ fn emit_field(
     // r[impl deser.nested-struct]
     // r[impl deser.nested-struct.offset]
     if is_struct(field.shape) && format.supports_inline_nested() {
-        emit_inline_struct(ectx, format, field.shape, field.offset, option_scratch_offset, string_offsets);
+        emit_inline_struct(
+            ectx,
+            format,
+            field.shape,
+            field.offset,
+            option_scratch_offset,
+            string_offsets,
+        );
         return;
     }
 
     match field.shape.scalar_type() {
-        Some(ScalarType::String) => {
-            format.emit_read_string(ectx, field.offset, string_offsets);
+        Some(st) if is_string_like_scalar(st) => {
+            format.emit_read_string(ectx, field.offset, st, string_offsets);
         }
         Some(st) => {
             format.emit_read_scalar(ectx, field.offset, st);
@@ -812,11 +893,18 @@ fn emit_elem(
     if let Some(label) = elem_label {
         ectx.emit_call_emitted_func(label, 0);
     } else if is_struct(elem_shape) && format.supports_inline_nested() {
-        emit_inline_struct(ectx, format, elem_shape, 0, option_scratch_offset, string_offsets);
+        emit_inline_struct(
+            ectx,
+            format,
+            elem_shape,
+            0,
+            option_scratch_offset,
+            string_offsets,
+        );
     } else {
         match elem_shape.scalar_type() {
-            Some(ScalarType::String) => {
-                format.emit_read_string(ectx, 0, string_offsets);
+            Some(st) if is_string_like_scalar(st) => {
+                format.emit_read_string(ectx, 0, st, string_offsets);
             }
             Some(st) => {
                 format.emit_read_scalar(ectx, 0, st);
@@ -870,13 +958,24 @@ fn emit_inline_struct(
     // Inline nested structs inherit the parent's deny_unknown_fields behavior,
     // but currently inline is only used by postcard (positional, no unknown fields possible).
     format.emit_struct_fields(ectx, &adjusted, false, &mut |ectx, field| {
-        emit_field(ectx, format, field, &adjusted, &no_nested, option_scratch_offset, string_offsets);
+        emit_field(
+            ectx,
+            format,
+            field,
+            &adjusted,
+            &no_nested,
+            option_scratch_offset,
+            string_offsets,
+        );
     });
 }
 
 /// Compute the maximum Option inner type size across a shape tree.
 /// Returns 0 if no Option fields are found.
-fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::HashSet<*const Shape>) -> usize {
+fn max_option_inner_size(
+    shape: &'static Shape,
+    visited: &mut std::collections::HashSet<*const Shape>,
+) -> usize {
     let key = shape as *const Shape;
     if !visited.insert(key) {
         return 0;
@@ -898,9 +997,12 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
             for f in st.fields {
                 let field_shape = f.shape();
                 if let Some(opt_def) = get_option_def(field_shape) {
-                    let inner_size = opt_def.t.layout.sized_layout().expect(
-                        "Option inner type must be Sized"
-                    ).size();
+                    let inner_size = opt_def
+                        .t
+                        .layout
+                        .sized_layout()
+                        .expect("Option inner type must be Sized")
+                        .size();
                     max_size = max_size.max(inner_size);
                     // Also recurse into the inner type
                     max_size = max_size.max(max_option_inner_size(opt_def.t, visited));
@@ -913,9 +1015,12 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
                 for f in v.data.fields {
                     let field_shape = f.shape();
                     if let Some(opt_def) = get_option_def(field_shape) {
-                        let inner_size = opt_def.t.layout.sized_layout().expect(
-                            "Option inner type must be Sized"
-                        ).size();
+                        let inner_size = opt_def
+                            .t
+                            .layout
+                            .sized_layout()
+                            .expect("Option inner type must be Sized")
+                            .size();
                         max_size = max_size.max(inner_size);
                         max_size = max_size.max(max_option_inner_size(opt_def.t, visited));
                     }
@@ -931,7 +1036,10 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
 
 /// Check if a shape tree contains any List (Vec<T>) or Map types that need
 /// the sequence buffer stack layout.
-fn has_seq_or_map_in_tree(shape: &'static Shape, visited: &mut std::collections::HashSet<*const Shape>) -> bool {
+fn has_seq_or_map_in_tree(
+    shape: &'static Shape,
+    visited: &mut std::collections::HashSet<*const Shape>,
+) -> bool {
     let key = shape as *const Shape;
     if !visited.insert(key) {
         return false;
@@ -999,15 +1107,21 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
                 // Compute the max across all variants.
                 let mut max_extra = 0u32;
                 for v in enum_type.variants {
-                    let fields: Vec<FieldEmitInfo> = v.data.fields.iter().enumerate().map(|(j, f)| {
-                        FieldEmitInfo {
-                            offset: f.offset,
-                            shape: f.shape(),
-                            name: f.name,
-                            required_index: j,
-                            default: None,
-                        }
-                    }).collect();
+                    let fields: Vec<FieldEmitInfo> = v
+                        .data
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .map(|(j, f)| {
+                            FieldEmitInfo {
+                                offset: f.offset,
+                                shape: f.shape(),
+                                name: f.name,
+                                required_index: j,
+                                default: None,
+                            }
+                        })
+                        .collect();
                     max_extra = max_extra.max(format.extra_stack_space(&fields));
                 }
                 max_extra
