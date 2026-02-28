@@ -20,12 +20,12 @@ use crate::solver::{JsonValueType, LoweredSolver};
 //   [sp+BASE_FRAME+24..BASE_FRAME+32)    comma_or_end result (u8 + padding)
 //   [sp+BASE_FRAME+32..BASE_FRAME+40)    saved_cursor — saved input_ptr for solver restore
 //   [sp+BASE_FRAME+40..BASE_FRAME+48)    candidates — solver bitmask for object bucket disambiguation
-const BITSET_OFFSET: u32 = BASE_FRAME;
-const KEY_PTR_OFFSET: u32 = BASE_FRAME + 8;
-const KEY_LEN_OFFSET: u32 = BASE_FRAME + 16;
-const RESULT_BYTE_OFFSET: u32 = BASE_FRAME + 24;
-const SAVED_CURSOR_OFFSET: u32 = BASE_FRAME + 32;
-const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
+pub(crate) const BITSET_OFFSET: u32 = BASE_FRAME;
+pub(crate) const KEY_PTR_OFFSET: u32 = BASE_FRAME + 8;
+pub(crate) const KEY_LEN_OFFSET: u32 = BASE_FRAME + 16;
+pub(crate) const RESULT_BYTE_OFFSET: u32 = BASE_FRAME + 24;
+pub(crate) const SAVED_CURSOR_OFFSET: u32 = BASE_FRAME + 32;
+pub(crate) const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
 
 /// JSON wire format — key-value pairs, linear key dispatch.
 pub struct FadJson;
@@ -328,6 +328,10 @@ impl Format for FadJson {
     // r[impl deser.json.scalar.float]
     // r[impl deser.json.scalar.bool]
     fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
+        if scalar_type == ScalarType::F64 {
+            ectx.emit_jit_f64_parse(offset as u32);
+            return;
+        }
         let fn_ptr: *const u8 = match scalar_type {
             ScalarType::U8 => json_intrinsics::fad_json_read_u8 as _,
             ScalarType::U16 => json_intrinsics::fad_json_read_u16 as _,
@@ -338,7 +342,7 @@ impl Format for FadJson {
             ScalarType::I32 => json_intrinsics::fad_json_read_i32 as _,
             ScalarType::I64 => json_intrinsics::fad_json_read_i64 as _,
             ScalarType::F32 => json_intrinsics::fad_json_read_f32 as _,
-            ScalarType::F64 => json_intrinsics::fad_json_read_f64 as _,
+            ScalarType::F64 => unreachable!(),
             ScalarType::Bool => json_intrinsics::fad_json_read_bool as _,
             _ => panic!("unsupported JSON scalar: {:?}", scalar_type),
         };

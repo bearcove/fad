@@ -3,10 +3,12 @@ pub mod compiler;
 pub mod context;
 pub mod format;
 pub mod intrinsics;
+pub mod jit_f64;
 pub mod json;
 pub mod json_intrinsics;
 pub mod malum;
 pub mod postcard;
+mod pow10tab;
 pub mod recipe;
 pub mod solver;
 
@@ -352,6 +354,141 @@ mod tests {
         let result: Floats = deserialize(&deser, input).unwrap();
         assert_eq!(result.a, 150.0);
         assert_eq!(result.b, -3.14);
+    }
+
+    // r[verify deser.json.scalar.float]
+    // r[verify deser.json.scalar.float.sign]
+    // r[verify deser.json.scalar.float.digits]
+    // r[verify deser.json.scalar.float.overflow-digits]
+    // r[verify deser.json.scalar.float.dot]
+    // r[verify deser.json.scalar.float.exponent]
+    // r[verify deser.json.scalar.float.zero]
+    // r[verify deser.json.scalar.float.exact-int]
+    // r[verify deser.json.scalar.float.uscale]
+    // r[verify deser.json.scalar.float.pack]
+    // r[verify deser.json.scalar.float.pack.subnormal]
+    // r[verify deser.json.scalar.float.pack.overflow]
+    #[test]
+    fn json_f64_edge_cases() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct F {
+            x: f64,
+        }
+
+        let cases: &[(&[u8], f64)] = &[
+            // Exact integers
+            (br#"{"x":0}"#, 0.0),
+            (br#"{"x":1}"#, 1.0),
+            (br#"{"x":42}"#, 42.0),
+            (br#"{"x":9007199254740992}"#, 9007199254740992.0), // 2^53
+            // Simple decimals
+            (br#"{"x":0.5}"#, 0.5),
+            (br#"{"x":1.0}"#, 1.0),
+            (br#"{"x":3.14}"#, 3.14),
+            (br#"{"x":2.718281828459045}"#, 2.718281828459045),
+            // Negative values
+            (br#"{"x":-1.0}"#, -1.0),
+            (br#"{"x":-0.0}"#, -0.0_f64),
+            (br#"{"x":-3.14}"#, -3.14),
+            // Scientific notation
+            (br#"{"x":1e10}"#, 1e10),
+            (br#"{"x":1.5e2}"#, 150.0),
+            (br#"{"x":1e-10}"#, 1e-10),
+            (br#"{"x":1E10}"#, 1e10),
+            (br#"{"x":1e+10}"#, 1e10),
+            (br#"{"x":1e0}"#, 1.0),
+            // Leading zeros (valid JSON numbers can have 0.xxx)
+            (br#"{"x":0.001}"#, 0.001),
+            (br#"{"x":0.0000000000000000000001}"#, 1e-22),
+            // Large/small exponents
+            (br#"{"x":1e308}"#, 1e308),
+            (br#"{"x":1.7976931348623157e308}"#, f64::MAX),
+            (br#"{"x":1e-308}"#, 1e-308),
+            // Min normal
+            (br#"{"x":2.2250738585072014e-308}"#, 2.2250738585072014e-308),
+            // Overflow → infinity
+            (br#"{"x":1e309}"#, f64::INFINITY),
+            (br#"{"x":-1e309}"#, f64::NEG_INFINITY),
+            // Underflow → zero
+            (br#"{"x":1e-400}"#, 0.0),
+            // > 19 significant digits (overflow digits get dropped)
+            (br#"{"x":12345678901234567890.0}"#, 12345678901234567890.0),
+            // With leading whitespace after colon (tests ws skip)
+            (br#"{"x": 1.0}"#, 1.0),
+            (br#"{"x":	1.0}"#, 1.0), // tab
+        ];
+
+        let deser = compile_deser(F::SHAPE, &json::FadJson);
+        for (input, expected) in cases {
+            let result: F = deserialize(&deser, input).unwrap();
+            assert_eq!(
+                result.x.to_bits(),
+                expected.to_bits(),
+                "input={:?}: got {} ({:#018x}), expected {} ({:#018x})",
+                std::str::from_utf8(input).unwrap(),
+                result.x, result.x.to_bits(),
+                expected, expected.to_bits(),
+            );
+        }
+    }
+
+    // r[verify deser.json.scalar.float.uscale.table]
+    // r[verify deser.json.scalar.float.uscale.mul128]
+    // r[verify deser.json.scalar.float.uscale.clz]
+    #[test]
+    fn json_f64_canada_roundtrip() {
+        #[derive(Facet, Debug)]
+        struct Coord {
+            v: f64,
+        }
+
+        let compressed = include_bytes!("../fixtures/canada.json.br");
+        let mut json_bytes = Vec::new();
+        brotli::BrotliDecompress(
+            &mut std::io::Cursor::new(compressed),
+            &mut json_bytes,
+        )
+        .unwrap();
+
+        let deser = compile_deser(Coord::SHAPE, &json::FadJson);
+
+        let mut mismatches = 0;
+        let mut total = 0;
+        let mut i = 0;
+        while i < json_bytes.len() {
+            if json_bytes[i] == b'-' || json_bytes[i].is_ascii_digit() {
+                let start = i;
+                i += 1;
+                while i < json_bytes.len() {
+                    match json_bytes[i] {
+                        b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-' => i += 1,
+                        _ => break,
+                    }
+                }
+                let s = &json_bytes[start..i];
+                if s.contains(&b'.') || s.contains(&b'e') || s.contains(&b'E') {
+                    total += 1;
+                    let std_val: f64 = std::str::from_utf8(s).unwrap().parse().unwrap();
+                    let json_input =
+                        format!(r#"{{"v":{}}}"#, std::str::from_utf8(s).unwrap());
+                    let result: Coord = deserialize(&deser, json_input.as_bytes()).unwrap();
+                    if std_val.to_bits() != result.v.to_bits() {
+                        if mismatches < 10 {
+                            eprintln!(
+                                "MISMATCH: {:?} → std={std_val:?} jit={:?}",
+                                std::str::from_utf8(s).unwrap(),
+                                result.v,
+                            );
+                        }
+                        mismatches += 1;
+                    }
+                }
+            } else {
+                i += 1;
+            }
+        }
+        eprintln!("{total} floats checked, {mismatches} mismatches");
+        assert_eq!(mismatches, 0, "{mismatches}/{total} values differ from std");
     }
 
     // r[verify deser.postcard.scalar.varint]
