@@ -173,8 +173,24 @@ fn is_reference(name: &str) -> bool {
     name.starts_with("serde") || name.starts_with("postcard")
 }
 
+/// Sort key: fad_ns / ref_ns, descending (most-slower-first). Groups without
+/// both a fad row and a reference row sort to the end.
+fn group_sort_key(group: &Group) -> f64 {
+    let fad_ns = group.rows.iter().find(|r| r.name.starts_with("fad")).map(|r| r.median_ns);
+    let ref_ns = group.rows.iter().find(|r| is_reference(&r.name)).map(|r| r.median_ns);
+    match (fad_ns, ref_ns) {
+        (Some(f), Some(r)) if r > 0.0 => f / r,
+        _ => 0.0, // no comparison available → sort to end
+    }
+}
+
 fn render(sections: &[Section]) -> String {
     let mut h = String::new();
+
+    // Build tab list (only sections that have renderable groups)
+    let active_sections: Vec<&Section> = sections.iter()
+        .filter(|s| s.groups.iter().any(|g| g.rows.iter().any(|r| !r.name.starts_with("facet"))))
+        .collect();
 
     h.push_str(r#"<!DOCTYPE html>
 <html lang="en">
@@ -189,69 +205,67 @@ fn render(sections: &[Section]) -> String {
   --bg:#080B10;--surface:#0D1117;--border:#1C2128;
   --text:#8B949E;--bright:#E6EDF3;--dim:#484F58;
   --fad:#E8A820;--serde:#4A9EFF;--postcard:#34D399;
-  --font-mono:"JetBrains Mono",monospace;
+  --mono:"JetBrains Mono",monospace;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{
   background:var(--bg);color:var(--text);
-  font-family:var(--font-mono);font-size:11px;
-  padding:24px 20px;max-width:1100px;margin:0 auto;
+  font-family:var(--mono);font-size:11px;
+  padding:24px 20px;max-width:700px;margin:0 auto;
 }
 header{
-  display:flex;align-items:baseline;gap:16px;
-  margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px;
+  display:flex;align-items:center;gap:16px;
+  margin-bottom:16px;
 }
 h1{
   font-family:"Barlow Condensed",sans-serif;
-  font-size:28px;font-weight:700;letter-spacing:.05em;
+  font-size:26px;font-weight:700;letter-spacing:.06em;
   color:var(--bright);text-transform:uppercase;
 }
-.legend{display:flex;gap:12px;align-items:center;margin-left:auto}
-.legend-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text)}
-.swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0}
-.section-label{
+.legend{display:flex;gap:10px;align-items:center;margin-left:auto}
+.legend-item{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text)}
+.swatch{width:8px;height:8px;border-radius:1px;flex-shrink:0}
+/* tabs */
+.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:0}
+.tab{
   font-family:"Barlow Condensed",sans-serif;
-  font-size:16px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--dim);margin:16px 0 8px;
+  font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--dim);background:none;border:none;cursor:pointer;
+  padding:6px 14px 7px;border-bottom:2px solid transparent;margin-bottom:-1px;
 }
-.section-label:first-child{margin-top:0}
-.grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
-  gap:8px;margin-bottom:8px;
-}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--bright);border-bottom-color:var(--bright)}
+.panel{display:none}
+.panel.active{display:block}
+/* groups */
 .group{
   background:var(--surface);border:1px solid var(--border);
-  border-radius:6px;padding:10px 12px;
+  border-radius:5px;padding:8px 12px;margin-bottom:6px;
 }
 .gname{
-  font-size:10px;font-weight:600;color:var(--dim);
-  text-transform:uppercase;letter-spacing:.08em;
-  margin-bottom:8px;
+  font-size:9px;font-weight:600;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.1em;
+  margin-bottom:6px;
 }
 .row{
   display:grid;
-  grid-template-columns:90px 1fr 72px;
-  gap:0 8px;align-items:center;margin-bottom:3px;
+  grid-template-columns:160px 1fr 62px;
+  gap:0 8px;align-items:center;margin-bottom:2px;
 }
 .row:last-child{margin-bottom:0}
 .bname{
   font-size:10px;color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  display:flex;align-items:center;gap:5px;
 }
-.track{
-  background:#13181F;height:12px;
-  border-radius:2px;overflow:hidden;
+.ratio{
+  font-size:9px;color:var(--dim);flex-shrink:0;
 }
+.ratio.win{color:#3FB950}
+.ratio.lose{color:#F85149}
+.track{background:#13181F;height:10px;border-radius:2px;overflow:hidden}
 .fill{height:100%;min-width:2px;border-radius:2px}
-.meta{
-  font-size:10px;text-align:right;white-space:nowrap;
-  display:flex;flex-direction:column;align-items:flex-end;gap:0;
-}
-.mtime{color:var(--bright)}
-.mdelta{font-size:9px;color:var(--dim)}
-.mdelta.win{color:#3FB950}
-.mdelta.lose{color:#F85149}
+.mtime{font-size:10px;color:var(--bright);text-align:right}
 </style>
 </head>
 <body>
@@ -265,16 +279,27 @@ h1{
 </header>
 "#);
 
-    for section in sections {
-        let non_empty: Vec<&Group> = section.groups.iter()
+    // Tabs
+    h.push_str(r#"<div class="tabs">"#);
+    for (i, section) in active_sections.iter().enumerate() {
+        let active = if i == 0 { " active" } else { "" };
+        write!(h, r#"<button class="tab{}" onclick="switchTab('{}')">{}</button>"#,
+            active, esc(&section.label), esc(&section.label)).unwrap();
+    }
+    h.push_str("</div>\n");
+
+    // Panels
+    for (i, section) in active_sections.iter().enumerate() {
+        let active = if i == 0 { " active" } else { "" };
+        write!(h, r#"<div class="panel{}" id="panel-{}">"#, active, esc(&section.label)).unwrap();
+
+        // Collect and sort groups: most-slower-fad first
+        let mut groups: Vec<&Group> = section.groups.iter()
             .filter(|g| g.rows.iter().any(|r| !r.name.starts_with("facet")))
             .collect();
-        if non_empty.is_empty() { continue; }
+        groups.sort_by(|a, b| group_sort_key(b).partial_cmp(&group_sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
 
-        write!(h, r#"<div class="section-label">{}</div><div class="grid">"#,
-            esc(&section.label)).unwrap();
-
-        for group in non_empty {
+        for group in groups {
             let rows: Vec<&Row> = group.rows.iter()
                 .filter(|r| !r.name.starts_with("facet"))
                 .collect();
@@ -291,28 +316,35 @@ h1{
                 let pct = (row.median_ns / max_ns * 100.0).clamp(0.5, 100.0);
                 let color = bar_color(&row.name);
 
-                let delta_html = match ref_ns {
-                    Some(ref_ns) if !is_reference(&row.name) => {
-                        let ratio = row.median_ns / ref_ns;
-                        if ratio < 1.0 {
-                            format!(r#"<span class="mdelta win">+{:.0}%</span>"#, (1.0 - ratio) * 100.0)
-                        } else {
-                            format!(r#"<span class="mdelta lose">-{:.0}%</span>"#, (ratio - 1.0) * 100.0)
-                        }
+                // Ratio label: for fad rows, show "Xx as fast" relative to ref
+                let ratio_html = match ref_ns {
+                    Some(ref_ns) if row.name.starts_with("fad") && ref_ns > 0.0 => {
+                        let x = ref_ns / row.median_ns; // >1 means fad is faster
+                        let cls = if x >= 1.0 { "win" } else { "lose" };
+                        format!(r#"<span class="ratio {}">{:.2}x</span>"#, cls, x)
                     }
                     _ => String::new(),
                 };
 
-                write!(h, r#"<div class="row"><div class="bname">{}</div><div class="track"><div class="fill" style="width:{:.1}%;background:{}"></div></div><div class="meta"><span class="mtime">{}</span>{}</div></div>"#,
-                    esc(&row.name), pct, color, fmt_time(row.median_ns), delta_html,
+                write!(h,
+                    r#"<div class="row"><div class="bname">{}{}</div><div class="track"><div class="fill" style="width:{:.1}%;background:{}"></div></div><span class="mtime">{}</span></div>"#,
+                    esc(&row.name), ratio_html, pct, color, fmt_time(row.median_ns),
                 ).unwrap();
             }
 
             h.push_str("</div>\n");
         }
 
-        h.push_str("</div>\n"); // close .grid
+        h.push_str("</div>\n"); // close panel
     }
+
+    h.push_str(r#"<script>
+function switchTab(label) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.textContent === label));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + label));
+}
+</script>
+"#);
 
     h.push_str("</div>\n</body>\n</html>\n");
     h
