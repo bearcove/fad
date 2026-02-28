@@ -630,7 +630,7 @@ mod tests {
     fn disasm_bytes(code: &[u8], base_addr: u64, marker_offset: Option<usize>) -> String {
         let mut out = String::new();
         use std::fmt::Write;
-        use yaxpeax_arch::{Decoder, U8Reader};
+        use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
 
         #[cfg(target_arch = "aarch64")]
         {

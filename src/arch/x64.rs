@@ -5,8 +5,17 @@ use crate::recipe::{Op, Recipe, Slot, Width, ErrorTarget};
 
 pub type Assembler = dynasmrt::x64::Assembler;
 
-/// Base frame size: rbp + pad + 4 callee-saved regs = 48 bytes.
+/// Base frame size.
+///
+/// - System V AMD64: `rbp + pad + r12 + r13 + r14 + r15` = 48 bytes
+/// - Windows x64: `shadow(32) + rbp + pad + r12 + r13 + r14 + r15` = 80 bytes
+///
+/// The Windows layout reserves 32 bytes at [rsp+0..31] as the callee home
+/// (shadow) space required by the Windows x64 ABI before every call.
+#[cfg(not(windows))]
 pub const BASE_FRAME: u32 = 48;
+#[cfg(windows)]
+pub const BASE_FRAME: u32 = 80;
 
 /// Emission context — wraps the assembler plus bookkeeping labels.
 pub struct EmitCtx {
@@ -17,7 +26,7 @@ pub struct EmitCtx {
     pub frame_size: u32,
 }
 
-// Register assignments (System V AMD64 ABI, all callee-saved):
+// Register assignments (callee-saved across all platforms):
 //   r12 = cached input_ptr
 //   r13 = cached input_end
 //   r14 = out pointer
@@ -27,11 +36,9 @@ pub struct EmitCtx {
 //   rax = fn ptr loads, return values
 //   r10, r11 = temporaries
 //
-// Arguments to intrinsics:
-//   rdi = 1st arg (ctx)
-//   rsi = 2nd arg
-//   rdx = 3rd arg
-//   rcx = 4th arg
+// Argument registers for calls to intrinsics:
+//   System V AMD64:  arg0=rdi, arg1=rsi, arg2=rdx, arg3=rcx, arg4=r8, arg5=r9
+//   Windows x64:     arg0=rcx, arg1=rdx, arg2=r8,  arg3=r9   (4 register args only)
 
 impl EmitCtx {
     /// Create a new EmitCtx. Does not emit any code.
@@ -73,6 +80,20 @@ impl EmitCtx {
         // On entry: rsp is 8-mod-16 (return address was pushed by `call`).
         // push rbp → rsp is now 16-byte aligned.
         // sub rsp, frame_size → stays 16-byte aligned (frame_size is multiple of 16).
+        //
+        // System V AMD64 frame layout (BASE_FRAME = 48):
+        //   [rsp+0]:  saved rbp      [rsp+8]:  (padding)
+        //   [rsp+16]: saved r12      [rsp+24]: saved r13
+        //   [rsp+32]: saved r14      [rsp+40]: saved r15
+        //   [rsp+48..]: extra stack  (args arrive in rdi=out, rsi=ctx)
+        //
+        // Windows x64 frame layout (BASE_FRAME = 80):
+        //   [rsp+0..31]: shadow/home space (32 bytes, callee may write here)
+        //   [rsp+32]: saved rbp      [rsp+40]: (padding)
+        //   [rsp+48]: saved r12      [rsp+56]: saved r13
+        //   [rsp+64]: saved r14      [rsp+72]: saved r15
+        //   [rsp+80..]: extra stack  (args arrive in rcx=out, rdx=ctx)
+        #[cfg(not(windows))]
         dynasm!(self.ops
             ; .arch x64
             ; push rbp
@@ -82,14 +103,26 @@ impl EmitCtx {
             ; mov [rsp + 24], r13
             ; mov [rsp + 32], r14
             ; mov [rsp + 40], r15
-
-            // Save arguments to callee-saved registers
             ; mov r14, rdi              // r14 = out
             ; mov r15, rsi              // r15 = ctx
-
-            // Cache input cursor from ctx
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]   // r12 = ctx.input_ptr
-            ; mov r13, [r15 + CTX_INPUT_END as i32]   // r13 = ctx.input_end
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r13, [r15 + CTX_INPUT_END as i32]
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; push rbp
+            ; sub rsp, frame_size as i32
+            // [rsp+0..31] is shadow space; callee-saved regs follow after
+            ; mov [rsp + 32], rbp
+            ; mov [rsp + 48], r12
+            ; mov [rsp + 56], r13
+            ; mov [rsp + 64], r14
+            ; mov [rsp + 72], r15
+            ; mov r14, rcx              // r14 = out  (Windows arg0)
+            ; mov r15, rdx              // r15 = ctx  (Windows arg1)
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r13, [r15 + CTX_INPUT_END as i32]
         );
 
         self.error_exit = error_exit;
@@ -102,6 +135,7 @@ impl EmitCtx {
     pub fn end_func(&mut self, error_exit: DynamicLabel) {
         let frame_size = self.frame_size as i32;
 
+        #[cfg(not(windows))]
         dynasm!(self.ops
             ; .arch x64
             // Success path: flush cursor, restore registers, return
@@ -126,6 +160,31 @@ impl EmitCtx {
             ; pop rbp
             ; ret
         );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            // Success path: flush cursor, restore registers, return
+            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            ; mov r15, [rsp + 72]
+            ; mov r14, [rsp + 64]
+            ; mov r13, [rsp + 56]
+            ; mov r12, [rsp + 48]
+            ; mov rbp, [rsp + 32]
+            ; add rsp, frame_size
+            ; pop rbp
+            ; ret
+
+            // Error exit: just restore and return (error is already in ctx.error)
+            ; =>error_exit
+            ; mov r15, [rsp + 72]
+            ; mov r14, [rsp + 64]
+            ; mov r13, [rsp + 56]
+            ; mov r12, [rsp + 48]
+            ; mov rbp, [rsp + 32]
+            ; add rsp, frame_size
+            ; pop rbp
+            ; ret
+        );
     }
 
     /// Emit a call to another emitted function.
@@ -141,11 +200,14 @@ impl EmitCtx {
             ; .arch x64
             // Flush cached cursor back to ctx
             ; mov [r15 + CTX_INPUT_PTR as i32], r12
-
-            // Set up arguments: rdi = out + field_offset, rsi = ctx
-            ; lea rdi, [r14 + field_offset as i32]
-            ; mov rsi, r15
-
+        );
+        // Set up arguments: arg0 = out + field_offset, arg1 = ctx
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; lea rdi, [r14 + field_offset as i32] ; mov rsi, r15);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; lea rcx, [r14 + field_offset as i32] ; mov rdx, r15);
+        dynasm!(self.ops
+            ; .arch x64
             // Call the emitted function via PC-relative call
             ; call =>label
 
@@ -172,11 +234,14 @@ impl EmitCtx {
             ; .arch x64
             // Flush cached cursor back to ctx
             ; mov [r15 + CTX_INPUT_PTR as i32], r12
-
-            // Set up arguments: rdi = ctx, rsi = out + field_offset
-            ; mov rdi, r15
-            ; lea rsi, [r14 + field_offset as i32]
-
+        );
+        // Set up arguments: arg0 = ctx, arg1 = out + field_offset
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [r14 + field_offset as i32]);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [r14 + field_offset as i32]);
+        dynasm!(self.ops
+            ; .arch x64
             // Load function pointer into rax and call
             ; mov rax, QWORD ptr_val
             ; call rax
@@ -197,10 +262,13 @@ impl EmitCtx {
         let error_exit = self.error_exit;
         let ptr_val = fn_ptr as i64;
 
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15);
         dynasm!(self.ops
             ; .arch x64
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15
             ; mov rax, QWORD ptr_val
             ; call rax
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
@@ -211,16 +279,18 @@ impl EmitCtx {
     }
 
     /// Emit a call to an intrinsic that takes (ctx, &mut stack_slot).
-    /// rdi = ctx, rsi = rsp + sp_offset. Flushes/reloads cursor, checks error.
+    /// arg0 = ctx, arg1 = rsp + sp_offset. Flushes/reloads cursor, checks error.
     pub fn emit_call_intrinsic_ctx_and_stack_out(&mut self, fn_ptr: *const u8, sp_offset: u32) {
         let error_exit = self.error_exit;
         let ptr_val = fn_ptr as i64;
 
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [rsp + sp_offset as i32]);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [rsp + sp_offset as i32]);
         dynasm!(self.ops
             ; .arch x64
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15
-            ; lea rsi, [rsp + sp_offset as i32]
             ; mov rax, QWORD ptr_val
             ; call rax
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
@@ -231,7 +301,7 @@ impl EmitCtx {
     }
 
     /// Emit a call to an intrinsic that takes (ctx, out_ptr1, out_ptr2).
-    /// rdi = ctx, rsi = rsp + sp_offset1, rdx = rsp + sp_offset2.
+    /// arg0 = ctx, arg1 = rsp + sp_offset1, arg2 = rsp + sp_offset2.
     pub fn emit_call_intrinsic_ctx_and_two_stack_outs(
         &mut self,
         fn_ptr: *const u8,
@@ -241,12 +311,21 @@ impl EmitCtx {
         let error_exit = self.error_exit;
         let ptr_val = fn_ptr as i64;
 
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
             ; lea rsi, [rsp + sp_offset1 as i32]
             ; lea rdx, [rsp + sp_offset2 as i32]
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, r15
+            ; lea rdx, [rsp + sp_offset1 as i32]
+            ; lea r8, [rsp + sp_offset2 as i32]
+        );
+        dynasm!(self.ops
+            ; .arch x64
             ; mov rax, QWORD ptr_val
             ; call rax
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
@@ -257,7 +336,7 @@ impl EmitCtx {
     }
 
     /// Emit a call to a pure function (no ctx, no flush/reload/error-check).
-    /// Used for key_equals: rdi=key_ptr, rsi=key_len, rdx=expected_ptr, rcx=expected_len.
+    /// Used for key_equals: arg0=key_ptr, arg1=key_len, arg2=expected_ptr, arg3=expected_len.
     /// Return value is in rax.
     pub fn emit_call_pure_4arg(
         &mut self,
@@ -270,12 +349,23 @@ impl EmitCtx {
         let ptr_val = fn_ptr as i64;
         let expected_addr = expected_ptr as i64;
 
+        #[cfg(not(windows))]
         dynasm!(self.ops
             ; .arch x64
             ; mov rdi, [rsp + arg0_sp_offset as i32]
             ; mov rsi, [rsp + arg1_sp_offset as i32]
             ; mov rdx, QWORD expected_addr
             ; mov ecx, expected_len as i32
+            ; mov rax, QWORD ptr_val
+            ; call rax
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rcx, [rsp + arg0_sp_offset as i32]
+            ; mov rdx, [rsp + arg1_sp_offset as i32]
+            ; mov r8, QWORD expected_addr
+            ; mov r9d, expected_len as i32
             ; mov rax, QWORD ptr_val
             ; call rax
         );
@@ -478,15 +568,21 @@ impl EmitCtx {
             // Slow path: call full varint decode intrinsic
             ; =>slow_path
             ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15
-            ; lea rsi, [rsp + 48]             // temp u32 on stack
+        );
+        // arg0 = ctx, arg1 = pointer to temp u32 at BASE_FRAME (start of extra area)
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [rsp + BASE_FRAME as i32]);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [rsp + BASE_FRAME as i32]);
+        dynasm!(self.ops
+            ; .arch x64
             ; mov rax, QWORD ptr_val
             ; call rax
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
             ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
             ; test r11d, r11d
             ; jnz =>error_exit
-            ; mov r10d, DWORD [rsp + 48]      // load decoded discriminant
+            ; mov r10d, DWORD [rsp + BASE_FRAME as i32]  // load decoded discriminant
             ; jmp =>done_label
 
             ; =>eof_label
@@ -641,16 +737,18 @@ impl EmitCtx {
         let wrapper_val = wrapper_fn as i64;
         let init_none_val = init_none_fn as i64;
 
-        dynasm!(self.ops
-            ; .arch x64
-            // arg0 (rdi): init_none_fn pointer
+        // arg0: init_none_fn pointer, arg1: out + offset
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, QWORD init_none_val
-            // arg1 (rsi): out + offset
             ; lea rsi, [r14 + offset as i32]
-            // Call wrapper
-            ; mov rax, QWORD wrapper_val
-            ; call rax
         );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, QWORD init_none_val
+            ; lea rdx, [r14 + offset as i32]
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
     }
 
     /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
@@ -665,18 +763,20 @@ impl EmitCtx {
         let wrapper_val = wrapper_fn as i64;
         let init_some_val = init_some_fn as i64;
 
-        dynasm!(self.ops
-            ; .arch x64
-            // arg0 (rdi): init_some_fn pointer
+        // arg0: init_some_fn pointer, arg1: out + offset, arg2: scratch area on stack
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, QWORD init_some_val
-            // arg1 (rsi): out + offset
             ; lea rsi, [r14 + offset as i32]
-            // arg2 (rdx): scratch area on stack
             ; lea rdx, [rsp + scratch_offset as i32]
-            // Call wrapper
-            ; mov rax, QWORD wrapper_val
-            ; call rax
         );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, QWORD init_some_val
+            ; lea rdx, [r14 + offset as i32]
+            ; lea r8, [rsp + scratch_offset as i32]
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
     }
 
     // ── Vec support ──────────────────────────────────────────────────
@@ -694,21 +794,27 @@ impl EmitCtx {
         let error_exit = self.error_exit;
         let ptr_val = alloc_fn as i64;
 
-        dynasm!(self.ops
-            ; .arch x64
-            // Flush cursor
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            // Args: rdi=ctx, rsi=count, rdx=elem_size, rcx=elem_align
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        // args: ctx, count, elem_size, elem_align
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
             ; mov esi, count as i32
             ; mov edx, elem_size as i32
             ; mov ecx, elem_align as i32
-            // Call
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, r15
+            ; mov edx, count as i32
+            ; mov r8d, elem_size as i32
+            ; mov r9d, elem_align as i32
+        );
+        dynasm!(self.ops
+            ; .arch x64
             ; mov rax, QWORD ptr_val
             ; call rax
-            // Reload cursor
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            // Check error
             ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
             ; test r10d, r10d
             ; jnz =>error_exit
@@ -770,21 +876,27 @@ impl EmitCtx {
         let error_exit = self.error_exit;
         let ptr_val = alloc_fn as i64;
 
-        dynasm!(self.ops
-            ; .arch x64
-            // Flush cursor
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            // Args: rdi=ctx, rsi=count(r10), rdx=elem_size, rcx=elem_align
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        // args: ctx, count(r10), elem_size, elem_align
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
-            ; mov rsi, r10             // count (zero-extended from r10d)
+            ; mov rsi, r10
             ; mov edx, elem_size as i32
             ; mov ecx, elem_align as i32
-            // Call
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, r15
+            ; mov rdx, r10
+            ; mov r8d, elem_size as i32
+            ; mov r9d, elem_align as i32
+        );
+        dynasm!(self.ops
+            ; .arch x64
             ; mov rax, QWORD ptr_val
             ; call rax
-            // Reload cursor
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            // Check error
             ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
             ; test r10d, r10d
             ; jnz =>error_exit
@@ -807,39 +919,70 @@ impl EmitCtx {
         let error_exit = self.error_exit;
         let ptr_val = grow_fn as i64;
 
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+
+        #[cfg(not(windows))]
+        {
+            // System V AMD64: 6 register args + 7th on the stack via push.
+            // Args: rdi=ctx, rsi=old_buf, rdx=len, rcx=old_cap, r8=new_cap, r9=elem_size
+            // 7th arg (elem_align) pushed before call.
+            dynasm!(self.ops
+                ; .arch x64
+                ; mov r10, [rsp + cap_slot as i32]
+                ; shl r10, 1                         // new_cap = old_cap * 2
+                ; mov rdi, r15
+                ; mov rsi, [rsp + buf_slot as i32]
+                ; mov rdx, [rsp + len_slot as i32]
+                ; mov rcx, [rsp + cap_slot as i32]
+                ; mov r8, r10
+                ; mov r9d, elem_size as i32
+                ; push elem_align as i32
+                ; mov rax, QWORD ptr_val
+                ; call rax
+                ; add rsp, 8
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows x64: 4 register args + args 5-7 on the stack.
+            // The shadow space (32 bytes) and 3 stack args (24 bytes) = 56 bytes.
+            // Round up to 64 for 16-byte alignment before `call`.
+            //
+            // Load all values into registers BEFORE sub rsp (frame offsets change after).
+            // Args: rcx=ctx, rdx=old_buf, r8=len, r9=old_cap
+            // Stack: [rsp+32]=new_cap, [rsp+40]=elem_size, [rsp+48]=elem_align
+            dynasm!(self.ops
+                ; .arch x64
+                ; mov r10, [rsp + cap_slot as i32]
+                ; shl r10, 1                         // r10 = new_cap = old_cap * 2
+                ; mov rcx, r15
+                ; mov rdx, [rsp + buf_slot as i32]
+                ; mov r8, [rsp + len_slot as i32]
+                ; mov r9, [rsp + cap_slot as i32]
+                ; sub rsp, 64                        // 32 shadow + 24 args + 8 padding
+                ; mov [rsp + 32], r10                // arg5 = new_cap (64-bit)
+                // arg6 and arg7: use mov eax,N to zero-extend to 64 bits, then store
+                ; mov eax, elem_size as i32
+                ; mov [rsp + 40], rax                // arg6 = elem_size (zero-extended)
+                ; mov eax, elem_align as i32
+                ; mov [rsp + 48], rax                // arg7 = elem_align (zero-extended)
+                ; mov rax, QWORD ptr_val
+                ; call rax
+                ; add rsp, 64
+            );
+        }
+
         dynasm!(self.ops
             ; .arch x64
-            // Flush cursor
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            // Compute new_cap = old_cap * 2
-            ; mov r10, [rsp + cap_slot as i32]
-            ; shl r10, 1                         // new_cap = old_cap << 1
-            // Args: rdi=ctx, rsi=old_buf, rdx=len, rcx=old_cap, r8=new_cap, r9=elem_size
-            // 7th arg (elem_align) goes on the stack per System V ABI
-            ; mov rdi, r15
-            ; mov rsi, [rsp + buf_slot as i32]
-            ; mov rdx, [rsp + len_slot as i32]
-            ; mov rcx, [rsp + cap_slot as i32]
-            ; mov r8, r10                         // new_cap
-            ; mov r9d, elem_size as i32
-            // Push 7th arg (elem_align) onto the stack
-            ; push elem_align as i32
-            // Call
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            // Pop the 7th arg
-            ; add rsp, 8
-            // Reload cursor
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            // Check error
             ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
             ; test r10d, r10d
             ; jnz =>error_exit
-            // Update buf and cap on stack
-            ; mov [rsp + buf_slot as i32], rax    // new buf
+            ; mov [rsp + buf_slot as i32], rax
             ; mov r10, [rsp + cap_slot as i32]
             ; shl r10, 1
-            ; mov [rsp + cap_slot as i32], r10    // new cap
+            ; mov [rsp + cap_slot as i32], r10
         );
     }
 
@@ -991,10 +1134,14 @@ impl EmitCtx {
             ; sub r12, 1
             // Flush input pointer to ctx
             ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            // Args: rdi = ctx, rsi = out (cursor)
-            ; mov rdi, r15
-            ; mov rsi, rbx
-            // Call intrinsic
+        );
+        // arg0 = ctx, arg1 = out (cursor in rbx)
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, rbx);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, rbx);
+        dynasm!(self.ops
+            ; .arch x64
             ; mov rax, QWORD ptr_val
             ; call rax
             // Reload input pointer
@@ -1103,20 +1250,23 @@ impl EmitCtx {
         let error_exit = self.error_exit;
         let ptr_val = free_fn as i64;
 
-        dynasm!(self.ops
-            ; .arch x64
-            // Restore out pointer first
-            ; mov r14, [rsp + saved_out_slot as i32]
-            // Args: rdi=buf, rsi=cap, rdx=elem_size, rcx=elem_align
+        dynasm!(self.ops ; .arch x64 ; mov r14, [rsp + saved_out_slot as i32]);
+        // args: buf, cap, elem_size, elem_align
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, [rsp + buf_slot as i32]
             ; mov rsi, [rsp + cap_slot as i32]
             ; mov edx, elem_size as i32
             ; mov ecx, elem_align as i32
-            // Call fad_vec_free
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; jmp =>error_exit
         );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, [rsp + buf_slot as i32]
+            ; mov rdx, [rsp + cap_slot as i32]
+            ; mov r8d, elem_size as i32
+            ; mov r9d, elem_align as i32
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD ptr_val ; call rax ; jmp =>error_exit);
     }
 
     /// Compare the count register (w9 on aarch64, r10d on x64) with zero
@@ -1317,11 +1467,13 @@ impl EmitCtx {
                 Op::CallIntrinsic { fn_ptr, field_offset } => {
                     let ptr_val = *fn_ptr as i64;
                     let field_offset = *field_offset as i32;
+                    dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+                    #[cfg(not(windows))]
+                    dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [r14 + field_offset]);
+                    #[cfg(windows)]
+                    dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [r14 + field_offset]);
                     dynasm!(self.ops
                         ; .arch x64
-                        ; mov [r15 + CTX_INPUT_PTR as i32], r12
-                        ; mov rdi, r15
-                        ; lea rsi, [r14 + field_offset]
                         ; mov rax, QWORD ptr_val
                         ; call rax
                         ; mov r12, [r15 + CTX_INPUT_PTR as i32]
@@ -1333,11 +1485,13 @@ impl EmitCtx {
                 Op::CallIntrinsicStackOut { fn_ptr, sp_offset } => {
                     let ptr_val = *fn_ptr as i64;
                     let sp_offset = *sp_offset as i32;
+                    dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+                    #[cfg(not(windows))]
+                    dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [rsp + sp_offset]);
+                    #[cfg(windows)]
+                    dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [rsp + sp_offset]);
                     dynasm!(self.ops
                         ; .arch x64
-                        ; mov [r15 + CTX_INPUT_PTR as i32], r12
-                        ; mov rdi, r15
-                        ; lea rsi, [rsp + sp_offset]
                         ; mov rax, QWORD ptr_val
                         ; call rax
                         ; mov r12, [r15 + CTX_INPUT_PTR as i32]
@@ -1385,15 +1539,31 @@ impl EmitCtx {
                     let ptr_val = *fn_ptr as i64;
                     // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
                     // Returns buf pointer in rax
+                    // arg0 = ctx, arg1 = data_ptr (slot), arg2 = data_len (slot)
                     dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
-                    dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
-                    match data_src {
-                        Slot::A => dynasm!(self.ops ; .arch x64 ; mov rsi, r10),
-                        Slot::B => dynasm!(self.ops ; .arch x64 ; mov rsi, r11),
+                    #[cfg(not(windows))]
+                    {
+                        dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
+                        match data_src {
+                            Slot::A => dynasm!(self.ops ; .arch x64 ; mov rsi, r10),
+                            Slot::B => dynasm!(self.ops ; .arch x64 ; mov rsi, r11),
+                        }
+                        match len_src {
+                            Slot::A => dynasm!(self.ops ; .arch x64 ; mov edx, r10d),
+                            Slot::B => dynasm!(self.ops ; .arch x64 ; mov edx, r11d),
+                        }
                     }
-                    match len_src {
-                        Slot::A => dynasm!(self.ops ; .arch x64 ; mov edx, r10d),
-                        Slot::B => dynasm!(self.ops ; .arch x64 ; mov edx, r11d),
+                    #[cfg(windows)]
+                    {
+                        dynasm!(self.ops ; .arch x64 ; mov rcx, r15);
+                        match data_src {
+                            Slot::A => dynasm!(self.ops ; .arch x64 ; mov rdx, r10),
+                            Slot::B => dynasm!(self.ops ; .arch x64 ; mov rdx, r11),
+                        }
+                        match len_src {
+                            Slot::A => dynasm!(self.ops ; .arch x64 ; mov r8d, r10d),
+                            Slot::B => dynasm!(self.ops ; .arch x64 ; mov r8d, r11d),
+                        }
                     }
                     dynasm!(self.ops
                         ; .arch x64
