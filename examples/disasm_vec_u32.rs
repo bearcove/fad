@@ -1,6 +1,10 @@
 use facet::Facet;
 use std::fmt::Write;
-use yaxpeax_arch::{Decoder, U8Reader};
+use yaxpeax_arch::Decoder;
+#[cfg(target_arch = "x86_64")]
+use yaxpeax_arch::{LengthedInstruction, U8Reader};
+#[cfg(target_arch = "aarch64")]
+use yaxpeax_arch::U8Reader;
 
 #[derive(Facet, Debug, PartialEq)]
 struct Nums {
