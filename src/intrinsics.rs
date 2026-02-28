@@ -752,3 +752,17 @@ pub unsafe extern "C" fn fad_map_build(
     let uninit = PtrUninit::new(map_ptr as *mut u8);
     unsafe { f(uninit, pairs_ptr, count) };
 }
+
+// --- Encode intrinsics ---
+
+use crate::context::EncodeContext;
+
+/// Grow the output buffer to accommodate at least `needed` additional bytes.
+/// Called by JIT code when a bounds check against output_end fails.
+///
+/// The JIT must flush output_ptr to ctx before calling this, and reload
+/// output_ptr and output_end after (same pattern as deser cursor flush/reload).
+pub unsafe extern "C" fn fad_output_grow(ctx: *mut EncodeContext, needed: usize) {
+    let ctx = unsafe { &mut *ctx };
+    unsafe { ctx.grow(needed) };
+}
