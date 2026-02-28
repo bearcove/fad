@@ -2,7 +2,7 @@ use dynasmrt::DynamicLabel;
 use facet::{MapDef, ScalarType};
 
 use crate::arch::{BASE_FRAME, EmitCtx};
-use crate::format::{FieldEmitInfo, Format, VariantEmitInfo};
+use crate::format::{FieldEmitInfo, Decoder, VariantEmitInfo};
 use crate::intrinsics;
 use crate::malum::VecOffsets;
 
@@ -12,7 +12,7 @@ use crate::malum::VecOffsets;
 /// length-prefixed strings.
 pub struct FadPostcard;
 
-impl Format for FadPostcard {
+impl Decoder for FadPostcard {
     fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
         // We need at least 8 bytes of scratch space on the stack for:
         // - varint slow path temp (used by emit_read_postcard_discriminant

@@ -68,9 +68,8 @@ static CANADA_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
 // Cached compiled deserializers
 // =============================================================================
 
-static FAD_CANADA: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(FeatureCollection::SHAPE, &fad::json::FadJson)
-});
+static FAD_CANADA: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(FeatureCollection::SHAPE, &fad::json::FadJson));
 
 // =============================================================================
 // Benchmarks
@@ -79,17 +78,15 @@ static FAD_CANADA: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 #[divan::bench]
 fn serde_json(bencher: Bencher) {
     let data = &*CANADA_JSON;
-    bencher.bench(|| {
-        black_box(serde_json::from_slice::<FeatureCollection>(black_box(data)).unwrap())
-    });
+    bencher
+        .bench(|| black_box(serde_json::from_slice::<FeatureCollection>(black_box(data)).unwrap()));
 }
 
 #[divan::bench]
 fn facet_json_tier0(bencher: Bencher) {
     let data = &*CANADA_JSON;
-    bencher.bench(|| {
-        black_box(facet_json::from_slice::<FeatureCollection>(black_box(data)).unwrap())
-    });
+    bencher
+        .bench(|| black_box(facet_json::from_slice::<FeatureCollection>(black_box(data)).unwrap()));
 }
 
 #[divan::bench]

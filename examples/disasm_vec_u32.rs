@@ -19,7 +19,7 @@ fn serde_deser(data: &[u8]) -> NumsSerde {
 
 fn main() {
     // === fad JIT ===
-    let deser = fad::compile_deser(Nums::SHAPE, &fad::postcard::FadPostcard);
+    let deser = fad::compile_decoder(Nums::SHAPE, &fad::postcard::FadPostcard);
     let code = deser.code();
     let base = code.as_ptr() as u64;
     println!("=== fad postcard Vec<u32> ===");
@@ -209,8 +209,7 @@ fn disasm_bytes(
                     }
                 }
                 Err(e) => {
-                    let word =
-                        u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
+                    let word = u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
                     let addr = base_addr + offset as u64;
                     writeln!(&mut out, "{addr:12x}:{marker}  <{e}> (0x{word:08x})").unwrap();
                 }
@@ -250,7 +249,12 @@ fn disasm_bytes(
                 }
                 Err(_) => {
                     let addr = base_addr + offset as u64;
-                    writeln!(&mut out, "{addr:12x}:{marker}  <decode error> (0x{:02x})", code[offset]).unwrap();
+                    writeln!(
+                        &mut out,
+                        "{addr:12x}:{marker}  <decode error> (0x{:02x})",
+                        code[offset]
+                    )
+                    .unwrap();
                     offset += 1;
                 }
             }

@@ -269,17 +269,15 @@ static TWITTER_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
     decompress(compressed)
 });
 
-static TWITTER_STR: LazyLock<String> = LazyLock::new(|| {
-    String::from_utf8(TWITTER_JSON.clone()).expect("twitter.json is valid UTF-8")
-});
+static TWITTER_STR: LazyLock<String> =
+    LazyLock::new(|| String::from_utf8(TWITTER_JSON.clone()).expect("twitter.json is valid UTF-8"));
 
 // =============================================================================
 // Cached compiled deserializers
 // =============================================================================
 
-static FAD_TWITTER: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(Twitter::SHAPE, &fad::json::FadJson)
-});
+static FAD_TWITTER: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(Twitter::SHAPE, &fad::json::FadJson));
 
 // =============================================================================
 // Benchmarks

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::compiler::CompiledDeser;
+use crate::compiler::CompiledDecoder;
 use facet::Facet;
 use std::fmt::Write;
 #[cfg(target_arch = "x86_64")]
@@ -111,9 +111,9 @@ fn assert_case_snapshot(
     format_label: &str,
     case_label: &str,
     shape: &'static facet::Shape,
-    format: &dyn crate::format::Format,
+    decoder: &dyn crate::format::Decoder,
 ) {
-    let deser = crate::compile_deser(shape, format);
+    let deser = crate::compile_decoder(shape, decoder);
     let mut out = String::new();
     let label = format!("{format_label}/{case_label}");
     writeln!(out, "=== {label} ===").unwrap();
@@ -130,7 +130,7 @@ fn assert_case_snapshot(
     );
 }
 
-fn disasm_jit(deser: &CompiledDeser) -> String {
+fn disasm_jit(deser: &CompiledDecoder) -> String {
     disasm_bytes(deser.code(), Some(deser.entry_offset()))
 }
 

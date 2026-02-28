@@ -7,18 +7,18 @@ use facet::{
 };
 
 use crate::arch::EmitCtx;
-use crate::format::{FieldEmitInfo, Format, SkippedFieldInfo, VariantEmitInfo, VariantKind};
+use crate::format::{Decoder, FieldEmitInfo, SkippedFieldInfo, VariantEmitInfo, VariantKind};
 use crate::malum::StringOffsets;
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
-pub struct CompiledDeser {
+pub struct CompiledDecoder {
     buf: dynasmrt::ExecutableBuffer,
     entry: AssemblyOffset,
     func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext),
     trusted_utf8_input: bool,
 }
 
-impl CompiledDeser {
+impl CompiledDecoder {
     pub(crate) fn func(&self) -> unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) {
         self.func
     }
@@ -55,7 +55,7 @@ struct ShapeEntry {
 /// Compiler state for emitting one function per shape into a shared buffer.
 struct Compiler<'fmt> {
     ectx: EmitCtx,
-    format: &'fmt dyn Format,
+    decoder: &'fmt dyn Decoder,
     /// All shapes we've started or finished compiling.
     /// If offset is Some, the function is fully emitted.
     /// If offset is None, the function is in progress (label allocated but not yet bound).
@@ -72,11 +72,11 @@ impl<'fmt> Compiler<'fmt> {
         extra_stack: u32,
         option_scratch_offset: u32,
         string_offsets: StringOffsets,
-        format: &'fmt dyn Format,
+        decoder: &'fmt dyn Decoder,
     ) -> Self {
         Compiler {
             ectx: EmitCtx::new(extra_stack),
-            format,
+            decoder,
             shapes: HashMap::new(),
             option_scratch_offset,
             string_offsets,
@@ -151,7 +151,7 @@ impl<'fmt> Compiler<'fmt> {
         let key = shape as *const Shape;
         let (fields, skipped_fields) = collect_fields(shape);
         let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
-        let inline = self.format.supports_inline_nested();
+        let inline = self.decoder.supports_inline_nested();
 
         // For non-inlining formats, depth-first compile all nested composite fields
         // (structs and enums) so they're available as call targets.
@@ -198,7 +198,7 @@ impl<'fmt> Compiler<'fmt> {
             emit_default_init(&mut self.ectx, &sf.default, sf.offset as u32);
         }
 
-        let format = self.format;
+        let format = self.decoder;
         let option_scratch_offset = self.option_scratch_offset;
         let string_offsets = &self.string_offsets;
         let ectx = &mut self.ectx;
@@ -226,11 +226,7 @@ impl<'fmt> Compiler<'fmt> {
     // r[impl deser.transparent.composite]
 
     /// Compile a transparent wrapper: deserialize as the inner type directly.
-    fn compile_transparent(
-        &mut self,
-        shape: &'static Shape,
-        entry_label: DynamicLabel,
-    ) {
+    fn compile_transparent(&mut self, shape: &'static Shape, entry_label: DynamicLabel) {
         let key = shape as *const Shape;
 
         // Get the inner shape from the transparent wrapper.
@@ -271,7 +267,7 @@ impl<'fmt> Compiler<'fmt> {
         } else {
             match inner_shape.scalar_type() {
                 Some(st) if is_string_like_scalar(st) => {
-                    self.format.emit_read_string(
+                    self.decoder.emit_read_string(
                         &mut self.ectx,
                         field_offset,
                         st,
@@ -279,7 +275,8 @@ impl<'fmt> Compiler<'fmt> {
                     );
                 }
                 Some(st) => {
-                    self.format.emit_read_scalar(&mut self.ectx, field_offset, st);
+                    self.decoder
+                        .emit_read_scalar(&mut self.ectx, field_offset, st);
                 }
                 None => panic!(
                     "unsupported transparent inner type: {}",
@@ -318,7 +315,7 @@ impl<'fmt> Compiler<'fmt> {
         self.ectx.bind_label(entry_label);
         let (entry_offset, error_exit) = self.ectx.begin_func();
 
-        let format = self.format;
+        let format = self.decoder;
         let option_scratch_offset = self.option_scratch_offset;
         let string_offsets = &self.string_offsets;
 
@@ -374,7 +371,7 @@ impl<'fmt> Compiler<'fmt> {
         self.ectx.bind_label(entry_label);
         let (entry_offset, error_exit) = self.ectx.begin_func();
 
-        let format = self.format;
+        let format = self.decoder;
         let option_scratch_offset = self.option_scratch_offset;
         let string_offsets = &self.string_offsets;
 
@@ -433,9 +430,10 @@ impl<'fmt> Compiler<'fmt> {
         let pointee = ptr_def
             .pointee
             .unwrap_or_else(|| panic!("pointer {} has no pointee", shape.type_identifier));
-        let new_into_fn = ptr_def.vtable.new_into_fn.unwrap_or_else(|| {
-            panic!("pointer {} has no new_into_fn", shape.type_identifier)
-        });
+        let new_into_fn = ptr_def
+            .vtable
+            .new_into_fn
+            .unwrap_or_else(|| panic!("pointer {} has no new_into_fn", shape.type_identifier));
 
         // Pre-compile inner type if composite.
         let inner_label = if needs_precompilation(pointee) {
@@ -456,10 +454,10 @@ impl<'fmt> Compiler<'fmt> {
         // Deserialize inner T at offset 0 (scratch area).
         if let Some(label) = inner_label {
             self.ectx.emit_call_emitted_func(label, 0);
-        } else if is_struct(pointee) && self.format.supports_inline_nested() {
+        } else if is_struct(pointee) && self.decoder.supports_inline_nested() {
             emit_inline_struct(
                 &mut self.ectx,
-                self.format,
+                self.decoder,
                 pointee,
                 0,
                 option_scratch_offset,
@@ -468,11 +466,11 @@ impl<'fmt> Compiler<'fmt> {
         } else {
             match pointee.scalar_type() {
                 Some(st) if is_string_like_scalar(st) => {
-                    self.format
+                    self.decoder
                         .emit_read_string(&mut self.ectx, 0, st, string_offsets);
                 }
                 Some(st) => {
-                    self.format.emit_read_scalar(&mut self.ectx, 0, st);
+                    self.decoder.emit_read_scalar(&mut self.ectx, 0, st);
                 }
                 None => panic!(
                     "unsupported pointer inner type: {}",
@@ -507,7 +505,7 @@ impl<'fmt> Compiler<'fmt> {
         let key = shape as *const Shape;
         let variants = collect_variants(enum_type);
         let disc_size = discriminant_size(enum_type.enum_repr);
-        let inline = self.format.supports_inline_nested();
+        let inline = self.decoder.supports_inline_nested();
 
         // Depth-first compile all nested composite types (structs and enums)
         // found in variant fields so they're available as call targets.
@@ -555,7 +553,7 @@ impl<'fmt> Compiler<'fmt> {
         self.ectx.bind_label(entry_label);
         let (entry_offset, error_exit) = self.ectx.begin_func();
 
-        let format = self.format;
+        let format = self.decoder;
         let option_scratch_offset = self.option_scratch_offset;
         let string_offsets = &self.string_offsets;
         let ectx = &mut self.ectx;
@@ -689,7 +687,13 @@ fn collect_fields_recursive(
     };
     for f in st.fields {
         if f.is_flattened() {
-            collect_fields_recursive(f.shape(), base_offset + f.offset, container_has_default, out, skipped);
+            collect_fields_recursive(
+                f.shape(),
+                base_offset + f.offset,
+                container_has_default,
+                out,
+                skipped,
+            );
             continue;
         }
 
@@ -932,7 +936,7 @@ fn is_string_like_scalar(scalar_type: ScalarType) -> bool {
 /// expansion, scalar intrinsics, or Option handling.
 fn emit_field(
     ectx: &mut EmitCtx,
-    format: &dyn Format,
+    decoder: &dyn Decoder,
     field: &FieldEmitInfo,
     all_fields: &[FieldEmitInfo],
     nested: &[Option<DynamicLabel>],
@@ -952,7 +956,7 @@ fn emit_field(
         let init_some_fn = opt_def.vtable.init_some as *const u8;
         let inner_shape = opt_def.t;
 
-        format.emit_option(
+        decoder.emit_option(
             ectx,
             field.offset,
             init_none_fn,
@@ -963,10 +967,10 @@ fn emit_field(
                 // The inner T's offset is 0 because out now points to the scratch area.
                 if let Some(label) = nested[idx] {
                     ectx.emit_call_emitted_func(label, 0);
-                } else if is_struct(inner_shape) && format.supports_inline_nested() {
+                } else if is_struct(inner_shape) && decoder.supports_inline_nested() {
                     emit_inline_struct(
                         ectx,
-                        format,
+                        decoder,
                         inner_shape,
                         0,
                         option_scratch_offset,
@@ -975,10 +979,10 @@ fn emit_field(
                 } else {
                     match inner_shape.scalar_type() {
                         Some(st) if is_string_like_scalar(st) => {
-                            format.emit_read_string(ectx, 0, st, string_offsets);
+                            decoder.emit_read_string(ectx, 0, st, string_offsets);
                         }
                         Some(st) => {
-                            format.emit_read_scalar(ectx, 0, st);
+                            decoder.emit_read_scalar(ectx, 0, st);
                         }
                         None => panic!(
                             "unsupported Option inner type: {}",
@@ -1008,15 +1012,22 @@ fn emit_field(
         // Deserialize inner T at offset 0 (scratch area).
         if let Some(label) = nested[idx] {
             ectx.emit_call_emitted_func(label, 0);
-        } else if is_struct(pointee) && format.supports_inline_nested() {
-            emit_inline_struct(ectx, format, pointee, 0, option_scratch_offset, string_offsets);
+        } else if is_struct(pointee) && decoder.supports_inline_nested() {
+            emit_inline_struct(
+                ectx,
+                decoder,
+                pointee,
+                0,
+                option_scratch_offset,
+                string_offsets,
+            );
         } else {
             match pointee.scalar_type() {
                 Some(st) if is_string_like_scalar(st) => {
-                    format.emit_read_string(ectx, 0, st, string_offsets);
+                    decoder.emit_read_string(ectx, 0, st, string_offsets);
                 }
                 Some(st) => {
-                    format.emit_read_scalar(ectx, 0, st);
+                    decoder.emit_read_scalar(ectx, 0, st);
                 }
                 None => panic!(
                     "unsupported pointer inner type: {}",
@@ -1045,10 +1056,10 @@ fn emit_field(
 
     // r[impl deser.nested-struct]
     // r[impl deser.nested-struct.offset]
-    if is_struct(field.shape) && format.supports_inline_nested() {
+    if is_struct(field.shape) && decoder.supports_inline_nested() {
         emit_inline_struct(
             ectx,
-            format,
+            decoder,
             field.shape,
             field.offset,
             option_scratch_offset,
@@ -1059,10 +1070,10 @@ fn emit_field(
 
     match field.shape.scalar_type() {
         Some(st) if is_string_like_scalar(st) => {
-            format.emit_read_string(ectx, field.offset, st, string_offsets);
+            decoder.emit_read_string(ectx, field.offset, st, string_offsets);
         }
         Some(st) => {
-            format.emit_read_scalar(ectx, field.offset, st);
+            decoder.emit_read_scalar(ectx, field.offset, st);
         }
         None => panic!(
             "unsupported field type: {} (scalar_type={:?})",
@@ -1076,7 +1087,7 @@ fn emit_field(
 /// Out pointer has already been redirected to the element slot at offset 0.
 fn emit_elem(
     ectx: &mut EmitCtx,
-    format: &dyn Format,
+    decoder: &dyn Decoder,
     elem_shape: &'static Shape,
     elem_label: Option<DynamicLabel>,
     option_scratch_offset: u32,
@@ -1084,10 +1095,10 @@ fn emit_elem(
 ) {
     if let Some(label) = elem_label {
         ectx.emit_call_emitted_func(label, 0);
-    } else if is_struct(elem_shape) && format.supports_inline_nested() {
+    } else if is_struct(elem_shape) && decoder.supports_inline_nested() {
         emit_inline_struct(
             ectx,
-            format,
+            decoder,
             elem_shape,
             0,
             option_scratch_offset,
@@ -1096,10 +1107,10 @@ fn emit_elem(
     } else {
         match elem_shape.scalar_type() {
             Some(st) if is_string_like_scalar(st) => {
-                format.emit_read_string(ectx, 0, st, string_offsets);
+                decoder.emit_read_string(ectx, 0, st, string_offsets);
             }
             Some(st) => {
-                format.emit_read_scalar(ectx, 0, st);
+                decoder.emit_read_scalar(ectx, 0, st);
             }
             None => panic!(
                 "unsupported Vec element type: {}",
@@ -1116,7 +1127,7 @@ fn emit_elem(
 /// `emit_struct_fields`. This recurses for deeply nested structs.
 fn emit_inline_struct(
     ectx: &mut EmitCtx,
-    format: &dyn Format,
+    decoder: &dyn Decoder,
     shape: &'static Shape,
     base_offset: usize,
     option_scratch_offset: u32,
@@ -1145,10 +1156,10 @@ fn emit_inline_struct(
 
     // Inline nested structs inherit the parent's deny_unknown_fields behavior,
     // but currently inline is only used by postcard (positional, no unknown fields possible).
-    format.emit_struct_fields(ectx, &adjusted, false, &mut |ectx, field| {
+    decoder.emit_struct_fields(ectx, &adjusted, false, &mut |ectx, field| {
         emit_field(
             ectx,
-            format,
+            decoder,
             field,
             &adjusted,
             &no_nested,
@@ -1319,25 +1330,25 @@ fn has_seq_or_map_in_tree(
 }
 
 /// Compile a deserializer for the given shape and format.
-pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDeser {
+pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> CompiledDecoder {
     // Compute extra stack space. For structs, pass fields. For enums, we need
     // the max across all variant bodies. Use empty fields for enums since JSON
     // enum handling computes its own stack needs.
     let mut format_extra = if matches!(&shape.def, Def::List(_)) {
         // Vec<T> as root shape — format needs stack space for vec loop state.
-        format.extra_stack_space(&[])
+        decoder.extra_stack_space(&[])
     } else if matches!(&shape.def, Def::Map(_)) {
         // Map<K,V> as root shape — format needs stack space for map loop state.
-        format.extra_stack_space(&[])
+        decoder.extra_stack_space(&[])
     } else if get_pointer_def(shape).is_some() {
         // Smart pointer as root shape — no format-specific stack needed at this level,
         // but inner type may need stack (handled by recursive compilation).
-        format.extra_stack_space(&[])
+        decoder.extra_stack_space(&[])
     } else {
         match &shape.ty {
             Type::User(UserType::Struct(_)) => {
                 let (fields, _) = collect_fields(shape);
-                format.extra_stack_space(&fields)
+                decoder.extra_stack_space(&fields)
             }
             Type::User(UserType::Enum(enum_type)) => {
                 // For enums, the format might need extra stack for variant body
@@ -1350,17 +1361,15 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
                         .fields
                         .iter()
                         .enumerate()
-                        .map(|(j, f)| {
-                            FieldEmitInfo {
-                                offset: f.offset,
-                                shape: f.shape(),
-                                name: f.name,
-                                required_index: j,
-                                default: None,
-                            }
+                        .map(|(j, f)| FieldEmitInfo {
+                            offset: f.offset,
+                            shape: f.shape(),
+                            name: f.name,
+                            required_index: j,
+                            default: None,
                         })
                         .collect();
-                    max_extra = max_extra.max(format.extra_stack_space(&fields));
+                    max_extra = max_extra.max(decoder.extra_stack_space(&fields));
                 }
                 max_extra
             }
@@ -1371,8 +1380,8 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     // If the shape tree contains any Vec or Map types, ensure we have enough stack
     // for sequence buffer state (buf_ptr, count/cap, counter, saved_out).
     if has_seq_or_map_in_tree(shape, &mut std::collections::HashSet::new()) {
-        format_extra = format_extra.max(format.vec_extra_stack_space());
-        format_extra = format_extra.max(format.map_extra_stack_space());
+        format_extra = format_extra.max(decoder.vec_extra_stack_space());
+        format_extra = format_extra.max(decoder.map_extra_stack_space());
     }
 
     // Compute Option scratch space: 8 bytes for saved out pointer + max inner T size.
@@ -1398,7 +1407,7 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     // Discover String layout offsets (cached after first call).
     let string_offsets = crate::malum::discover_string_offsets();
 
-    let mut compiler = Compiler::new(extra_stack, option_scratch_offset, string_offsets, format);
+    let mut compiler = Compiler::new(extra_stack, option_scratch_offset, string_offsets, decoder);
     compiler.compile_shape(shape);
 
     // Get the entry offset for the root shape.
@@ -1411,10 +1420,10 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
         unsafe { core::mem::transmute(buf.ptr(entry_offset)) };
 
-    CompiledDeser {
+    CompiledDecoder {
         buf,
         entry: entry_offset,
         func,
-        trusted_utf8_input: format.supports_trusted_utf8_input(),
+        trusted_utf8_input: decoder.supports_trusted_utf8_input(),
     }
 }

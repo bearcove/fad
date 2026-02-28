@@ -323,8 +323,7 @@ static ENUM_JSON: &[u8] = br#"{"Dog": {"name": "Rex", "good_boy": true}}"#;
 
 static FLATTEN_JSON: &[u8] = br#"{"title": "Hello", "version": 1, "author": "Amos"}"#;
 
-static ADJ_ENUM_JSON: &[u8] =
-    br#"{"type": "Dog", "data": {"name": "Rex", "good_boy": true}}"#;
+static ADJ_ENUM_JSON: &[u8] = br#"{"type": "Dog", "data": {"name": "Rex", "good_boy": true}}"#;
 
 static INT_ENUM_JSON: &[u8] = br#"{"type": "Dog", "name": "Rex", "good_boy": true}"#;
 
@@ -334,8 +333,7 @@ static UNTAGGED_SOLVER_JSON: &[u8] = br#"{"host": "localhost", "port": 5432}"#;
 
 static UNTAGGED_VALUE_TYPE_JSON: &[u8] = br#"{"value": 42}"#;
 
-static UNTAGGED_NESTED_KEY_JSON: &[u8] =
-    br#"{"status": 200, "data": {"items": 5}}"#;
+static UNTAGGED_NESTED_KEY_JSON: &[u8] = br#"{"status": 200, "data": {"items": 5}}"#;
 
 static VEC_SCALAR_SMALL_JSON: &[u8] = br#"{"values": [1, 2, 3]}"#;
 
@@ -355,76 +353,57 @@ static STRING_HEAVY_JSON_BYTES: LazyLock<Vec<u8>> = LazyLock::new(|| {
     serde_json::to_vec(&StringBagSerde { values }).unwrap()
 });
 
-static STRING_HEAVY_JSON_TEXT: LazyLock<String> = LazyLock::new(|| {
-    String::from_utf8(STRING_HEAVY_JSON_BYTES.clone()).unwrap()
-});
+static STRING_HEAVY_JSON_TEXT: LazyLock<String> =
+    LazyLock::new(|| String::from_utf8(STRING_HEAVY_JSON_BYTES.clone()).unwrap());
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
-static FAD_FLAT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(FriendFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_FLAT: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(FriendFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(PersonFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_NESTED: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(PersonFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(OuterFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_DEEP: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(OuterFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(AnimalFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_ENUM: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(AnimalFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(DocumentFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(DocumentFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_ADJ_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(AdjAnimalFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_ADJ_ENUM: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(AdjAnimalFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_INT_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(IntAnimalFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_INT_ENUM: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(IntAnimalFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_UNTAGGED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(UntaggedFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_UNTAGGED: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(UntaggedFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_UNTAGGED_SOLVER: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(ConfigFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_UNTAGGED_SOLVER: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(ConfigFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_UNTAGGED_VALUE_TYPE: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(ValueTypedFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_UNTAGGED_VALUE_TYPE: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(ValueTypedFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_UNTAGGED_NESTED_KEY: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(ApiResponseFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_UNTAGGED_NESTED_KEY: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(ApiResponseFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(ScalarVecFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(ScalarVecFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(StructVecFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(StructVecFacet::SHAPE, &fad::json::FadJson));
 
-static FAD_STRING_HEAVY: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(StringBagFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_STRING_HEAVY: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(StringBagFacet::SHAPE, &fad::json::FadJson));
 
 static FACET_JSON_JIT_FLAT: LazyLock<
-    facet_format::jit::CompiledFormatDeserializer<
-        FriendFacet,
-        facet_json::JsonParser<'static>,
-    >,
+    facet_format::jit::CompiledFormatDeserializer<FriendFacet, facet_json::JsonParser<'static>>,
 > = LazyLock::new(|| {
-    facet_format::jit::get_format_deserializer()
-        .expect("FriendFacet should be Tier-2 compatible")
+    facet_format::jit::get_format_deserializer().expect("FriendFacet should be Tier-2 compatible")
 });
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
@@ -554,9 +533,7 @@ mod flatten {
     #[divan::bench]
     fn serde_json(bencher: Bencher) {
         bencher.bench(|| {
-            black_box(
-                serde_json::from_slice::<DocumentSerde>(black_box(FLATTEN_JSON)).unwrap(),
-            )
+            black_box(serde_json::from_slice::<DocumentSerde>(black_box(FLATTEN_JSON)).unwrap())
         });
     }
 
@@ -578,9 +555,7 @@ mod enum_adjacent {
     #[divan::bench]
     fn serde_json(bencher: Bencher) {
         bencher.bench(|| {
-            black_box(
-                serde_json::from_slice::<AdjAnimalSerde>(black_box(ADJ_ENUM_JSON)).unwrap(),
-            )
+            black_box(serde_json::from_slice::<AdjAnimalSerde>(black_box(ADJ_ENUM_JSON)).unwrap())
         });
     }
 
@@ -588,9 +563,7 @@ mod enum_adjacent {
     fn fad(bencher: Bencher) {
         let deser = &*FAD_ADJ_ENUM;
         bencher.bench(|| {
-            black_box(
-                fad::deserialize::<AdjAnimalFacet>(deser, black_box(ADJ_ENUM_JSON)).unwrap(),
-            )
+            black_box(fad::deserialize::<AdjAnimalFacet>(deser, black_box(ADJ_ENUM_JSON)).unwrap())
         });
     }
 }
@@ -604,9 +577,7 @@ mod enum_internal {
     #[divan::bench]
     fn serde_json(bencher: Bencher) {
         bencher.bench(|| {
-            black_box(
-                serde_json::from_slice::<IntAnimalSerde>(black_box(INT_ENUM_JSON)).unwrap(),
-            )
+            black_box(serde_json::from_slice::<IntAnimalSerde>(black_box(INT_ENUM_JSON)).unwrap())
         });
     }
 
@@ -614,9 +585,7 @@ mod enum_internal {
     fn fad(bencher: Bencher) {
         let deser = &*FAD_INT_ENUM;
         bencher.bench(|| {
-            black_box(
-                fad::deserialize::<IntAnimalFacet>(deser, black_box(INT_ENUM_JSON)).unwrap(),
-            )
+            black_box(fad::deserialize::<IntAnimalFacet>(deser, black_box(INT_ENUM_JSON)).unwrap())
         });
     }
 }
@@ -749,7 +718,8 @@ mod vec_scalar_small {
         let deser = &*FAD_VEC_SCALAR;
         bencher.bench(|| {
             black_box(
-                fad::deserialize::<ScalarVecFacet>(deser, black_box(VEC_SCALAR_SMALL_JSON)).unwrap(),
+                fad::deserialize::<ScalarVecFacet>(deser, black_box(VEC_SCALAR_SMALL_JSON))
+                    .unwrap(),
             )
         });
     }
@@ -788,9 +758,7 @@ mod vec_struct {
     #[divan::bench]
     fn serde_json(bencher: Bencher) {
         bencher.bench(|| {
-            black_box(
-                serde_json::from_slice::<StructVecSerde>(black_box(VEC_STRUCT_JSON)).unwrap(),
-            )
+            black_box(serde_json::from_slice::<StructVecSerde>(black_box(VEC_STRUCT_JSON)).unwrap())
         });
     }
 
@@ -809,9 +777,8 @@ mod vec_struct {
 
 static ESCAPE_JSON: &[u8] = br#"{"age": 42, "name": "hello\nworld\t\"escaped\"\u0041"}"#;
 
-static FAD_ESCAPE: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(FriendFacet::SHAPE, &fad::json::FadJson)
-});
+static FAD_ESCAPE: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(FriendFacet::SHAPE, &fad::json::FadJson));
 
 #[divan::bench_group(sample_size = 65536)]
 mod string_escapes {
@@ -860,8 +827,7 @@ mod string_heavy_utf8_trust {
     fn fad_from_str(bencher: Bencher) {
         let data = &*STRING_HEAVY_JSON_TEXT;
         let deser = &*FAD_STRING_HEAVY;
-        bencher.bench(|| {
-            black_box(fad::from_str::<StringBagFacet>(deser, black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(fad::from_str::<StringBagFacet>(deser, black_box(data)).unwrap()));
     }
 }

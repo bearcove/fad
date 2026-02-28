@@ -239,26 +239,26 @@ static VEC_STRUCT_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
-static FAD_FLAT: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(FriendFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_FLAT: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(FriendFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(PersonFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_NESTED: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(PersonFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(OuterFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_DEEP: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(OuterFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(DocumentFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(DocumentFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(AnimalFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_ENUM: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(AnimalFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(ScalarVecFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(ScalarVecFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> =
-    LazyLock::new(|| fad::compile_deser(StructVecFacet::SHAPE, &fad::postcard::FadPostcard));
+static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(StructVecFacet::SHAPE, &fad::postcard::FadPostcard));
 
 static FACET_JIT_FLAT: LazyLock<
     facet_format::jit::CompiledFormatDeserializer<

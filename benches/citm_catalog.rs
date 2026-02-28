@@ -136,9 +136,8 @@ static CITM_STR: LazyLock<String> = LazyLock::new(|| {
 // Cached compiled deserializers
 // =============================================================================
 
-static FAD_CITM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(CitmCatalog::SHAPE, &fad::json::FadJson)
-});
+static FAD_CITM: LazyLock<fad::compiler::CompiledDecoder> =
+    LazyLock::new(|| fad::compile_decoder(CitmCatalog::SHAPE, &fad::json::FadJson));
 
 // =============================================================================
 // Benchmarks

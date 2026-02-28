@@ -3,7 +3,7 @@ use facet::{MapDef, ScalarType, Type, UserType};
 
 use crate::arch::{BASE_FRAME, EmitCtx};
 use crate::context::ErrorCode;
-use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
+use crate::format::{FieldEmitInfo, Decoder, VariantEmitInfo, VariantKind};
 use crate::intrinsics;
 use crate::json_intrinsics;
 use crate::malum::VecOffsets;
@@ -30,7 +30,7 @@ pub(crate) const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
 /// JSON wire format — key-value pairs, linear key dispatch.
 pub struct FadJson;
 
-impl Format for FadJson {
+impl Decoder for FadJson {
     fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
         48
     }
@@ -518,9 +518,7 @@ impl Format for FadJson {
     fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
         // Unit type: skip the JSON value (always null), write nothing (ZST).
         if scalar_type == ScalarType::Unit {
-            ectx.emit_call_intrinsic_ctx_only(
-                json_intrinsics::fad_json_skip_value as *const u8,
-            );
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
             return;
         }
         if scalar_type == ScalarType::F64 {
