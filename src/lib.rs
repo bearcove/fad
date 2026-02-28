@@ -2148,27 +2148,4 @@ mod tests {
         assert_eq!(result, Nums { vals: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10] });
     }
 
-    #[test]
-    fn disasm_postcard_vec_u32() {
-        #[derive(Facet, Debug, PartialEq)]
-        struct Nums { vals: Vec<u32> }
-
-        let deser = compile_deser(Nums::SHAPE, &postcard::FadPostcard);
-        eprintln!("=== fad postcard Vec<u32> ===\n{}", disasm_jit(&deser));
-    }
-
-    #[test]
-    fn disasm_serde_postcard_vec_u32() {
-        #[derive(serde::Deserialize, Debug)]
-        #[allow(dead_code)]
-        struct NumsSerde { vals: Vec<u32> }
-
-        fn serde_deser(data: &[u8]) -> NumsSerde {
-            ::postcard::from_bytes(data).unwrap()
-        }
-
-        let fn_ptr = serde_deser as *const u8;
-        let asm = unsafe { disasm_native(fn_ptr, 4096) };
-        eprintln!("=== serde postcard Vec<u32> @ {fn_ptr:?} ===\n{asm}");
-    }
 }
