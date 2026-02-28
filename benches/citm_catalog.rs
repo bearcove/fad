@@ -1,0 +1,164 @@
+//! Benchmark parsing citm_catalog.json from nativejson-benchmark.
+//!
+//! Tests HashMap-heavy JSON with camelCase field names, nested structs,
+//! vectors, and optional fields. The fixture is a venue/ticketing catalog.
+//!
+//! # On the `()` fields
+//!
+//! Several fields (`description`, `subject_code`, `subtitle`, `name` in
+//! Performance, `seat_map_image`) are always `null` in this fixture.
+//! We use bare `()` for these, matching the serde-rs/json-benchmark
+//! convention. See `benches/twitter.rs` for more context.
+
+use divan::{Bencher, black_box};
+use facet::Facet;
+use serde::Deserialize;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+fn main() {
+    divan::main();
+}
+
+// =============================================================================
+// Types for citm_catalog.json
+// =============================================================================
+
+#[derive(Debug, Deserialize, Facet)]
+#[serde(rename_all = "camelCase")]
+#[facet(rename_all = "camelCase")]
+struct CitmCatalog<'a> {
+    #[serde(borrow)]
+    area_names: HashMap<String, &'a str>,
+    #[serde(borrow)]
+    audience_sub_category_names: HashMap<String, &'a str>,
+    #[serde(borrow)]
+    block_names: HashMap<String, &'a str>,
+    #[serde(borrow)]
+    events: HashMap<String, Event<'a>>,
+    #[serde(borrow)]
+    performances: Vec<Performance<'a>>,
+    #[serde(borrow)]
+    seat_category_names: HashMap<String, &'a str>,
+    #[serde(borrow)]
+    sub_topic_names: HashMap<String, &'a str>,
+    #[serde(borrow)]
+    subject_names: HashMap<String, &'a str>,
+    #[serde(borrow)]
+    topic_names: HashMap<String, &'a str>,
+    topic_sub_topics: HashMap<String, Vec<u64>>,
+    #[serde(borrow)]
+    venue_names: HashMap<String, &'a str>,
+}
+
+#[derive(Debug, Deserialize, Facet)]
+#[serde(rename_all = "camelCase")]
+#[facet(rename_all = "camelCase")]
+struct Event<'a> {
+    description: (),
+    id: u64,
+    #[serde(borrow)]
+    logo: Option<&'a str>,
+    #[serde(borrow)]
+    name: Cow<'a, str>,
+    sub_topic_ids: Vec<u64>,
+    subject_code: (),
+    subtitle: (),
+    topic_ids: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize, Facet)]
+#[serde(rename_all = "camelCase")]
+#[facet(rename_all = "camelCase")]
+struct Performance<'a> {
+    event_id: u64,
+    id: u64,
+    #[serde(borrow)]
+    logo: Option<&'a str>,
+    name: (),
+    prices: Vec<Price>,
+    seat_categories: Vec<SeatCategory>,
+    seat_map_image: (),
+    start: u64,
+    venue_code: &'a str,
+}
+
+#[derive(Debug, Deserialize, Facet)]
+#[serde(rename_all = "camelCase")]
+#[facet(rename_all = "camelCase")]
+struct Price {
+    amount: u64,
+    audience_sub_category_id: u64,
+    seat_category_id: u64,
+}
+
+#[derive(Debug, Deserialize, Facet)]
+#[serde(rename_all = "camelCase")]
+#[facet(rename_all = "camelCase")]
+struct SeatCategory {
+    areas: Vec<Area>,
+    seat_category_id: u64,
+}
+
+#[derive(Debug, Deserialize, Facet)]
+#[serde(rename_all = "camelCase")]
+#[facet(rename_all = "camelCase")]
+struct Area {
+    area_id: u64,
+    block_ids: Vec<u64>,
+}
+
+// =============================================================================
+// Data loading
+// =============================================================================
+
+fn decompress(compressed: &[u8]) -> Vec<u8> {
+    let mut decompressed = Vec::new();
+    brotli::BrotliDecompress(&mut std::io::Cursor::new(compressed), &mut decompressed)
+        .expect("Failed to decompress fixture");
+    decompressed
+}
+
+static CITM_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let compressed = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/citm_catalog.json.br"
+    ));
+    decompress(compressed)
+});
+
+static CITM_STR: LazyLock<String> = LazyLock::new(|| {
+    String::from_utf8(CITM_JSON.clone()).expect("citm_catalog.json is valid UTF-8")
+});
+
+// =============================================================================
+// Cached compiled deserializers
+// =============================================================================
+
+static FAD_CITM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(CitmCatalog::SHAPE, &fad::json::FadJson)
+});
+
+// =============================================================================
+// Benchmarks
+// =============================================================================
+
+#[divan::bench]
+fn serde_json(bencher: Bencher) {
+    let data = &*CITM_STR;
+    bencher.bench(|| {
+        let result: CitmCatalog = black_box(serde_json::from_str(black_box(data)).unwrap());
+        black_box(result)
+    });
+}
+
+#[divan::bench]
+fn fad_from_str(bencher: Bencher) {
+    let data = &*CITM_STR;
+    let deser = &*FAD_CITM;
+    bencher.bench(|| {
+        let result: CitmCatalog = black_box(fad::from_str(deser, black_box(data)).unwrap());
+        black_box(result)
+    });
+}
