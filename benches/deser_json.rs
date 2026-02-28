@@ -349,7 +349,7 @@ static VEC_SCALAR_MEDIUM_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
 static VEC_STRUCT_JSON: &[u8] = br#"{"friends": [{"age": 25, "name": "Alice"}, {"age": 30, "name": "Bob"}, {"age": 35, "name": "Charlie"}]}"#;
 
 static STRING_HEAVY_JSON_BYTES: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    let values = (0..4096)
+    let values = (0..1024)
         .map(|i| format!("user-{i:04}-alpha-beta-gamma-delta-epsilon-zeta-theta-lambda"))
         .collect();
     serde_json::to_vec(&StringBagSerde { values }).unwrap()
