@@ -22,7 +22,7 @@ fn main() {
     // Build a symbol table: intrinsic address → name.
     let syms = build_symbol_table();
 
-    let deser = fad::compile_deser(MapStructFacet::SHAPE, &fad::json::FadJson);
+    let deser = fad::compile_decoder(MapStructFacet::SHAPE, &fad::json::FadJson);
     let code = deser.code();
     let base = code.as_ptr() as u64;
     let entry = deser.entry_offset();

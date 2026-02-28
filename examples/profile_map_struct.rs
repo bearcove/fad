@@ -46,7 +46,7 @@ fn main() {
             }
         }
         "fad" => {
-            let deser = fad::compile_deser(MapStructFacet::SHAPE, &fad::json::FadJson);
+            let deser = fad::compile_decoder(MapStructFacet::SHAPE, &fad::json::FadJson);
             for _ in 0..ITERS {
                 black_box(fad::deserialize::<MapStructFacet>(&deser, black_box(INPUT)).unwrap());
             }
