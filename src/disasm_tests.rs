@@ -147,15 +147,11 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
         let mut ret_count = 0u32;
 
         while offset + 4 <= code.len() {
-            let marker = match marker_offset {
-                Some(m) if m == offset => " <entry>",
-                _ => "",
-            };
+            let prefix = if marker_offset == Some(offset) { "> " } else { "  " };
             match decoder.decode(&mut reader) {
                 Ok(inst) => {
-                    let text = format!("{inst}");
-                    let text = normalize_inst(&text);
-                    writeln!(&mut out, "{offset:06x}:{marker}  {text}").unwrap();
+                    let text = normalize_inst(&format!("{inst}"));
+                    writeln!(&mut out, "{prefix}{text}").unwrap();
                     if text.trim() == "ret" {
                         ret_count += 1;
                         if ret_count >= 2 {
@@ -165,7 +161,7 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
                 }
                 Err(e) => {
                     let word = u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
-                    writeln!(&mut out, "{offset:06x}:{marker}  <{e}> (0x{word:08x})").unwrap();
+                    writeln!(&mut out, "{prefix}<{e}> (0x{word:08x})").unwrap();
                 }
             }
             offset += 4;
@@ -182,16 +178,12 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
         let mut ret_count = 0u32;
 
         while offset < code.len() {
-            let marker = match marker_offset {
-                Some(m) if m == offset => " <entry>",
-                _ => "",
-            };
+            let prefix = if marker_offset == Some(offset) { "> " } else { "  " };
             match decoder.decode(&mut reader) {
                 Ok(inst) => {
                     let len = inst.len().to_const() as usize;
-                    let text = format!("{inst}");
-                    let text = normalize_inst(&text);
-                    writeln!(&mut out, "{offset:06x}:{marker}  {text}").unwrap();
+                    let text = normalize_inst(&format!("{inst}"));
+                    writeln!(&mut out, "{prefix}{text}").unwrap();
                     if text.trim() == "ret" {
                         ret_count += 1;
                         if ret_count >= 2 {
@@ -201,12 +193,7 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
                     offset += len;
                 }
                 Err(_) => {
-                    writeln!(
-                        &mut out,
-                        "{offset:06x}:{marker}  <decode error> (0x{:02x})",
-                        code[offset]
-                    )
-                    .unwrap();
+                    writeln!(&mut out, "{prefix}<decode error> (0x{:02x})", code[offset]).unwrap();
                     offset += 1;
                 }
             }
