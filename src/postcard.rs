@@ -77,6 +77,53 @@ impl Format for FadPostcard {
         );
     }
 
+    // r[impl deser.postcard.option]
+    fn emit_option(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        init_none_fn: *const u8,
+        init_some_fn: *const u8,
+        scratch_offset: u32,
+        emit_inner: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        // Postcard Option: 0x00 = None, 0x01 = Some(T)
+        let none_label = ectx.new_label();
+        let done_label = ectx.new_label();
+
+        // Read tag byte from input into a stack slot (the save slot area).
+        let tag_slot = scratch_offset - 8;
+        ectx.emit_inline_read_byte_to_stack(tag_slot);
+
+        // Compare: if tag == 0, branch to None
+        ectx.emit_stack_byte_cmp_branch(tag_slot, 0, none_label);
+
+        // === Some path ===
+        // Redirect out to the scratch area and deserialize inner T
+        ectx.emit_redirect_out_to_stack(scratch_offset);
+        emit_inner(ectx);
+        ectx.emit_restore_out(scratch_offset);
+
+        // Call init_some(init_some_fn, out + offset, scratch)
+        ectx.emit_call_option_init_some(
+            intrinsics::fad_option_init_some as *const u8,
+            init_some_fn,
+            offset as u32,
+            scratch_offset,
+        );
+        ectx.emit_branch(done_label);
+
+        // === None path ===
+        ectx.bind_label(none_label);
+        ectx.emit_call_option_init_none(
+            intrinsics::fad_option_init_none as *const u8,
+            init_none_fn,
+            offset as u32,
+        );
+
+        ectx.bind_label(done_label);
+    }
+
     // r[impl deser.postcard.enum]
     // r[impl deser.postcard.enum.dispatch]
     // r[impl deser.postcard.enum.unit]

@@ -154,6 +154,25 @@ pub trait Format {
         panic!("untagged enums not supported by this format");
     }
 
+    /// Emit code to deserialize an Option<T> value.
+    ///
+    /// The format reads the wire discriminant (postcard: 0x00/0x01 byte, JSON:
+    /// null peek), then either:
+    /// - None: calls `fad_option_init_none(init_none_fn, out + offset)`
+    /// - Some: redirects `out` to a scratch area, calls `emit_inner` to
+    ///   deserialize T, then calls `fad_option_init_some(init_some_fn, out + offset, scratch)`
+    ///
+    /// `scratch_offset`: stack offset where inner T can be temporarily deserialized.
+    fn emit_option(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        init_none_fn: *const u8,
+        init_some_fn: *const u8,
+        scratch_offset: u32,
+        emit_inner: &mut dyn FnMut(&mut EmitCtx),
+    );
+
     /// Emit code to deserialize struct fields from an already-open JSON object.
     ///
     /// Used by internally tagged enums: after reading the tag key-value pair,

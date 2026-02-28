@@ -130,6 +130,59 @@ impl Format for FadJson {
         ectx.emit_check_bitset(BITSET_OFFSET, expected_mask);
     }
 
+    // r[impl deser.json.option]
+    fn emit_option(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        init_none_fn: *const u8,
+        init_some_fn: *const u8,
+        scratch_offset: u32,
+        emit_inner: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        // JSON Option: null = None, value = Some(T)
+        let none_label = ectx.new_label();
+        let done_label = ectx.new_label();
+
+        // Peek at first non-whitespace byte
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+
+        // If peek == 'n', it's null → None
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'n', none_label);
+
+        // === Some path ===
+        // Redirect out to scratch area and deserialize inner T
+        ectx.emit_redirect_out_to_stack(scratch_offset);
+        emit_inner(ectx);
+        ectx.emit_restore_out(scratch_offset);
+
+        // Call init_some(init_some_fn, out + offset, scratch)
+        ectx.emit_call_option_init_some(
+            crate::intrinsics::fad_option_init_some as *const u8,
+            init_some_fn,
+            offset as u32,
+            scratch_offset,
+        );
+        ectx.emit_branch(done_label);
+
+        // === None path ===
+        ectx.bind_label(none_label);
+        // Consume the "null" literal
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_skip_value as *const u8,
+        );
+        ectx.emit_call_option_init_none(
+            crate::intrinsics::fad_option_init_none as *const u8,
+            init_none_fn,
+            offset as u32,
+        );
+
+        ectx.bind_label(done_label);
+    }
+
     // r[impl deser.json.scalar.integer]
     // r[impl deser.json.scalar.float]
     // r[impl deser.json.scalar.bool]

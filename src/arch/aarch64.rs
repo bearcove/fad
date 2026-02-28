@@ -5,7 +5,7 @@ use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END};
 pub type Assembler = dynasmrt::aarch64::Assembler;
 
 /// Base frame size: 3 pairs of callee-saved registers = 48 bytes.
-const BASE_FRAME: u32 = 48;
+pub const BASE_FRAME: u32 = 48;
 
 /// Emission context — wraps the assembler plus bookkeeping labels.
 pub struct EmitCtx {
@@ -419,6 +419,28 @@ impl EmitCtx {
         let done_label = self.ops.new_dynamic_label();
         dynasm!(self.ops
             ; .arch aarch64
+            ; b =>done_label
+            ; =>eof_label
+            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+            ; =>done_label
+        );
+    }
+
+    /// Emit inline code to read a single byte from input and store to sp+offset (stack slot).
+    pub fn emit_inline_read_byte_to_stack(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cmp x19, x20
+            ; b.hs =>eof_label
+            ; ldrb w9, [x19]
+            ; strb w9, [sp, #sp_offset]
+            ; add x19, x19, #1
             ; b =>done_label
             ; =>eof_label
             ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
@@ -962,6 +984,84 @@ impl EmitCtx {
         dynasm!(self.ops
             ; .arch aarch64
             ; add x19, x19, #n
+        );
+    }
+
+    // ── Option support ────────────────────────────────────────────────
+
+    /// Save the current `out` pointer (x21) and redirect it to a stack scratch area.
+    /// The save slot is at `scratch_offset - 8`.
+    pub fn emit_redirect_out_to_stack(&mut self, scratch_offset: u32) {
+        let save_slot = scratch_offset - 8;
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; str x21, [sp, #save_slot]
+            ; add x21, sp, #scratch_offset
+        );
+    }
+
+    /// Restore the `out` pointer (x21) from the saved slot.
+    pub fn emit_restore_out(&mut self, scratch_offset: u32) {
+        let save_slot = scratch_offset - 8;
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x21, [sp, #save_slot]
+        );
+    }
+
+    /// Call fad_option_init_none(init_none_fn, out + offset).
+    /// Does not touch ctx or the cursor.
+    pub fn emit_call_option_init_none(&mut self, wrapper_fn: *const u8, init_none_fn: *const u8, offset: u32) {
+        let wrapper_val = wrapper_fn as u64;
+        let init_none_val = init_none_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // arg0: init_none_fn pointer
+            ; movz x0, #((init_none_val) & 0xFFFF) as u32
+            ; movk x0, #((init_none_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x0, #((init_none_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x0, #((init_none_val >> 48) & 0xFFFF) as u32, LSL #48
+            // arg1: out + offset
+            ; add x1, x21, #offset
+            // Call wrapper
+            ; movz x8, #((wrapper_val) & 0xFFFF) as u32
+            ; movk x8, #((wrapper_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((wrapper_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((wrapper_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+        );
+    }
+
+    /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
+    /// Does not touch ctx or the cursor.
+    pub fn emit_call_option_init_some(
+        &mut self,
+        wrapper_fn: *const u8,
+        init_some_fn: *const u8,
+        offset: u32,
+        scratch_offset: u32,
+    ) {
+        let wrapper_val = wrapper_fn as u64;
+        let init_some_val = init_some_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // arg0: init_some_fn pointer
+            ; movz x0, #((init_some_val) & 0xFFFF) as u32
+            ; movk x0, #((init_some_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x0, #((init_some_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x0, #((init_some_val >> 48) & 0xFFFF) as u32, LSL #48
+            // arg1: out + offset
+            ; add x1, x21, #offset
+            // arg2: scratch area on stack
+            ; add x2, sp, #scratch_offset
+            // Call wrapper
+            ; movz x8, #((wrapper_val) & 0xFFFF) as u32
+            ; movk x8, #((wrapper_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((wrapper_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((wrapper_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
         );
     }
 

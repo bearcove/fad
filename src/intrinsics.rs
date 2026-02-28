@@ -237,6 +237,36 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
     ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
 }
 
+// --- Option intrinsics ---
+
+/// Initialize an Option with None using the vtable's init_none function.
+///
+/// Wraps the facet OptionVTable's init_none, which takes wide pointer types
+/// (PtrUninit), into a thin `extern "C"` interface callable from JIT code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_option_init_none(
+    init_none_fn: facet::OptionInitNoneFn,
+    out: *mut u8,
+) {
+    let ptr_uninit = facet::PtrUninit::new_sized(out);
+    unsafe { (init_none_fn)(ptr_uninit) };
+}
+
+/// Initialize an Option with Some(value) using the vtable's init_some function.
+///
+/// `value_ptr` points to an already-deserialized T. init_some will _move_ it
+/// (read + write into the Option), so the caller must not use value_ptr afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_option_init_some(
+    init_some_fn: facet::OptionInitSomeFn,
+    out: *mut u8,
+    value_ptr: *mut u8,
+) {
+    let ptr_uninit = facet::PtrUninit::new_sized(out);
+    let ptr_mut = facet::PtrMut::new_sized(value_ptr);
+    unsafe { (init_some_fn)(ptr_uninit, ptr_mut) };
+}
+
 /// Validate UTF-8 and allocate a String from a raw byte slice, write to `*out`.
 ///
 /// This is the "lean" string intrinsic — it does NOT read the length varint,

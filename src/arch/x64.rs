@@ -5,7 +5,7 @@ use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END};
 pub type Assembler = dynasmrt::x64::Assembler;
 
 /// Base frame size: rbp + pad + 4 callee-saved regs = 48 bytes.
-const BASE_FRAME: u32 = 48;
+pub const BASE_FRAME: u32 = 48;
 
 /// Emission context — wraps the assembler plus bookkeeping labels.
 pub struct EmitCtx {
@@ -390,6 +390,27 @@ impl EmitCtx {
             ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
             ; jmp =>error_exit
 
+            ; =>done_label
+        );
+    }
+
+    /// Emit inline code to read a single byte from input and store to rsp+offset (stack slot).
+    pub fn emit_inline_read_byte_to_stack(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>eof_label
+            ; movzx r10d, BYTE [r12]
+            ; mov BYTE [rsp + sp_offset as i32], r10b
+            ; add r12, 1
+            ; jmp =>done_label
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
             ; =>done_label
         );
     }
@@ -859,6 +880,69 @@ impl EmitCtx {
         dynasm!(self.ops
             ; .arch x64
             ; add r12, n as i32
+        );
+    }
+
+    // ── Option support ────────────────────────────────────────────────
+
+    /// Save the current `out` pointer (r14) and redirect it to a stack scratch area.
+    pub fn emit_redirect_out_to_stack(&mut self, scratch_offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov [rsp + (scratch_offset as i32 - 8)], r14
+            ; lea r14, [rsp + scratch_offset as i32]
+        );
+    }
+
+    /// Restore the `out` pointer (r14) from the saved slot.
+    pub fn emit_restore_out(&mut self, scratch_offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r14, [rsp + (scratch_offset as i32 - 8)]
+        );
+    }
+
+    /// Call fad_option_init_none(init_none_fn, out + offset).
+    /// Does not touch ctx or the cursor.
+    pub fn emit_call_option_init_none(&mut self, wrapper_fn: *const u8, init_none_fn: *const u8, offset: u32) {
+        let wrapper_val = wrapper_fn as i64;
+        let init_none_val = init_none_fn as i64;
+
+        dynasm!(self.ops
+            ; .arch x64
+            // arg0 (rdi): init_none_fn pointer
+            ; mov rdi, QWORD init_none_val
+            // arg1 (rsi): out + offset
+            ; lea rsi, [r14 + offset as i32]
+            // Call wrapper
+            ; mov rax, QWORD wrapper_val
+            ; call rax
+        );
+    }
+
+    /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
+    /// Does not touch ctx or the cursor.
+    pub fn emit_call_option_init_some(
+        &mut self,
+        wrapper_fn: *const u8,
+        init_some_fn: *const u8,
+        offset: u32,
+        scratch_offset: u32,
+    ) {
+        let wrapper_val = wrapper_fn as i64;
+        let init_some_val = init_some_fn as i64;
+
+        dynasm!(self.ops
+            ; .arch x64
+            // arg0 (rdi): init_some_fn pointer
+            ; mov rdi, QWORD init_some_val
+            // arg1 (rsi): out + offset
+            ; lea rsi, [r14 + offset as i32]
+            // arg2 (rdx): scratch area on stack
+            ; lea rdx, [rsp + scratch_offset as i32]
+            // Call wrapper
+            ; mov rax, QWORD wrapper_val
+            ; call rax
         );
     }
 

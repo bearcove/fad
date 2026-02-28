@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use dynasmrt::{AssemblyOffset, DynamicLabel};
-use facet::{EnumRepr, ScalarType, Shape, Type, UserType};
+use facet::{Def, EnumRepr, OptionDef, ScalarType, Shape, Type, UserType};
 
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
@@ -50,14 +50,18 @@ struct Compiler<'fmt> {
     /// If offset is Some, the function is fully emitted.
     /// If offset is None, the function is in progress (label allocated but not yet bound).
     shapes: HashMap<*const Shape, ShapeEntry>,
+    /// Stack offset where Option inner values can be temporarily deserialized.
+    /// Zero if no Options are present.
+    option_scratch_offset: u32,
 }
 
 impl<'fmt> Compiler<'fmt> {
-    fn new(extra_stack: u32, format: &'fmt dyn Format) -> Self {
+    fn new(extra_stack: u32, option_scratch_offset: u32, format: &'fmt dyn Format) -> Self {
         Compiler {
             ectx: EmitCtx::new(extra_stack),
             format,
             shapes: HashMap::new(),
+            option_scratch_offset,
         }
     }
 
@@ -111,12 +115,14 @@ impl<'fmt> Compiler<'fmt> {
         // (structs and enums) so they're available as call targets.
         // Enum fields always need pre-compilation (even in inline formats) since
         // they can't be inlined — they need their own discriminant dispatch.
+        // Option fields: if the inner T is composite, pre-compile it too.
         let nested: Vec<Option<DynamicLabel>> = if inline {
             fields
                 .iter()
                 .map(|f| {
-                    if matches!(&f.shape.ty, Type::User(UserType::Enum(_))) {
-                        Some(self.compile_shape(f.shape))
+                    let target = option_inner_or_self(f.shape);
+                    if matches!(&target.ty, Type::User(UserType::Enum(_))) {
+                        Some(self.compile_shape(target))
                     } else {
                         None
                     }
@@ -126,8 +132,9 @@ impl<'fmt> Compiler<'fmt> {
             fields
                 .iter()
                 .map(|f| {
-                    if is_composite(f.shape) {
-                        Some(self.compile_shape(f.shape))
+                    let target = option_inner_or_self(f.shape);
+                    if is_composite(target) {
+                        Some(self.compile_shape(target))
                     } else {
                         None
                     }
@@ -140,10 +147,11 @@ impl<'fmt> Compiler<'fmt> {
         let (entry_offset, error_exit) = self.ectx.begin_func();
 
         let format = self.format;
+        let option_scratch_offset = self.option_scratch_offset;
         let ectx = &mut self.ectx;
 
         format.emit_struct_fields(ectx, &fields, &mut |ectx, field| {
-            emit_field(ectx, format, field, &fields, &nested);
+            emit_field(ectx, format, field, &fields, &nested, option_scratch_offset);
         });
 
         self.ectx.end_func(error_exit);
@@ -170,6 +178,7 @@ impl<'fmt> Compiler<'fmt> {
         // Depth-first compile all nested composite types (structs and enums)
         // found in variant fields so they're available as call targets.
         // Enum fields always need pre-compilation even in inline formats.
+        // Option fields: if the inner T is composite, pre-compile it too.
         let nested_labels: Vec<Vec<Option<DynamicLabel>>> = if inline {
             variants
                 .iter()
@@ -177,8 +186,9 @@ impl<'fmt> Compiler<'fmt> {
                     v.fields
                         .iter()
                         .map(|f| {
-                            if matches!(&f.shape.ty, Type::User(UserType::Enum(_))) {
-                                Some(self.compile_shape(f.shape))
+                            let target = option_inner_or_self(f.shape);
+                            if matches!(&target.ty, Type::User(UserType::Enum(_))) {
+                                Some(self.compile_shape(target))
                             } else {
                                 None
                             }
@@ -193,8 +203,9 @@ impl<'fmt> Compiler<'fmt> {
                     v.fields
                         .iter()
                         .map(|f| {
-                            if is_composite(f.shape) {
-                                Some(self.compile_shape(f.shape))
+                            let target = option_inner_or_self(f.shape);
+                            if is_composite(target) {
+                                Some(self.compile_shape(target))
                             } else {
                                 None
                             }
@@ -209,6 +220,7 @@ impl<'fmt> Compiler<'fmt> {
         let (entry_offset, error_exit) = self.ectx.begin_func();
 
         let format = self.format;
+        let option_scratch_offset = self.option_scratch_offset;
         let ectx = &mut self.ectx;
 
         // Detect tagging mode from shape metadata.
@@ -227,13 +239,13 @@ impl<'fmt> Compiler<'fmt> {
 
             if variant.kind == VariantKind::Struct && !inline {
                 format.emit_struct_fields(ectx, &variant.fields, &mut |ectx, field| {
-                    emit_field(ectx, format, field, &variant.fields, nested);
+                    emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset);
                 });
                 return;
             }
 
             for field in &variant.fields {
-                emit_field(ectx, format, field, &variant.fields, nested);
+                emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset);
             }
         };
 
@@ -267,7 +279,7 @@ impl<'fmt> Compiler<'fmt> {
                     },
                     &mut |ectx, variant, field| {
                         let nested = &nested_labels[variant.index];
-                        emit_field(ectx, format, field, &variant.fields, nested);
+                        emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset);
                     },
                 );
             }
@@ -384,6 +396,23 @@ fn discriminant_size(repr: EnumRepr) -> u32 {
     }
 }
 
+/// Returns the OptionDef if this shape is an Option type.
+fn get_option_def(shape: &'static Shape) -> Option<&'static OptionDef> {
+    match &shape.def {
+        Def::Option(opt_def) => Some(opt_def),
+        _ => None,
+    }
+}
+
+/// If the shape is an Option, return the inner T's shape; otherwise return the shape itself.
+/// Used for nested label pre-compilation — we need to compile the inner T, not Option<T>.
+fn option_inner_or_self(shape: &'static Shape) -> &'static Shape {
+    match get_option_def(shape) {
+        Some(opt_def) => opt_def.t,
+        None => shape,
+    }
+}
+
 /// Returns true if the shape is a struct type.
 fn is_struct(shape: &'static Shape) -> bool {
     matches!(&shape.ty, Type::User(UserType::Struct(_)))
@@ -398,19 +427,52 @@ fn is_composite(shape: &'static Shape) -> bool {
 }
 
 /// Emit code for a single field, dispatching to nested struct calls, inline
-/// expansion, or scalar intrinsics.
+/// expansion, scalar intrinsics, or Option handling.
 fn emit_field(
     ectx: &mut EmitCtx,
     format: &dyn Format,
     field: &FieldEmitInfo,
     all_fields: &[FieldEmitInfo],
     nested: &[Option<DynamicLabel>],
+    option_scratch_offset: u32,
 ) {
     // Find this field's index by matching offset.
     let idx = all_fields
         .iter()
         .position(|f| f.offset == field.offset)
         .expect("field not found in all_fields");
+
+    // r[impl deser.option]
+    // Check if this field is an Option<T>.
+    if let Some(opt_def) = get_option_def(field.shape) {
+        let init_none_fn = opt_def.vtable.init_none as *const u8;
+        let init_some_fn = opt_def.vtable.init_some as *const u8;
+        let inner_shape = opt_def.t;
+
+        format.emit_option(ectx, field.offset, init_none_fn, init_some_fn, option_scratch_offset, &mut |ectx| {
+            // Emit inner T deserialization into the scratch area (out is already redirected).
+            // The inner T's offset is 0 because out now points to the scratch area.
+            if let Some(label) = nested[idx] {
+                ectx.emit_call_emitted_func(label, 0);
+            } else if is_struct(inner_shape) && format.supports_inline_nested() {
+                emit_inline_struct(ectx, format, inner_shape, 0, option_scratch_offset);
+            } else {
+                match inner_shape.scalar_type() {
+                    Some(ScalarType::String) => {
+                        format.emit_read_string(ectx, 0);
+                    }
+                    Some(st) => {
+                        format.emit_read_scalar(ectx, 0, st);
+                    }
+                    None => panic!(
+                        "unsupported Option inner type: {}",
+                        inner_shape.type_identifier,
+                    ),
+                }
+            }
+        });
+        return;
+    }
 
     if let Some(label) = nested[idx] {
         // r[impl deser.nested-struct]
@@ -422,7 +484,7 @@ fn emit_field(
     // r[impl deser.nested-struct]
     // r[impl deser.nested-struct.offset]
     if is_struct(field.shape) && format.supports_inline_nested() {
-        emit_inline_struct(ectx, format, field.shape, field.offset);
+        emit_inline_struct(ectx, format, field.shape, field.offset, option_scratch_offset);
         return;
     }
 
@@ -451,6 +513,7 @@ fn emit_inline_struct(
     format: &dyn Format,
     shape: &'static Shape,
     base_offset: usize,
+    option_scratch_offset: u32,
 ) {
     let inner_fields = collect_fields(shape);
     let adjusted: Vec<FieldEmitInfo> = inner_fields
@@ -467,8 +530,54 @@ fn emit_inline_struct(
     let no_nested = vec![None; adjusted.len()];
 
     format.emit_struct_fields(ectx, &adjusted, &mut |ectx, field| {
-        emit_field(ectx, format, field, &adjusted, &no_nested);
+        emit_field(ectx, format, field, &adjusted, &no_nested, option_scratch_offset);
     });
+}
+
+/// Compute the maximum Option inner type size across a shape tree.
+/// Returns 0 if no Option fields are found.
+fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::HashSet<*const Shape>) -> usize {
+    let key = shape as *const Shape;
+    if !visited.insert(key) {
+        return 0;
+    }
+
+    let mut max_size = 0usize;
+
+    match &shape.ty {
+        Type::User(UserType::Struct(st)) => {
+            for f in st.fields {
+                let field_shape = f.shape();
+                if let Some(opt_def) = get_option_def(field_shape) {
+                    let inner_size = opt_def.t.layout.sized_layout().expect(
+                        "Option inner type must be Sized"
+                    ).size();
+                    max_size = max_size.max(inner_size);
+                    // Also recurse into the inner type
+                    max_size = max_size.max(max_option_inner_size(opt_def.t, visited));
+                }
+                max_size = max_size.max(max_option_inner_size(field_shape, visited));
+            }
+        }
+        Type::User(UserType::Enum(enum_type)) => {
+            for v in enum_type.variants {
+                for f in v.data.fields {
+                    let field_shape = f.shape();
+                    if let Some(opt_def) = get_option_def(field_shape) {
+                        let inner_size = opt_def.t.layout.sized_layout().expect(
+                            "Option inner type must be Sized"
+                        ).size();
+                        max_size = max_size.max(inner_size);
+                        max_size = max_size.max(max_option_inner_size(opt_def.t, visited));
+                    }
+                    max_size = max_size.max(max_option_inner_size(field_shape, visited));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    max_size
 }
 
 /// Compile a deserializer for the given shape and format.
@@ -476,7 +585,7 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     // Compute extra stack space. For structs, pass fields. For enums, we need
     // the max across all variant bodies. Use empty fields for enums since JSON
     // enum handling computes its own stack needs.
-    let extra_stack = match &shape.ty {
+    let format_extra = match &shape.ty {
         Type::User(UserType::Struct(_)) => {
             let fields = collect_fields(shape);
             format.extra_stack_space(&fields)
@@ -502,7 +611,27 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
         _ => panic!("unsupported root shape: {}", shape.type_identifier),
     };
 
-    let mut compiler = Compiler::new(extra_stack, format);
+    // Compute Option scratch space: 8 bytes for saved out pointer + max inner T size.
+    // The scratch area lives after the base frame and format's extra stack.
+    // Stack layout from sp:
+    //   [0..BASE_FRAME)         callee-saved registers
+    //   [BASE_FRAME..BASE_FRAME+format_extra)  format-specific data (bitset, key_ptr, etc.)
+    //   [BASE_FRAME+format_extra..BASE_FRAME+format_extra+8)  saved out pointer
+    //   [BASE_FRAME+format_extra+8..BASE_FRAME+format_extra+8+max_inner)  inner T scratch
+    //
+    // option_scratch_offset is the absolute sp offset where inner T is written.
+    // The emit_redirect_out_to_stack method saves old out at scratch_offset-8.
+    let max_inner = max_option_inner_size(shape, &mut std::collections::HashSet::new());
+    let (option_scratch_offset, extra_stack) = if max_inner > 0 {
+        let option_extra = 8 + max_inner as u32;
+        let base_frame = crate::arch::BASE_FRAME;
+        let scratch_offset = base_frame + format_extra + 8;
+        (scratch_offset, format_extra + option_extra)
+    } else {
+        (0, format_extra)
+    };
+
+    let mut compiler = Compiler::new(extra_stack, option_scratch_offset, format);
     compiler.compile_shape(shape);
 
     // Get the entry offset for the root shape.

@@ -1604,6 +1604,331 @@ mod tests {
         compile_deser(TrulyAmbiguous::SHAPE, &json::FadJson);
     }
 
+    // --- Option<T> support ---
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_option_some_scalar() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptU32 {
+            value: Option<u32>,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptU32Serde {
+            value: Option<u32>,
+        }
+
+        let source = WithOptU32Serde { value: Some(42) };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptU32 { value: Some(42) });
+    }
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_option_none_scalar() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptU32 {
+            value: Option<u32>,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptU32Serde {
+            value: Option<u32>,
+        }
+
+        let source = WithOptU32Serde { value: None };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptU32 { value: None });
+    }
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_option_some_string() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptStr {
+            name: Option<String>,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptStrSerde {
+            name: Option<String>,
+        }
+
+        let source = WithOptStrSerde { name: Some("Alice".into()) };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(WithOptStr::SHAPE, &postcard::FadPostcard);
+        let result: WithOptStr = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptStr { name: Some("Alice".into()) });
+    }
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_option_none_string() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptStr {
+            name: Option<String>,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptStrSerde {
+            name: Option<String>,
+        }
+
+        let source = WithOptStrSerde { name: None };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(WithOptStr::SHAPE, &postcard::FadPostcard);
+        let result: WithOptStr = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptStr { name: None });
+    }
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_option_some_struct() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptAddr {
+            addr: Option<Address>,
+        }
+
+        #[derive(Serialize)]
+        struct AddressSerde {
+            city: String,
+            zip: u32,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptAddrSerde {
+            addr: Option<AddressSerde>,
+        }
+
+        let source = WithOptAddrSerde {
+            addr: Some(AddressSerde { city: "Portland".into(), zip: 97201 }),
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(WithOptAddr::SHAPE, &postcard::FadPostcard);
+        let result: WithOptAddr = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            WithOptAddr {
+                addr: Some(Address { city: "Portland".into(), zip: 97201 }),
+            }
+        );
+    }
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_option_none_struct() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptAddr {
+            addr: Option<Address>,
+        }
+
+        #[derive(Serialize)]
+        struct AddressSerde {
+            city: String,
+            zip: u32,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptAddrSerde {
+            addr: Option<AddressSerde>,
+        }
+
+        let source = WithOptAddrSerde { addr: None };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(WithOptAddr::SHAPE, &postcard::FadPostcard);
+        let result: WithOptAddr = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptAddr { addr: None });
+    }
+
+    // r[verify deser.postcard.option]
+    #[test]
+    fn postcard_multiple_options() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct MultiOpt {
+            a: Option<u32>,
+            b: String,
+            c: Option<String>,
+        }
+
+        #[derive(Serialize)]
+        struct MultiOptSerde {
+            a: Option<u32>,
+            b: String,
+            c: Option<String>,
+        }
+
+        let source = MultiOptSerde {
+            a: Some(7),
+            b: "hello".into(),
+            c: None,
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(MultiOpt::SHAPE, &postcard::FadPostcard);
+        let result: MultiOpt = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            MultiOpt {
+                a: Some(7),
+                b: "hello".into(),
+                c: None,
+            }
+        );
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_some_scalar() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptU32 {
+            value: Option<u32>,
+        }
+
+        let input = br#"{"value": 42}"#;
+        let deser = compile_deser(WithOptU32::SHAPE, &json::FadJson);
+        let result: WithOptU32 = deserialize(&deser, input).unwrap();
+        assert_eq!(result, WithOptU32 { value: Some(42) });
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_none_scalar() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptU32 {
+            value: Option<u32>,
+        }
+
+        let input = br#"{"value": null}"#;
+        let deser = compile_deser(WithOptU32::SHAPE, &json::FadJson);
+        let result: WithOptU32 = deserialize(&deser, input).unwrap();
+        assert_eq!(result, WithOptU32 { value: None });
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_some_string() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptStr {
+            name: Option<String>,
+        }
+
+        let input = br#"{"name": "Alice"}"#;
+        let deser = compile_deser(WithOptStr::SHAPE, &json::FadJson);
+        let result: WithOptStr = deserialize(&deser, input).unwrap();
+        assert_eq!(result, WithOptStr { name: Some("Alice".into()) });
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_none_string() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptStr {
+            name: Option<String>,
+        }
+
+        let input = br#"{"name": null}"#;
+        let deser = compile_deser(WithOptStr::SHAPE, &json::FadJson);
+        let result: WithOptStr = deserialize(&deser, input).unwrap();
+        assert_eq!(result, WithOptStr { name: None });
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_some_struct() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptAddr {
+            addr: Option<Address>,
+        }
+
+        let input = br#"{"addr": {"city": "Portland", "zip": 97201}}"#;
+        let deser = compile_deser(WithOptAddr::SHAPE, &json::FadJson);
+        let result: WithOptAddr = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithOptAddr {
+                addr: Some(Address { city: "Portland".into(), zip: 97201 }),
+            }
+        );
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_none_struct() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptAddr {
+            addr: Option<Address>,
+        }
+
+        let input = br#"{"addr": null}"#;
+        let deser = compile_deser(WithOptAddr::SHAPE, &json::FadJson);
+        let result: WithOptAddr = deserialize(&deser, input).unwrap();
+        assert_eq!(result, WithOptAddr { addr: None });
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_multiple_options() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct MultiOpt {
+            a: Option<u32>,
+            b: String,
+            c: Option<String>,
+        }
+
+        let input = br#"{"a": 7, "b": "hello", "c": null}"#;
+        let deser = compile_deser(MultiOpt::SHAPE, &json::FadJson);
+        let result: MultiOpt = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            MultiOpt {
+                a: Some(7),
+                b: "hello".into(),
+                c: None,
+            }
+        );
+    }
+
+    // r[verify deser.json.option]
+    #[test]
+    fn json_option_reversed_keys() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct MultiOpt {
+            a: Option<u32>,
+            b: String,
+            c: Option<String>,
+        }
+
+        let input = br#"{"c": "world", "b": "hello", "a": null}"#;
+        let deser = compile_deser(MultiOpt::SHAPE, &json::FadJson);
+        let result: MultiOpt = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            MultiOpt {
+                a: None,
+                b: "hello".into(),
+                c: Some("world".into()),
+            }
+        );
+    }
+
     // r[verify compiler.recursive.one-func-per-shape]
     #[test]
     fn json_shared_inner_type() {
