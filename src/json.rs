@@ -12,14 +12,22 @@ use crate::solver::{JsonValueType, LoweredSolver};
 // r[impl deser.json.struct]
 // r[impl deser.json.struct.unknown-keys]
 
-// Stack layout (extra_stack = 48, offsets from sp):
+// Stack layout (offsets from sp):
 //   [sp+0..BASE_FRAME)                   callee-saved registers (+ shadow space on Windows)
+//
+// Format base slots (extra_stack = 48 for structs, 80 for vec/map):
 //   [sp+BASE_FRAME+0..BASE_FRAME+8)      bitset (u64) — tracks which required fields
 //   [sp+BASE_FRAME+8..BASE_FRAME+16)     key_ptr (*const u8) — borrowed pointer into input
 //   [sp+BASE_FRAME+16..BASE_FRAME+24)    key_len (usize)
 //   [sp+BASE_FRAME+24..BASE_FRAME+32)    comma_or_end result (u8 + padding)
-//   [sp+BASE_FRAME+32..BASE_FRAME+40)    saved_cursor — saved input_ptr for solver restore
-//   [sp+BASE_FRAME+40..BASE_FRAME+48)    candidates — solver bitmask for object bucket disambiguation
+//   [sp+BASE_FRAME+32..BASE_FRAME+40)    saved_cursor — saved input_ptr for solver/string scan
+//   [sp+BASE_FRAME+40..BASE_FRAME+48)    candidates — solver bitmask / string scan temp
+//
+// Vec/map loop slots (must not overlap base slots — string scan writes to +32/+40):
+//   [sp+BASE_FRAME+48..BASE_FRAME+56)    saved_out — original output pointer
+//   [sp+BASE_FRAME+56..BASE_FRAME+64)    buf — heap buffer pointer
+//   [sp+BASE_FRAME+64..BASE_FRAME+72)    len — current element count
+//   [sp+BASE_FRAME+72..BASE_FRAME+80)    cap — current capacity
 pub(crate) const BITSET_OFFSET: u32 = BASE_FRAME;
 pub(crate) const KEY_PTR_OFFSET: u32 = BASE_FRAME + 8;
 pub(crate) const KEY_LEN_OFFSET: u32 = BASE_FRAME + 16;
