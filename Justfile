@@ -41,8 +41,11 @@ bench:
 
 # Run all benchmarks and generate bench_report/index.html
 bench-report:
-    ( cargo bench --bench deser_json; cargo bench --bench deser_postcard; ) 2>/dev/null \
-        | cargo run --example bench_report
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo bench --bench deser_json 2>/dev/null > /tmp/bench_out.txt
+    cargo bench --bench deser_postcard 2>/dev/null >> /tmp/bench_out.txt
+    cargo run --example bench_report < /tmp/bench_out.txt
 
 # Check + clippy
 check:

@@ -799,8 +799,8 @@ static MAP_MEDIUM_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
 
 // ── Cached compiled deserializers: maps ─────────────────────────────────────
 
-static FAD_MAP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(MapFacet::SHAPE, &fad::json::FadJson)
+static FAD_MAP: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(MapFacet::SHAPE, &fad::json::FadJson)
 });
 
 // ── Benchmarks: HashMap<String, u32> (4 entries) ──────────────────────────
@@ -865,8 +865,8 @@ struct MapStructFacet {
 
 static MAP_STRUCT_JSON: &[u8] = br#"{"roster": {"alice": {"age": 25, "name": "Alice"}, "bob": {"age": 30, "name": "Bob"}, "carol": {"age": 35, "name": "Carol"}}}"#;
 
-static FAD_MAP_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(MapStructFacet::SHAPE, &fad::json::FadJson)
+static FAD_MAP_STRUCT: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(MapStructFacet::SHAPE, &fad::json::FadJson)
 });
 
 // ── Benchmarks: HashMap<String, Friend> (3 entries) ────────────────────────
@@ -949,16 +949,16 @@ static HEAVY_ESCAPE_JSON: &[u8] = br#"{"first": "Alice \"Al\" Johnson", "last": 
 
 // ── Cached compiled deserializers: strings ──────────────────────────────────
 
-static FAD_MANY_STRINGS: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(ManyStringsFacet::SHAPE, &fad::json::FadJson)
+static FAD_MANY_STRINGS: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(ManyStringsFacet::SHAPE, &fad::json::FadJson)
 });
 
-static FAD_LONG_STRING: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(LongStringFacet::SHAPE, &fad::json::FadJson)
+static FAD_LONG_STRING: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(LongStringFacet::SHAPE, &fad::json::FadJson)
 });
 
-static FAD_VEC_STRING: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(StringVecFacet::SHAPE, &fad::json::FadJson)
+static FAD_VEC_STRING: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(StringVecFacet::SHAPE, &fad::json::FadJson)
 });
 
 // ── Benchmarks: 6 short string fields (fast path) ─────────────────────────
