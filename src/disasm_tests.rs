@@ -217,6 +217,15 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
 }
 
 fn normalize_inst(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix("mov ") {
+        if let Some((reg, imm)) = rest.split_once(", 0x") {
+            let hex_len = imm.len();
+            if reg.starts_with('r') && hex_len >= 10 {
+                return format!("mov {reg}, 0x<imm>");
+            }
+        }
+    }
+
     for op in ["mov", "movk"] {
         let op_prefix = format!("{op} ");
         if let Some(rest) = text.strip_prefix(&op_prefix) {

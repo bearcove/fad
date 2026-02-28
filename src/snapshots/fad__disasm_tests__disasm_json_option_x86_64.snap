@@ -17,7 +17,7 @@ expression: out
 000034:  mov qword [rsp + 0x30], 0x0
 000040:  mov qword [r15], r12
 000047:  mov rdi, r15
-00004a:  mov rax, 0x5555557cbe50
+00004a:  mov rax, 0x<imm>
 000054:  call rax
 000056:  mov r12, qword [r15]
 00005d:  mov r10d, dword [r15 + 0x10]
@@ -26,7 +26,7 @@ expression: out
 00006d:  mov qword [r15], r12
 000074:  mov rdi, r15
 000077:  lea rsi, qword [rsp + 0x48]
-00007f:  mov rax, 0x5555557cc060
+00007f:  mov rax, 0x<imm>
 000089:  call rax
 00008b:  mov r12, qword [r15]
 000092:  mov r10d, dword [r15 + 0x10]
@@ -39,7 +39,7 @@ expression: out
 0000bf:  mov rdi, r15
 0000c2:  lea rsi, qword [rsp + 0x38]
 0000ca:  lea rdx, qword [rsp + 0x40]
-0000d2:  mov rax, 0x5555557cd4b0
+0000d2:  mov rax, 0x<imm>
 0000dc:  call rax
 0000de:  mov r12, qword [r15]
 0000e5:  mov r10d, dword [r15 + 0x10]
@@ -47,7 +47,7 @@ expression: out
 0000ef:  jnz $+0x220
 0000f5:  mov qword [r15], r12
 0000fc:  mov rdi, r15
-0000ff:  mov rax, 0x5555557cbc50
+0000ff:  mov rax, 0x<imm>
 000109:  call rax
 00010b:  mov r12, qword [r15]
 000112:  mov r10d, dword [r15 + 0x10]
@@ -55,17 +55,17 @@ expression: out
 00011c:  jnz $+0x1f3
 000122:  mov rdi, qword [rsp + 0x38]
 00012a:  mov rsi, qword [rsp + 0x40]
-000132:  mov rdx, 0x5555555d2fdc
+000132:  mov rdx, 0x<imm>
 00013c:  mov ecx, 0x4
-000141:  mov rax, 0x5555557cbf50
+000141:  mov rax, 0x<imm>
 00014b:  call rax
 00014d:  test rax, rax
 000150:  jnz $+0x39
 000156:  mov rdi, qword [rsp + 0x38]
 00015e:  mov rsi, qword [rsp + 0x40]
-000166:  mov rdx, 0x5555555d3b5d
+000166:  mov rdx, 0x<imm>
 000170:  mov ecx, 0x3
-000175:  mov rax, 0x5555557cbf50
+000175:  mov rax, 0x<imm>
 00017f:  call rax
 000181:  test rax, rax
 000184:  jnz $+0x5b
@@ -73,7 +73,7 @@ expression: out
 00018f:  mov qword [r15], r12
 000196:  mov rdi, r15
 000199:  lea rsi, qword [r14]
-0001a0:  mov rax, 0x5555557cdad0
+0001a0:  mov rax, 0x<imm>
 0001aa:  call rax
 0001ac:  mov r12, qword [r15]
 0001b3:  mov r10d, dword [r15 + 0x10]
@@ -87,7 +87,7 @@ expression: out
 0001e5:  mov qword [r15], r12
 0001ec:  mov rdi, r15
 0001ef:  lea rsi, qword [r14 + 0x18]
-0001f6:  mov rax, 0x5555557ce210
+0001f6:  mov rax, 0x<imm>
 000200:  call rax
 000202:  mov r12, qword [r15]
 000209:  mov r10d, dword [r15 + 0x10]
@@ -100,7 +100,7 @@ expression: out
 000236:  jmp $+0x2d
 00023b:  mov qword [r15], r12
 000242:  mov rdi, r15
-000245:  mov rax, 0x5555557ce6f0
+000245:  mov rax, 0x<imm>
 00024f:  call rax
 000251:  mov r12, qword [r15]
 000258:  mov r10d, dword [r15 + 0x10]
@@ -109,7 +109,7 @@ expression: out
 000268:  mov qword [r15], r12
 00026f:  mov rdi, r15
 000272:  lea rsi, qword [rsp + 0x48]
-00027a:  mov rax, 0x5555557cb960
+00027a:  mov rax, 0x<imm>
 000284:  call rax
 000286:  mov r12, qword [r15]
 00028d:  mov r10d, dword [r15 + 0x10]
