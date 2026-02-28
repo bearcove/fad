@@ -45,40 +45,43 @@ fn parse_divan(s: &str) -> Vec<Group> {
             continue;
         }
 
-        // Is this a top-level group header?  Starts with ├ or ╰ without a │ prefix.
-        let trimmed = line.trim_start_matches(' ');
-        if (trimmed.starts_with('├') || trimmed.starts_with('╰')) && !line.starts_with('│') {
-            let segs: Vec<&str> = line.splitn(2, '│').collect();
-            let name = strip_box(segs[0]).trim().to_string();
-            if !name.is_empty() {
-                groups.push(Group { name, rows: Vec::new() });
+        // Find the indentation prefix (leading │ and spaces) and the content after it.
+        let prefix_len = line
+            .find(|c| c != '│' && c != ' ')
+            .unwrap_or(line.len());
+        let prefix = &line[..prefix_len];
+        let content = &line[prefix_len..];
+
+        if content.starts_with('├') || content.starts_with('╰') {
+            if prefix.is_empty() {
+                // No indentation → top-level group header
+                let segs: Vec<&str> = line.splitn(2, '│').collect();
+                let name = strip_box(segs[0]).trim().to_string();
+                if !name.is_empty() {
+                    groups.push(Group { name, rows: Vec::new() });
+                }
+            } else {
+                // Indented with │ or spaces → bench entry.
+                // Split on │ but skip a leading empty segment when the line
+                // itself begins with │ (bench entries in multi-group output).
+                let segs: Vec<&str> = line.split('│').collect();
+                let s = if segs.first().map_or(true, |s| s.trim().is_empty()) {
+                    &segs[1..]
+                } else {
+                    &segs[..]
+                };
+                // s[0] = name+fastest, s[1] = slowest, s[2] = median
+                if s.len() < 3 {
+                    continue;
+                }
+                let name = name_only(strip_box(s[0]).trim());
+                let Some(median_ns) = parse_time(s[2].trim()) else { continue };
+                if !name.is_empty() {
+                    if let Some(g) = groups.last_mut() {
+                        g.rows.push(Row { name, median_ns });
+                    }
+                }
             }
-            continue;
-        }
-
-        // Is this a bench row?  Starts with │.
-        if !line.starts_with('│') {
-            continue;
-        }
-
-        let segs: Vec<&str> = line.split('│').collect();
-        if segs.len() < 3 {
-            continue;
-        }
-
-        // First segment: tree chars + bench name + fastest value (we want the name only).
-        let first = strip_box(segs[0]);
-        let first = first.trim();
-        if first.is_empty() {
-            continue;
-        }
-
-        let name = name_only(first);
-        // Column order: [name+fastest | slowest | median | mean | samples | iters]
-        let Some(median_ns) = parse_time(segs[2].trim()) else { continue };
-
-        if let Some(g) = groups.last_mut() {
-            g.rows.push(Row { name, median_ns });
         }
     }
 
