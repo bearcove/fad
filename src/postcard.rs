@@ -197,16 +197,26 @@ impl Format for FadPostcard {
         // Set out = cursor (register move, no memory)
         ectx.emit_vec_loop_load_cursor(save_x23_slot);
 
+        // Redirect error_exit to error_cleanup during element emission.
+        // This way, inline scalar error paths (EOF, invalid varint) branch
+        // directly to the Vec cleanup code, making the per-iteration error
+        // check in the loop tail redundant.
+        let saved_error_exit = ectx.error_exit;
+        ectx.error_exit = error_cleanup;
+
         // Deserialize one element at out (offset 0)
         emit_elem(ectx);
 
-        // Check error, advance cursor register, branch back if cursor < end
-        ectx.emit_vec_loop_advance_cursor(
-            save_x23_slot,
+        ectx.error_exit = saved_error_exit;
+
+        // Advance cursor register, branch back if cursor < end.
+        // No error check needed: inline scalar paths branch to error_cleanup
+        // directly on error, and sub-function calls (composite elements) also
+        // propagate errors through error_exit which we redirected above.
+        ectx.emit_vec_loop_advance_no_error_check(
             save_x24_slot,
             elem_size,
             loop_label,
-            error_cleanup,
         );
 
         // === Write Vec to output ===

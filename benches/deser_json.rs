@@ -701,6 +701,7 @@ mod enum_untagged_nested_key {
 
 // ── Benchmarks: Vec<u32> (3 elements) ─────────────────────────────────────
 
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
 mod vec_scalar_small {
     use super::*;
 
@@ -726,6 +727,7 @@ mod vec_scalar_small {
 
 // ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
 
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
 mod vec_scalar_medium {
     use super::*;
 
@@ -749,6 +751,7 @@ mod vec_scalar_medium {
 
 // ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
 
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
 mod vec_struct {
     use super::*;
 

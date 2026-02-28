@@ -406,6 +406,9 @@ mod enum_struct_variant {
 
 // ── Benchmarks: Vec<u32> (3 elements) ─────────────────────────────────────
 
+// Vec benchmarks allocate per iteration — force enough iters to amortize
+// the ~41ns timer precision on Apple Silicon.
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
 mod vec_scalar_small {
     use super::*;
 
@@ -428,6 +431,7 @@ mod vec_scalar_small {
 
 // ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
 
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
 mod vec_scalar_medium {
     use super::*;
 
@@ -450,6 +454,7 @@ mod vec_scalar_medium {
 
 // ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
 
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
 mod vec_struct {
     use super::*;
 

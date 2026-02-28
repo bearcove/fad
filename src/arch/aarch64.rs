@@ -1299,6 +1299,25 @@ impl EmitCtx {
         );
     }
 
+    /// Advance the cursor register and loop back, without checking the error flag.
+    ///
+    /// Use this when all error paths within the loop body branch directly to
+    /// the error cleanup label (e.g. via redirected `error_exit`), making
+    /// the per-iteration error check redundant.
+    pub fn emit_vec_loop_advance_no_error_check(
+        &mut self,
+        _end_slot: u32,
+        elem_size: u32,
+        loop_label: DynamicLabel,
+    ) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; add x23, x23, elem_size
+            ; cmp x23, x24
+            ; b.lo =>loop_label
+        );
+    }
+
     /// Restore x23/x24 from stack. Must be called on every exit path from a Vec loop.
     pub fn emit_vec_restore_callee_saved(&mut self, save_x23_slot: u32, save_x24_slot: u32) {
         dynasm!(self.ops
