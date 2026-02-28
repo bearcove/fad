@@ -1704,6 +1704,131 @@ impl EmitCtx {
                         }
                     }
                 }
+
+                // ── Encode-direction ops ──────────────────────────────────
+                //
+                // In encode mode the register assignments are:
+                //   x19 = output_ptr (write cursor)
+                //   x20 = output_end
+                //   x21 = input struct pointer
+                //   x22 = EncodeContext pointer
+
+                Op::LoadFromInput { dst, offset, width } => {
+                    let offset = *offset;
+                    match (dst, width) {
+                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; ldrb w9, [x21, #offset]),
+                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; ldrh w9, [x21, #offset]),
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w9, [x21, #offset]),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x9, [x21, #offset]),
+                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; ldrb w10, [x21, #offset]),
+                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; ldrh w10, [x21, #offset]),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w10, [x21, #offset]),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x10, [x21, #offset]),
+                    }
+                }
+                Op::StoreToOutput { src, width } => {
+                    match (src, width) {
+                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w9, [x19] ; add x19, x19, #1),
+                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x19] ; add x19, x19, #2),
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w9, [x19] ; add x19, x19, #4),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x9, [x19] ; add x19, x19, #8),
+                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w10, [x19] ; add x19, x19, #1),
+                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w10, [x19] ; add x19, x19, #2),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w10, [x19] ; add x19, x19, #4),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x10, [x19] ; add x19, x19, #8),
+                    }
+                }
+                Op::WriteByte { value } => {
+                    let value = *value as u32;
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; mov w9, #value
+                        ; strb w9, [x19]
+                        ; add x19, x19, #1
+                    );
+                }
+                Op::AdvanceOutput { count } => {
+                    let count = *count;
+                    if count > 0 {
+                        dynasm!(self.ops ; .arch aarch64 ; add x19, x19, #count);
+                    }
+                }
+                Op::AdvanceOutputBySlot { slot } => match slot {
+                    Slot::A => dynasm!(self.ops ; .arch aarch64 ; add x19, x19, x9),
+                    Slot::B => dynasm!(self.ops ; .arch aarch64 ; add x19, x19, x10),
+                },
+                Op::OutputBoundsCheck { count } => {
+                    let count = *count;
+                    let have_space = self.ops.new_dynamic_label();
+                    let grow_ptr = crate::intrinsics::fad_output_grow as *const u8 as u64;
+
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; sub x11, x20, x19
+                        ; cmp x11, #count
+                        ; b.hs =>have_space
+
+                        // Not enough space — call fad_output_grow(ctx, needed)
+                        ; str x19, [x22, #ENC_OUTPUT_PTR]
+                        ; mov x0, x22
+                        ; movz x1, #count as u32, LSL #0
+                        ; movz x8, #((grow_ptr) & 0xFFFF) as u32
+                        ; movk x8, #((grow_ptr >> 16) & 0xFFFF) as u32, LSL #16
+                        ; movk x8, #((grow_ptr >> 32) & 0xFFFF) as u32, LSL #32
+                        ; movk x8, #((grow_ptr >> 48) & 0xFFFF) as u32, LSL #48
+                        ; blr x8
+                        ; ldr x19, [x22, #ENC_OUTPUT_PTR]
+                        ; ldr x20, [x22, #ENC_OUTPUT_END]
+                        ; ldr w11, [x22, #ENC_ERROR_CODE]
+                        ; cbnz w11, =>error_exit
+
+                        ; =>have_space
+                    );
+                }
+                Op::ZigzagEncode { slot } => match slot {
+                    // zigzag encode: (n << 1) ^ (n >> 31)
+                    Slot::A => dynasm!(self.ops
+                        ; .arch aarch64
+                        ; lsl w10, w9, #1
+                        ; asr w11, w9, #31
+                        ; eor w9, w10, w11
+                    ),
+                    Slot::B => dynasm!(self.ops
+                        ; .arch aarch64
+                        ; lsl w11, w10, #1
+                        ; asr w9, w10, #31
+                        ; eor w10, w11, w9
+                    ),
+                },
+                Op::EncodeVarint { slot } => {
+                    // Inline varint encoding loop.
+                    // While value >= 0x80: write (byte | 0x80), shift right 7.
+                    // Then write final byte.
+                    let loop_label = self.ops.new_dynamic_label();
+                    let done_label = self.ops.new_dynamic_label();
+
+                    // Move value to w11 to free up slot register
+                    match slot {
+                        Slot::A => dynasm!(self.ops ; .arch aarch64 ; mov w11, w9),
+                        Slot::B => dynasm!(self.ops ; .arch aarch64 ; mov w11, w10),
+                    }
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; =>loop_label
+                        ; cmp w11, #0x80
+                        ; b.lo =>done_label
+                        // Write (byte | 0x80)
+                        ; orr w9, w11, #0x80
+                        ; strb w9, [x19]
+                        ; add x19, x19, #1
+                        ; lsr w11, w11, #7
+                        ; b =>loop_label
+                        ; =>done_label
+                        // Write final byte
+                        ; strb w11, [x19]
+                        ; add x19, x19, #1
+                    );
+                }
             }
         }
 

@@ -83,6 +83,28 @@ pub enum Op {
         cap_off: u32,
         len_slot: Slot,
     },
+
+    // ── Encode-direction ops ──────────────────────────────────────────
+
+    /// Load `width` bytes from input struct at offset into slot.
+    LoadFromInput { dst: Slot, offset: u32, width: Width },
+    /// Store `width` bytes from slot to output buffer at current position, advancing output.
+    StoreToOutput { src: Slot, width: Width },
+    /// Write a literal byte to the output buffer, advancing by 1.
+    WriteByte { value: u8 },
+    /// Advance the output pointer by `count` bytes (no write).
+    AdvanceOutput { count: u32 },
+    /// Advance the output pointer by the value in slot.
+    AdvanceOutputBySlot { slot: Slot },
+    /// Ensure at least `count` bytes are available in the output buffer.
+    /// Calls fad_output_grow if needed.
+    OutputBoundsCheck { count: u32 },
+    /// Zigzag encode: slot = (slot << 1) ^ (slot >> (bits-1))
+    /// Operates on 32-bit values in the slot.
+    ZigzagEncode { slot: Slot },
+    /// Encode a value as a varint into the output buffer.
+    /// The value is in the slot (32-bit). Writes 1-5 bytes.
+    EncodeVarint { slot: Slot },
 }
 
 /// A recipe: a sequence of ops with a declared number of labels.
@@ -261,5 +283,43 @@ pub fn postcard_string_malum(
         Op::Branch { target: done },
         Op::BindLabel { index: done },
     ]);
+    r
+}
+
+// ── Encode recipes ──────────────────────────────────────────────────
+
+/// Write a raw scalar from input struct to output buffer.
+/// Ensures capacity, loads from input at `offset`, stores to output.
+pub fn encode_raw(offset: u32, width: Width) -> Recipe {
+    let byte_count = match width {
+        Width::W1 => 1,
+        Width::W2 => 2,
+        Width::W4 => 4,
+        Width::W8 => 8,
+    };
+    let mut r = Recipe::new();
+    r.ops.extend([
+        Op::OutputBoundsCheck { count: byte_count },
+        Op::LoadFromInput { dst: Slot::A, offset, width },
+        Op::StoreToOutput { src: Slot::A, width },
+    ]);
+    r
+}
+
+/// Encode a value as a varint. Loads from input at `offset` with `width`,
+/// optionally zigzag-encodes, then writes the varint to output.
+pub fn encode_varint(offset: u32, width: Width, zigzag: bool) -> Recipe {
+    // A 32-bit varint is at most 5 bytes; 64-bit is at most 10.
+    let max_bytes = match width {
+        Width::W1 | Width::W2 | Width::W4 => 5,
+        Width::W8 => 10,
+    };
+    let mut r = Recipe::new();
+    r.ops.push(Op::OutputBoundsCheck { count: max_bytes });
+    r.ops.push(Op::LoadFromInput { dst: Slot::A, offset, width });
+    if zigzag {
+        r.ops.push(Op::ZigzagEncode { slot: Slot::A });
+    }
+    r.ops.push(Op::EncodeVarint { slot: Slot::A });
     r
 }
