@@ -107,6 +107,11 @@ pub trait Format {
         false
     }
 
+    /// Whether this format can safely treat string slices as trusted UTF-8 input.
+    fn supports_trusted_utf8_input(&self) -> bool {
+        false
+    }
+
     /// Emit code to deserialize all fields of a struct.
     ///
     /// The format controls field ordering. For postcard, this just iterates
