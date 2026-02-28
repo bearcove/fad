@@ -766,3 +766,145 @@ pub unsafe extern "C" fn fad_output_grow(ctx: *mut EncodeContext, needed: usize)
     let ctx = unsafe { &mut *ctx };
     unsafe { ctx.grow(needed) };
 }
+
+/// Helper: write a u32 as a varint into the output buffer.
+/// Assumes sufficient capacity has already been ensured.
+/// Returns the number of bytes written.
+unsafe fn write_varint32(ptr: *mut u8, mut value: u32) -> usize {
+    let start = ptr;
+    let mut p = ptr;
+    while value >= 0x80 {
+        unsafe {
+            *p = (value as u8) | 0x80;
+            p = p.add(1);
+        }
+        value >>= 7;
+    }
+    unsafe {
+        *p = value as u8;
+        p = p.add(1);
+        p.offset_from(start) as usize
+    }
+}
+
+/// Helper: write a u64 as a varint into the output buffer.
+/// Assumes sufficient capacity has already been ensured.
+/// Returns the number of bytes written.
+unsafe fn write_varint64(ptr: *mut u8, mut value: u64) -> usize {
+    let start = ptr;
+    let mut p = ptr;
+    while value >= 0x80 {
+        unsafe {
+            *p = (value as u8) | 0x80;
+            p = p.add(1);
+        }
+        value >>= 7;
+    }
+    unsafe {
+        *p = value as u8;
+        p = p.add(1);
+        p.offset_from(start) as usize
+    }
+}
+
+/// Helper: write a u128 as a varint into the output buffer.
+/// Assumes sufficient capacity has already been ensured.
+/// Returns the number of bytes written.
+unsafe fn write_varint128(ptr: *mut u8, mut value: u128) -> usize {
+    let start = ptr;
+    let mut p = ptr;
+    while value >= 0x80 {
+        unsafe {
+            *p = (value as u8) | 0x80;
+            p = p.add(1);
+        }
+        value >>= 7;
+    }
+    unsafe {
+        *p = value as u8;
+        p = p.add(1);
+        p.offset_from(start) as usize
+    }
+}
+
+/// Ensure the output buffer has at least `needed` bytes of capacity.
+/// If not, grows the buffer.
+unsafe fn ensure_capacity(ctx: &mut EncodeContext, needed: usize) {
+    if ctx.remaining() < needed {
+        unsafe { ctx.grow(needed) };
+    }
+}
+
+/// Encode a String/&str/Cow<str> as postcard: varint(len) + raw UTF-8 bytes.
+///
+/// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+/// Reads ptr and len from the string's memory layout using discovered offsets.
+pub unsafe extern "C" fn fad_encode_postcard_string(
+    ctx: *mut EncodeContext,
+    field_ptr: *const u8,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let offsets = crate::malum::discover_string_offsets();
+
+    // Read the data pointer and length from the string's layout.
+    let data_ptr = unsafe { *(field_ptr.add(offsets.ptr_offset as usize) as *const *const u8) };
+    let data_len = unsafe { *(field_ptr.add(offsets.len_offset as usize) as *const usize) };
+
+    // Max varint32 is 5 bytes for the length prefix.
+    let needed = 5 + data_len;
+    unsafe { ensure_capacity(ctx, needed) };
+
+    // Write varint-encoded length.
+    let written = unsafe { write_varint32(ctx.output_ptr, data_len as u32) };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(written) };
+
+    // Copy string bytes.
+    if data_len > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(data_ptr, ctx.output_ptr, data_len);
+            ctx.output_ptr = ctx.output_ptr.add(data_len);
+        }
+    }
+}
+
+/// Encode a u128 as a varint.
+///
+/// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+pub unsafe extern "C" fn fad_encode_u128(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const u128) };
+    // u128 varint is at most 19 bytes.
+    unsafe { ensure_capacity(ctx, 19) };
+    let written = unsafe { write_varint128(ctx.output_ptr, value) };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(written) };
+}
+
+/// Encode an i128 as zigzag + varint.
+///
+/// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+pub unsafe extern "C" fn fad_encode_i128(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const i128) };
+    // Zigzag encode: (value << 1) ^ (value >> 127)
+    let encoded = ((value << 1) ^ (value >> 127)) as u128;
+    unsafe { ensure_capacity(ctx, 19) };
+    let written = unsafe { write_varint128(ctx.output_ptr, encoded) };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(written) };
+}
+
+/// Encode a char as length-prefixed UTF-8 bytes (postcard wire format).
+///
+/// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+pub unsafe extern "C" fn fad_encode_char(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const char) };
+    let mut buf = [0u8; 4];
+    let utf8 = value.encode_utf8(&mut buf);
+    let len = utf8.len();
+    // varint(len) takes at most 1 byte (len <= 4), plus up to 4 UTF-8 bytes
+    unsafe { ensure_capacity(ctx, 5) };
+    let varint_written = unsafe { write_varint32(ctx.output_ptr, len as u32) };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(varint_written) };
+    unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ctx.output_ptr, len) };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(len) };
+}

@@ -99,12 +99,17 @@ pub enum Op {
     /// Ensure at least `count` bytes are available in the output buffer.
     /// Calls fad_output_grow if needed.
     OutputBoundsCheck { count: u32 },
+    /// Sign-extend a narrower value in the slot to full register width.
+    /// `from` is the source width (W1 or W2); the value is sign-extended
+    /// to 32-bit (or 64-bit if `wide` is true in the subsequent zigzag).
+    SignExtend { slot: Slot, from: Width },
     /// Zigzag encode: slot = (slot << 1) ^ (slot >> (bits-1))
-    /// Operates on 32-bit values in the slot.
-    ZigzagEncode { slot: Slot },
+    /// When `wide` is true, operates on the full 64-bit register.
+    ZigzagEncode { slot: Slot, wide: bool },
     /// Encode a value as a varint into the output buffer.
-    /// The value is in the slot (32-bit). Writes 1-5 bytes.
-    EncodeVarint { slot: Slot },
+    /// When `wide` is true, uses 64-bit register (up to 10 bytes).
+    /// When false, uses 32-bit register (up to 5 bytes).
+    EncodeVarint { slot: Slot, wide: bool },
 }
 
 /// A recipe: a sequence of ops with a declared number of labels.
@@ -309,17 +314,21 @@ pub fn encode_raw(offset: u32, width: Width) -> Recipe {
 /// Encode a value as a varint. Loads from input at `offset` with `width`,
 /// optionally zigzag-encodes, then writes the varint to output.
 pub fn encode_varint(offset: u32, width: Width, zigzag: bool) -> Recipe {
+    let wide = matches!(width, Width::W8);
     // A 32-bit varint is at most 5 bytes; 64-bit is at most 10.
-    let max_bytes = match width {
-        Width::W1 | Width::W2 | Width::W4 => 5,
-        Width::W8 => 10,
-    };
+    let max_bytes = if wide { 10 } else { 5 };
     let mut r = Recipe::new();
     r.ops.push(Op::OutputBoundsCheck { count: max_bytes });
     r.ops.push(Op::LoadFromInput { dst: Slot::A, offset, width });
     if zigzag {
-        r.ops.push(Op::ZigzagEncode { slot: Slot::A });
+        // Sign-extend narrow values before zigzag encoding.
+        // W1 and W2 loads are zero-extended by LoadFromInput, but zigzag
+        // needs the sign bit to be in the right position.
+        if matches!(width, Width::W1 | Width::W2) {
+            r.ops.push(Op::SignExtend { slot: Slot::A, from: width });
+        }
+        r.ops.push(Op::ZigzagEncode { slot: Slot::A, wide });
     }
-    r.ops.push(Op::EncodeVarint { slot: Slot::A });
+    r.ops.push(Op::EncodeVarint { slot: Slot::A, wide });
     r
 }

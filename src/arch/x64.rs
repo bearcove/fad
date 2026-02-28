@@ -1883,52 +1883,95 @@ impl EmitCtx {
                         ; =>have_space
                     );
                 }
-                Op::ZigzagEncode { slot } => match slot {
-                    // zigzag encode: (n << 1) ^ (n >> 31)
-                    Slot::A => dynasm!(self.ops
+                Op::SignExtend { slot, from } => match (slot, from) {
+                    (Slot::A, Width::W1) => dynasm!(self.ops ; .arch x64 ; movsx r10d, r10b),
+                    (Slot::A, Width::W2) => dynasm!(self.ops ; .arch x64 ; movsx r10d, r10w),
+                    (Slot::B, Width::W1) => dynasm!(self.ops ; .arch x64 ; movsx r11d, r11b),
+                    (Slot::B, Width::W2) => dynasm!(self.ops ; .arch x64 ; movsx r11d, r11w),
+                    (_, Width::W4 | Width::W8) => {} // already at natural width
+                },
+                Op::ZigzagEncode { slot, wide } => match (slot, wide) {
+                    // zigzag encode 32-bit: (n << 1) ^ (n >> 31)
+                    (Slot::A, false) => dynasm!(self.ops
                         ; .arch x64
                         ; mov r11d, r10d
                         ; shl r11d, 1
                         ; sar r10d, 31
                         ; xor r10d, r11d
                     ),
-                    Slot::B => dynasm!(self.ops
+                    (Slot::B, false) => dynasm!(self.ops
                         ; .arch x64
                         ; mov r10d, r11d
                         ; shl r10d, 1
                         ; sar r11d, 31
                         ; xor r11d, r10d
                     ),
+                    // zigzag encode 64-bit: (n << 1) ^ (n >> 63)
+                    (Slot::A, true) => dynasm!(self.ops
+                        ; .arch x64
+                        ; mov r11, r10
+                        ; shl r11, 1
+                        ; sar r10, 63
+                        ; xor r10, r11
+                    ),
+                    (Slot::B, true) => dynasm!(self.ops
+                        ; .arch x64
+                        ; mov r10, r11
+                        ; shl r10, 1
+                        ; sar r11, 63
+                        ; xor r11, r10
+                    ),
                 },
-                Op::EncodeVarint { slot } => {
+                Op::EncodeVarint { slot, wide } => {
                     // Inline varint encoding loop.
                     // While value >= 0x80: write (byte | 0x80), shift right 7.
                     // Then write final byte.
                     let loop_label = self.ops.new_dynamic_label();
                     let done_label = self.ops.new_dynamic_label();
 
-                    // Move value to eax to free up slot register
-                    match slot {
-                        Slot::A => dynasm!(self.ops ; .arch x64 ; mov eax, r10d),
-                        Slot::B => dynasm!(self.ops ; .arch x64 ; mov eax, r11d),
+                    if *wide {
+                        // 64-bit varint: use rax
+                        match slot {
+                            Slot::A => dynasm!(self.ops ; .arch x64 ; mov rax, r10),
+                            Slot::B => dynasm!(self.ops ; .arch x64 ; mov rax, r11),
+                        }
+                        dynasm!(self.ops
+                            ; .arch x64
+                            ; =>loop_label
+                            ; cmp rax, 0x80
+                            ; jb =>done_label
+                            ; mov r10d, eax
+                            ; or r10b, 0x80u8 as i8
+                            ; mov [r12], r10b
+                            ; add r12, 1
+                            ; shr rax, 7
+                            ; jmp =>loop_label
+                            ; =>done_label
+                            ; mov [r12], al
+                            ; add r12, 1
+                        );
+                    } else {
+                        // 32-bit varint: use eax
+                        match slot {
+                            Slot::A => dynasm!(self.ops ; .arch x64 ; mov eax, r10d),
+                            Slot::B => dynasm!(self.ops ; .arch x64 ; mov eax, r11d),
+                        }
+                        dynasm!(self.ops
+                            ; .arch x64
+                            ; =>loop_label
+                            ; cmp eax, 0x80
+                            ; jb =>done_label
+                            ; mov r10d, eax
+                            ; or r10b, 0x80u8 as i8
+                            ; mov [r12], r10b
+                            ; add r12, 1
+                            ; shr eax, 7
+                            ; jmp =>loop_label
+                            ; =>done_label
+                            ; mov [r12], al
+                            ; add r12, 1
+                        );
                     }
-                    dynasm!(self.ops
-                        ; .arch x64
-                        ; =>loop_label
-                        ; cmp eax, 0x80
-                        ; jb =>done_label
-                        // Write (byte | 0x80)
-                        ; mov r10d, eax
-                        ; or r10b, 0x80u8 as i8
-                        ; mov [r12], r10b
-                        ; add r12, 1
-                        ; shr eax, 7
-                        ; jmp =>loop_label
-                        ; =>done_label
-                        // Write final byte
-                        ; mov [r12], al
-                        ; add r12, 1
-                    );
                 }
             }
         }
@@ -2670,6 +2713,36 @@ impl EmitCtx {
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, QWORD arg1_val);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, QWORD arg1_val);
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Emit a call to an encode intrinsic: fn(ctx, input + field_offset).
+    /// Passes the input data pointer offset by `field_offset` as the second argument.
+    /// Flushes output, calls, reloads output_ptr + output_end, checks error.
+    pub fn emit_enc_call_intrinsic_with_input(&mut self, fn_ptr: *const u8, field_offset: u32) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
+            ; mov rdi, r15
+            ; lea rsi, [r14 + field_offset as i32]
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, r15
+            ; lea rdx, [r14 + field_offset as i32]
+        );
         dynasm!(self.ops
             ; .arch x64
             ; mov rax, QWORD ptr_val

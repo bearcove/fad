@@ -105,6 +105,18 @@ impl core::fmt::Display for DeserError {
 
 impl std::error::Error for DeserError {}
 
+/// Serialize a value using a compiled encoder, returning the output bytes.
+pub fn serialize<T: facet::Facet<'static>>(
+    encoder: &CompiledEncoder,
+    value: &T,
+) -> Vec<u8> {
+    let mut ctx = context::EncodeContext::new();
+    unsafe {
+        (encoder.func())(value as *const T as *const u8, &mut ctx);
+    }
+    ctx.into_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -3373,6 +3385,207 @@ mod tests {
                 name: "test".into(),
             }
         );
+    }
+
+    // --- Encode tests ---
+
+    #[test]
+    fn postcard_encode_simple_struct() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct FriendSerde {
+            age: u32,
+            name: String,
+        }
+
+        let serde_val = FriendSerde {
+            age: 42,
+            name: "Alice".into(),
+        };
+        let expected = ::postcard::to_allocvec(&serde_val).unwrap();
+
+        let facet_val = Friend {
+            age: 42,
+            name: "Alice".into(),
+        };
+        let enc = compile_encoder(Friend::SHAPE, &postcard::FadPostcard);
+        let got = serialize(&enc, &facet_val);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn postcard_encode_all_scalars() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct AllScalarsSerde {
+            a_bool: bool,
+            a_u8: u8,
+            a_u16: u16,
+            a_u32: u32,
+            a_u64: u64,
+            a_u128: u128,
+            a_usize: usize,
+            a_i8: i8,
+            a_i16: i16,
+            a_i32: i32,
+            a_i64: i64,
+            a_i128: i128,
+            a_isize: isize,
+            a_f32: f32,
+            a_f64: f64,
+            a_char: char,
+            a_name: String,
+        }
+
+        let serde_val = AllScalarsSerde {
+            a_bool: true,
+            a_u8: 200,
+            a_u16: 1000,
+            a_u32: 70000,
+            a_u64: 1_000_000_000_000,
+            a_u128: 18_446_744_073_709_551_621u128,
+            a_usize: 12345,
+            a_i8: -42,
+            a_i16: -1000,
+            a_i32: -70000,
+            a_i64: -1_000_000_000_000,
+            a_i128: -18_446_744_073_709_551_621i128,
+            a_isize: -12345,
+            a_f32: 3.14,
+            a_f64: 2.718281828459045,
+            a_char: 'ß',
+            a_name: "hello".into(),
+        };
+        let expected = ::postcard::to_allocvec(&serde_val).unwrap();
+
+        let facet_val = AllScalars {
+            a_bool: true,
+            a_u8: 200,
+            a_u16: 1000,
+            a_u32: 70000,
+            a_u64: 1_000_000_000_000,
+            a_u128: 18_446_744_073_709_551_621u128,
+            a_usize: 12345,
+            a_i8: -42,
+            a_i16: -1000,
+            a_i32: -70000,
+            a_i64: -1_000_000_000_000,
+            a_i128: -18_446_744_073_709_551_621i128,
+            a_isize: -12345,
+            a_f32: 3.14,
+            a_f64: 2.718281828459045,
+            a_char: 'ß',
+            a_name: "hello".into(),
+        };
+        let enc = compile_encoder(AllScalars::SHAPE, &postcard::FadPostcard);
+        let got = serialize(&enc, &facet_val);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn postcard_encode_nested_struct() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct InnerSerde {
+            x: u32,
+            y: u32,
+        }
+        #[derive(Serialize)]
+        struct OuterSerde {
+            inner: InnerSerde,
+            label: String,
+        }
+
+        let serde_val = OuterSerde {
+            inner: InnerSerde { x: 10, y: 20 },
+            label: "test".into(),
+        };
+        let expected = ::postcard::to_allocvec(&serde_val).unwrap();
+
+        #[derive(Facet)]
+        struct Inner {
+            x: u32,
+            y: u32,
+        }
+        #[derive(Facet)]
+        struct Outer {
+            inner: Inner,
+            label: String,
+        }
+
+        let facet_val = Outer {
+            inner: Inner { x: 10, y: 20 },
+            label: "test".into(),
+        };
+        let enc = compile_encoder(Outer::SHAPE, &postcard::FadPostcard);
+        let got = serialize(&enc, &facet_val);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn postcard_encode_empty_string() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct WithStringSerde {
+            name: String,
+        }
+
+        let serde_val = WithStringSerde { name: String::new() };
+        let expected = ::postcard::to_allocvec(&serde_val).unwrap();
+
+        #[derive(Facet)]
+        struct WithString {
+            name: String,
+        }
+
+        let facet_val = WithString { name: String::new() };
+        let enc = compile_encoder(WithString::SHAPE, &postcard::FadPostcard);
+        let got = serialize(&enc, &facet_val);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn postcard_encode_long_string() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct WithStringSerde {
+            data: String,
+        }
+
+        // 300 bytes — varint length requires 2 bytes
+        let long = "a".repeat(300);
+
+        let serde_val = WithStringSerde { data: long.clone() };
+        let expected = ::postcard::to_allocvec(&serde_val).unwrap();
+
+        #[derive(Facet)]
+        struct WithString {
+            data: String,
+        }
+
+        let facet_val = WithString { data: long };
+        let enc = compile_encoder(WithString::SHAPE, &postcard::FadPostcard);
+        let got = serialize(&enc, &facet_val);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn postcard_encode_roundtrip() {
+        // Encode with fad, decode with fad — full roundtrip.
+        let original = Friend {
+            age: 42,
+            name: "Alice".into(),
+        };
+        let enc = compile_encoder(Friend::SHAPE, &postcard::FadPostcard);
+        let bytes = serialize(&enc, &original);
+        let dec = compile_decoder(Friend::SHAPE, &postcard::FadPostcard);
+        let decoded: Friend = deserialize(&dec, &bytes).unwrap();
+        assert_eq!(decoded, original);
     }
 }
 
