@@ -345,7 +345,8 @@ impl Format for FadJson {
         ectx.emit_call_intrinsic(fn_ptr, offset as u32);
     }
 
-    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize) {
+    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize, _string_offsets: &crate::malum::StringOffsets) {
+        // JSON string malum deferred — escape handling complexity makes it less impactful.
         ectx.emit_call_intrinsic(
             json_intrinsics::fad_json_read_string_value as *const u8,
             offset as u32,

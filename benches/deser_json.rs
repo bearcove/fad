@@ -402,6 +402,7 @@ static FACET_JSON_JIT_FLAT: LazyLock<
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod flat_struct {
     use super::*;
 
@@ -439,6 +440,7 @@ mod flat_struct {
 
 // ── Benchmarks: nested struct ───────────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod nested_struct {
     use super::*;
 
@@ -518,6 +520,7 @@ mod enum_external {
 
 // ── Benchmarks: flatten ───────────────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod flatten {
     use super::*;
 

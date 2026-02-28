@@ -729,6 +729,107 @@ impl EmitCtx {
         );
     }
 
+    /// Emit postcard string deserialization with malum (direct layout write).
+    ///
+    /// Same varint decode + bounds check as `emit_inline_postcard_string`, but
+    /// instead of passing `out+offset` to the intrinsic and having it write a
+    /// `String` object, the intrinsic returns a raw buffer pointer and the JIT
+    /// writes `(ptr, len, cap)` directly at discovered offsets.
+    pub fn emit_inline_postcard_string_malum(
+        &mut self,
+        offset: u32,
+        string_offsets: &crate::malum::StringOffsets,
+        slow_varint_intrinsic: *const u8,
+        validate_alloc_copy_intrinsic: *const u8,
+    ) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let varint_slow = self.ops.new_dynamic_label();
+        let have_length = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+        let varint_ptr = slow_varint_intrinsic as u64;
+        let alloc_ptr = validate_alloc_copy_intrinsic as u64;
+
+        let ptr_off = offset + string_offsets.ptr_offset;
+        let len_off = offset + string_offsets.len_offset;
+        let cap_off = offset + string_offsets.cap_offset;
+
+        // Step 1: Inline varint length decode (identical to non-malum)
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cmp x19, x20
+            ; b.hs =>eof_label
+            ; ldrb w9, [x19]
+            ; tbnz w9, #7, =>varint_slow
+            ; add x19, x19, #1
+            ; b =>have_length
+
+            ; =>varint_slow
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            ; mov x0, x22
+            ; add x1, sp, #48
+            ; movz x8, #((varint_ptr) & 0xFFFF) as u32
+            ; movk x8, #((varint_ptr >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((varint_ptr >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((varint_ptr >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+            ; ldr x19, [x22, #CTX_INPUT_PTR]
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+            ; ldr w9, [sp, #48]
+            ; b =>have_length
+        );
+
+        // Step 2: Bounds check + call validate_alloc_copy + write (ptr, len, cap)
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; =>have_length
+            // w9 = string length. Save to stack.
+            ; str w9, [sp, #48]
+
+            // Bounds check
+            ; sub x10, x20, x19
+            ; cmp x10, x9
+            ; b.lo =>eof_label
+
+            // Call fad_string_validate_alloc_copy(ctx, input_ptr, length)
+            // Returns buf pointer in x0 (or null on error)
+            ; str x19, [x22, #CTX_INPUT_PTR]
+            ; mov x0, x22                   // arg0: ctx
+            ; mov x1, x19                   // arg1: data_ptr
+            ; mov w2, w9                    // arg2: data_len
+            ; movz x8, #((alloc_ptr) & 0xFFFF) as u32
+            ; movk x8, #((alloc_ptr >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((alloc_ptr >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((alloc_ptr >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+
+            // Check error
+            ; ldr w10, [x22, #CTX_ERROR_CODE]
+            ; cbnz w10, =>error_exit
+
+            // x0 = buf pointer, reload length from stack
+            ; ldr w9, [sp, #48]
+
+            // Write String fields directly: ptr, len, cap at discovered offsets
+            ; str x0, [x21, #ptr_off]       // string.ptr = buf
+            ; str x9, [x21, #len_off]       // string.len = length
+            ; str x9, [x21, #cap_off]       // string.cap = length (exact alloc)
+
+            // Advance cursor
+            ; add x19, x19, x9
+            ; b =>done_label
+
+            // Cold: eof
+            ; =>eof_label
+            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+
+            ; =>done_label
+        );
+    }
+
     // ── Enum support ──────────────────────────────────────────────────
 
     // r[impl deser.enum.set-variant]

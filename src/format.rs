@@ -2,7 +2,7 @@ use dynasmrt::DynamicLabel;
 use facet::{ScalarType, StructKind};
 
 use crate::arch::EmitCtx;
-use crate::malum::VecOffsets;
+use crate::malum::{StringOffsets, VecOffsets};
 
 // r[impl no-ir.format-trait]
 
@@ -97,7 +97,10 @@ pub trait Format {
     fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType);
 
     /// Emit code to read a String and write it to `out + offset`.
-    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize);
+    ///
+    /// `string_offsets` provides the discovered `(ptr, len, cap)` field offsets
+    /// within String's memory layout, enabling direct writes.
+    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize, string_offsets: &StringOffsets);
 
     /// Emit code to deserialize an enum value.
     ///

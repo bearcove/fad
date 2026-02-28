@@ -5,6 +5,7 @@ use facet::{Def, EnumRepr, ListDef, OptionDef, ScalarType, Shape, Type, UserType
 
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
+use crate::malum::StringOffsets;
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
 pub struct CompiledDeser {
@@ -53,15 +54,18 @@ struct Compiler<'fmt> {
     /// Stack offset where Option inner values can be temporarily deserialized.
     /// Zero if no Options are present.
     option_scratch_offset: u32,
+    /// Discovered String layout offsets (ptr, len, cap).
+    string_offsets: StringOffsets,
 }
 
 impl<'fmt> Compiler<'fmt> {
-    fn new(extra_stack: u32, option_scratch_offset: u32, format: &'fmt dyn Format) -> Self {
+    fn new(extra_stack: u32, option_scratch_offset: u32, string_offsets: StringOffsets, format: &'fmt dyn Format) -> Self {
         Compiler {
             ectx: EmitCtx::new(extra_stack),
             format,
             shapes: HashMap::new(),
             option_scratch_offset,
+            string_offsets,
         }
     }
 
@@ -159,10 +163,11 @@ impl<'fmt> Compiler<'fmt> {
 
         let format = self.format;
         let option_scratch_offset = self.option_scratch_offset;
+        let string_offsets = &self.string_offsets;
         let ectx = &mut self.ectx;
 
         format.emit_struct_fields(ectx, &fields, &mut |ectx, field| {
-            emit_field(ectx, format, field, &fields, &nested, option_scratch_offset);
+            emit_field(ectx, format, field, &fields, &nested, option_scratch_offset, string_offsets);
         });
 
         self.ectx.end_func(error_exit);
@@ -199,6 +204,7 @@ impl<'fmt> Compiler<'fmt> {
 
         let format = self.format;
         let option_scratch_offset = self.option_scratch_offset;
+        let string_offsets = &self.string_offsets;
 
         format.emit_vec(
             &mut self.ectx,
@@ -209,7 +215,7 @@ impl<'fmt> Compiler<'fmt> {
             option_scratch_offset,
             &mut |ectx| {
                 // Emit element deserialization. Out is already redirected to the slot.
-                emit_elem(ectx, format, elem_shape, elem_label, option_scratch_offset);
+                emit_elem(ectx, format, elem_shape, elem_label, option_scratch_offset, string_offsets);
             },
         );
 
@@ -280,6 +286,7 @@ impl<'fmt> Compiler<'fmt> {
 
         let format = self.format;
         let option_scratch_offset = self.option_scratch_offset;
+        let string_offsets = &self.string_offsets;
         let ectx = &mut self.ectx;
 
         // Detect tagging mode from shape metadata.
@@ -298,13 +305,13 @@ impl<'fmt> Compiler<'fmt> {
 
             if variant.kind == VariantKind::Struct && !inline {
                 format.emit_struct_fields(ectx, &variant.fields, &mut |ectx, field| {
-                    emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset);
+                    emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
                 });
                 return;
             }
 
             for field in &variant.fields {
-                emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset);
+                emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
             }
         };
 
@@ -338,7 +345,7 @@ impl<'fmt> Compiler<'fmt> {
                     },
                     &mut |ectx, variant, field| {
                         let nested = &nested_labels[variant.index];
-                        emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset);
+                        emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
                     },
                 );
             }
@@ -500,6 +507,7 @@ fn emit_field(
     all_fields: &[FieldEmitInfo],
     nested: &[Option<DynamicLabel>],
     option_scratch_offset: u32,
+    string_offsets: &StringOffsets,
 ) {
     // Find this field's index by matching offset.
     let idx = all_fields
@@ -520,11 +528,11 @@ fn emit_field(
             if let Some(label) = nested[idx] {
                 ectx.emit_call_emitted_func(label, 0);
             } else if is_struct(inner_shape) && format.supports_inline_nested() {
-                emit_inline_struct(ectx, format, inner_shape, 0, option_scratch_offset);
+                emit_inline_struct(ectx, format, inner_shape, 0, option_scratch_offset, string_offsets);
             } else {
                 match inner_shape.scalar_type() {
                     Some(ScalarType::String) => {
-                        format.emit_read_string(ectx, 0);
+                        format.emit_read_string(ectx, 0, string_offsets);
                     }
                     Some(st) => {
                         format.emit_read_scalar(ectx, 0, st);
@@ -549,13 +557,13 @@ fn emit_field(
     // r[impl deser.nested-struct]
     // r[impl deser.nested-struct.offset]
     if is_struct(field.shape) && format.supports_inline_nested() {
-        emit_inline_struct(ectx, format, field.shape, field.offset, option_scratch_offset);
+        emit_inline_struct(ectx, format, field.shape, field.offset, option_scratch_offset, string_offsets);
         return;
     }
 
     match field.shape.scalar_type() {
         Some(ScalarType::String) => {
-            format.emit_read_string(ectx, field.offset);
+            format.emit_read_string(ectx, field.offset, string_offsets);
         }
         Some(st) => {
             format.emit_read_scalar(ectx, field.offset, st);
@@ -576,15 +584,16 @@ fn emit_elem(
     elem_shape: &'static Shape,
     elem_label: Option<DynamicLabel>,
     option_scratch_offset: u32,
+    string_offsets: &StringOffsets,
 ) {
     if let Some(label) = elem_label {
         ectx.emit_call_emitted_func(label, 0);
     } else if is_struct(elem_shape) && format.supports_inline_nested() {
-        emit_inline_struct(ectx, format, elem_shape, 0, option_scratch_offset);
+        emit_inline_struct(ectx, format, elem_shape, 0, option_scratch_offset, string_offsets);
     } else {
         match elem_shape.scalar_type() {
             Some(ScalarType::String) => {
-                format.emit_read_string(ectx, 0);
+                format.emit_read_string(ectx, 0, string_offsets);
             }
             Some(st) => {
                 format.emit_read_scalar(ectx, 0, st);
@@ -608,6 +617,7 @@ fn emit_inline_struct(
     shape: &'static Shape,
     base_offset: usize,
     option_scratch_offset: u32,
+    string_offsets: &StringOffsets,
 ) {
     let inner_fields = collect_fields(shape);
     let adjusted: Vec<FieldEmitInfo> = inner_fields
@@ -624,7 +634,7 @@ fn emit_inline_struct(
     let no_nested = vec![None; adjusted.len()];
 
     format.emit_struct_fields(ectx, &adjusted, &mut |ectx, field| {
-        emit_field(ectx, format, field, &adjusted, &no_nested, option_scratch_offset);
+        emit_field(ectx, format, field, &adjusted, &no_nested, option_scratch_offset, string_offsets);
     });
 }
 
@@ -777,7 +787,10 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
         (0, format_extra)
     };
 
-    let mut compiler = Compiler::new(extra_stack, option_scratch_offset, format);
+    // Discover String layout offsets (cached after first call).
+    let string_offsets = crate::malum::discover_string_offsets();
+
+    let mut compiler = Compiler::new(extra_stack, option_scratch_offset, string_offsets, format);
     compiler.compile_shape(shape);
 
     // Get the entry offset for the root shape.

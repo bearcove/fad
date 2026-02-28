@@ -686,6 +686,100 @@ impl EmitCtx {
         );
     }
 
+    /// Emit postcard string deserialization with malum (direct layout write).
+    pub fn emit_inline_postcard_string_malum(
+        &mut self,
+        offset: u32,
+        string_offsets: &crate::malum::StringOffsets,
+        slow_varint_intrinsic: *const u8,
+        validate_alloc_copy_intrinsic: *const u8,
+    ) {
+        let error_exit = self.error_exit;
+        let eof_label = self.ops.new_dynamic_label();
+        let varint_slow = self.ops.new_dynamic_label();
+        let have_length = self.ops.new_dynamic_label();
+        let done_label = self.ops.new_dynamic_label();
+        let varint_ptr = slow_varint_intrinsic as i64;
+        let alloc_ptr = validate_alloc_copy_intrinsic as i64;
+
+        let ptr_off = (offset + string_offsets.ptr_offset) as i32;
+        let len_off = (offset + string_offsets.len_offset) as i32;
+        let cap_off = (offset + string_offsets.cap_offset) as i32;
+
+        // Step 1: Inline varint length decode (identical to non-malum)
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>eof_label
+            ; movzx r10d, BYTE [r12]
+            ; test r10d, 0x80
+            ; jnz =>varint_slow
+            ; add r12, 1
+            ; jmp =>have_length
+
+            ; =>varint_slow
+            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            ; mov rdi, r15
+            ; lea rsi, [rsp + 48]
+            ; mov rax, QWORD varint_ptr
+            ; call rax
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r11d, r11d
+            ; jnz =>error_exit
+            ; mov r10d, DWORD [rsp + 48]
+            ; jmp =>have_length
+        );
+
+        // Step 2: Bounds check + call validate_alloc_copy + write (ptr, len, cap)
+        dynasm!(self.ops
+            ; .arch x64
+            ; =>have_length
+            ; mov DWORD [rsp + 48], r10d
+
+            // Bounds check
+            ; mov r11, r13
+            ; sub r11, r12
+            ; cmp r11, r10
+            ; jb =>eof_label
+
+            // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
+            // Returns buf pointer in rax
+            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            ; mov rdi, r15                  // arg0: ctx
+            ; mov rsi, r12                  // arg1: data_ptr
+            ; mov edx, r10d                 // arg2: data_len
+            ; mov rax, QWORD alloc_ptr
+            ; call rax
+
+            // Check error
+            ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r11d, r11d
+            ; jnz =>error_exit
+
+            // rax = buf pointer, reload length
+            ; mov r10d, DWORD [rsp + 48]
+            // Zero-extend r10d to r10 for the 64-bit stores
+            // (mov r10d already zero-extends the upper 32 bits)
+
+            // Write String fields directly at discovered offsets
+            ; mov [r14 + ptr_off], rax       // string.ptr = buf
+            ; mov [r14 + len_off], r10       // string.len = length
+            ; mov [r14 + cap_off], r10       // string.cap = length
+
+            // Advance cursor
+            ; add r12, r10
+            ; jmp =>done_label
+
+            // Cold: eof
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
+            ; jmp =>error_exit
+
+            ; =>done_label
+        );
+    }
+
     // ── Enum support ──────────────────────────────────────────────────
 
     // r[impl deser.enum.set-variant]

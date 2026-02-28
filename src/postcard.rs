@@ -71,11 +71,12 @@ impl Format for FadPostcard {
         }
     }
 
-    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize) {
-        ectx.emit_inline_postcard_string(
+    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize, string_offsets: &crate::malum::StringOffsets) {
+        ectx.emit_inline_postcard_string_malum(
             offset as u32,
+            string_offsets,
             intrinsics::fad_read_varint_u32 as *const u8,
-            intrinsics::fad_postcard_validate_and_alloc_string as *const u8,
+            intrinsics::fad_string_validate_alloc_copy as *const u8,
         );
     }
 

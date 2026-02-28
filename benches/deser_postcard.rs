@@ -271,6 +271,7 @@ static FACET_JIT_FLAT: LazyLock<
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod flat_struct {
     use super::*;
 
@@ -309,6 +310,7 @@ mod flat_struct {
 
 // ── Benchmarks: nested struct ───────────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod nested_struct {
     use super::*;
 
@@ -368,6 +370,7 @@ mod deep_nested_struct {
 
 // ── Benchmarks: flatten ───────────────────────────────────────────────────
 
+#[divan::bench_group(sample_size = 65536)]
 mod flatten {
     use super::*;
 

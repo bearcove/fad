@@ -293,6 +293,51 @@ pub unsafe extern "C" fn fad_postcard_validate_and_alloc_string(
     unsafe { out.write(s.to_owned()) };
 }
 
+/// Validate UTF-8, allocate raw buffer, and copy bytes. Returns buffer pointer.
+///
+/// Malum string intrinsic — the JIT writes the returned pointer + len directly
+/// into the String's `(ptr, len, cap)` fields at discovered offsets, bypassing
+/// the intermediate `String` object.
+///
+/// Returns:
+/// - On success: pointer to allocated buffer containing the string bytes
+/// - On empty (data_len == 0): `1 as *mut u8` (dangling aligned pointer)
+/// - On error: null pointer (error code set on ctx)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_string_validate_alloc_copy(
+    ctx: *mut DeserContext,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> *mut u8 {
+    let len = data_len as usize;
+
+    // Empty string: return dangling pointer, JIT writes ptr/0/0.
+    if len == 0 {
+        return std::mem::align_of::<u8>() as *mut u8;
+    }
+
+    // Validate UTF-8.
+    let bytes = unsafe { core::slice::from_raw_parts(data_ptr, len) };
+    if core::str::from_utf8(bytes).is_err() {
+        let ctx = unsafe { &mut *ctx };
+        ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+        return core::ptr::null_mut();
+    }
+
+    // Allocate raw buffer (same allocator String uses).
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(len, 1) };
+    let buf = unsafe { std::alloc::alloc(layout) };
+    if buf.is_null() {
+        let ctx = unsafe { &mut *ctx };
+        ctx.error.code = ErrorCode::AllocError as u32;
+        return core::ptr::null_mut();
+    }
+
+    // Copy bytes.
+    unsafe { core::ptr::copy_nonoverlapping(data_ptr, buf, len) };
+    buf
+}
+
 // --- Vec intrinsics ---
 
 // r[impl seq.malum.alloc-compat]

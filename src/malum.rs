@@ -2,6 +2,7 @@
 
 use facet::{ListDef, PtrConst, PtrMut, PtrUninit, Shape};
 use std::mem::MaybeUninit;
+use std::sync::OnceLock;
 
 /// Returns true if the malum (direct Vec layout) path is enabled.
 ///
@@ -230,4 +231,154 @@ fn validate_offsets(
             .call_drop_in_place(PtrMut::new_sized(base_ptr))
             .expect("Vec<T> must have drop_in_place");
     }
+}
+
+// ── String layout discovery ──────────────────────────────────────────────
+
+/// Discovered String field offsets (in bytes from base of the String).
+///
+/// String has the same `(ptr, len, cap)` layout as `Vec<u8>`, but the field
+/// order is not guaranteed by `repr(Rust)`. These are probed at JIT-compile
+/// time by constructing a real `String`.
+#[derive(Debug, Clone, Copy)]
+pub struct StringOffsets {
+    pub ptr_offset: u32,
+    pub len_offset: u32,
+    pub cap_offset: u32,
+}
+
+/// Cached String offsets — String layout is the same for all instances.
+static STRING_OFFSETS: OnceLock<StringOffsets> = OnceLock::new();
+
+/// Discover the memory layout of `String` by probing a real instance.
+///
+/// Cached after first call — String's layout is fixed for the lifetime of
+/// the process.
+pub fn discover_string_offsets() -> StringOffsets {
+    *STRING_OFFSETS.get_or_init(discover_string_offsets_inner)
+}
+
+fn discover_string_offsets_inner() -> StringOffsets {
+    // Phase 1: Create a String with capacity 7 (distinctive value), len = 0.
+    let s = String::with_capacity(7);
+    let data_ptr = s.as_ptr() as usize;
+    let cap = s.capacity();
+    let len = s.len();
+
+    assert_eq!(len, 0);
+    assert!(cap >= 7, "String::with_capacity(7) should have cap >= 7, got {cap}");
+    assert_ne!(data_ptr, 0, "String data pointer should be non-null");
+
+    // Read the raw bytes as three usize words.
+    let base_ptr = &s as *const String as *const u8;
+    let words: [usize; 3] = unsafe { core::ptr::read(base_ptr as *const [usize; 3]) };
+
+    // Identify each field by matching against known values.
+    let mut ptr_offset: Option<u32> = None;
+    let mut len_offset: Option<u32> = None;
+    let mut cap_offset: Option<u32> = None;
+
+    for (i, &word) in words.iter().enumerate() {
+        let offset = (i * 8) as u32;
+
+        if word == data_ptr && ptr_offset.is_none() {
+            ptr_offset = Some(offset);
+        } else if word == cap && cap_offset.is_none() && word != 0 {
+            cap_offset = Some(offset);
+        } else if word == 0 && len_offset.is_none() {
+            len_offset = Some(offset);
+        }
+    }
+
+    // If cap == data_ptr (unlikely but possible), disambiguate with set_len.
+    if ptr_offset.is_none() || len_offset.is_none() || cap_offset.is_none() {
+        let mut s = s;
+        // Safety: we set len to 3 but never read the uninitialized bytes.
+        // We only inspect the raw words to find which field changed.
+        unsafe { s.as_mut_vec().set_len(3) };
+        let base_ptr2 = &s as *const String as *const u8;
+        let words2: [usize; 3] = unsafe { core::ptr::read(base_ptr2 as *const [usize; 3]) };
+
+        ptr_offset = None;
+        len_offset = None;
+        cap_offset = None;
+
+        for (i, (&word, &word2)) in words.iter().zip(words2.iter()).enumerate() {
+            let offset = (i * 8) as u32;
+            if word != word2 && word2 == 3 {
+                len_offset = Some(offset);
+            }
+        }
+
+        for (i, &word) in words.iter().enumerate() {
+            let offset = (i * 8) as u32;
+            if Some(offset) == len_offset {
+                continue;
+            }
+            if word == data_ptr && ptr_offset.is_none() {
+                ptr_offset = Some(offset);
+            } else if cap_offset.is_none() {
+                cap_offset = Some(offset);
+            }
+        }
+
+        // Reset len back to 0 before drop.
+        unsafe { s.as_mut_vec().set_len(0) };
+    } else {
+        drop(s);
+    }
+
+    let ptr_offset = ptr_offset.expect("could not identify String ptr field");
+    let len_offset = len_offset.expect("could not identify String len field");
+    let cap_offset = cap_offset.expect("could not identify String cap field");
+
+    assert_ne!(ptr_offset, len_offset, "ptr and len at same offset");
+    assert_ne!(ptr_offset, cap_offset, "ptr and cap at same offset");
+    assert_ne!(len_offset, cap_offset, "len and cap at same offset");
+
+    let offsets = StringOffsets {
+        ptr_offset,
+        len_offset,
+        cap_offset,
+    };
+
+    // Phase 2: Validation — create a second String and verify offsets.
+    validate_string_offsets(&offsets);
+
+    offsets
+}
+
+fn validate_string_offsets(offsets: &StringOffsets) {
+    let mut s = String::with_capacity(5);
+    let base_ptr = &s as *const String as *const u8;
+
+    let read_word = |offset: u32| -> usize {
+        unsafe { core::ptr::read(base_ptr.add(offset as usize) as *const usize) }
+    };
+
+    assert_eq!(read_word(offsets.ptr_offset), s.as_ptr() as usize);
+    assert_eq!(read_word(offsets.cap_offset), s.capacity());
+    assert_eq!(read_word(offsets.len_offset), s.len());
+
+    // Push some content and verify len changes.
+    s.push_str("hello");
+    // Re-read base_ptr since s may not have moved (capacity was 5, we wrote 5 bytes).
+    let base_ptr = &s as *const String as *const u8;
+    let read_word = |offset: u32| -> usize {
+        unsafe { core::ptr::read(base_ptr.add(offset as usize) as *const usize) }
+    };
+    assert_eq!(read_word(offsets.len_offset), 5);
+    assert_eq!(read_word(offsets.ptr_offset), s.as_ptr() as usize);
+
+    // Reserve more capacity, verify cap changes.
+    let old_cap = read_word(offsets.cap_offset);
+    s.reserve(1000);
+    let base_ptr = &s as *const String as *const u8;
+    let read_word = |offset: u32| -> usize {
+        unsafe { core::ptr::read(base_ptr.add(offset as usize) as *const usize) }
+    };
+    let new_cap = read_word(offsets.cap_offset);
+    assert!(new_cap >= 1000);
+    assert_ne!(old_cap, new_cap);
+    assert_eq!(read_word(offsets.ptr_offset), s.as_ptr() as usize);
 }
