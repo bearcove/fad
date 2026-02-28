@@ -68,6 +68,11 @@ impl Format for FadPostcard {
             ScalarType::I64 => ectx.emit_inline_varint_fast_path(
                 offset, 8, true, intrinsics::fad_read_i64 as _,
             ),
+            ScalarType::U128 => ectx.emit_call_intrinsic(intrinsics::fad_read_u128 as _, offset),
+            ScalarType::I128 => ectx.emit_call_intrinsic(intrinsics::fad_read_i128 as _, offset),
+            ScalarType::USize => ectx.emit_call_intrinsic(intrinsics::fad_read_usize as _, offset),
+            ScalarType::ISize => ectx.emit_call_intrinsic(intrinsics::fad_read_isize as _, offset),
+            ScalarType::Char => ectx.emit_call_intrinsic(intrinsics::fad_read_char as _, offset),
             _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
         }
     }
@@ -213,6 +218,8 @@ impl Format for FadPostcard {
                 ScalarType::I16 => Some((2, true, intrinsics::fad_read_i16 as *const u8)),
                 ScalarType::I32 => Some((4, true, intrinsics::fad_read_i32 as *const u8)),
                 ScalarType::I64 => Some((8, true, intrinsics::fad_read_i64 as *const u8)),
+                ScalarType::USize => Some((core::mem::size_of::<usize>() as u32, false, intrinsics::fad_read_usize as *const u8)),
+                ScalarType::ISize => Some((core::mem::size_of::<isize>() as u32, true, intrinsics::fad_read_isize as *const u8)),
                 _ => None,
             }
         });

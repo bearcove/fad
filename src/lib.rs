@@ -158,12 +158,17 @@ mod tests {
         a_u16: u16,
         a_u32: u32,
         a_u64: u64,
+        a_u128: u128,
+        a_usize: usize,
         a_i8: i8,
         a_i16: i16,
         a_i32: i32,
         a_i64: i64,
+        a_i128: i128,
+        a_isize: isize,
         a_f32: f32,
         a_f64: f64,
+        a_char: char,
         a_name: String,
     }
 
@@ -181,12 +186,17 @@ mod tests {
             a_u16: u16,
             a_u32: u32,
             a_u64: u64,
+            a_u128: u128,
+            a_usize: usize,
             a_i8: i8,
             a_i16: i16,
             a_i32: i32,
             a_i64: i64,
+            a_i128: i128,
+            a_isize: isize,
             a_f32: f32,
             a_f64: f64,
+            a_char: char,
             a_name: String,
         }
 
@@ -196,12 +206,17 @@ mod tests {
             a_u16: 1000,
             a_u32: 70000,
             a_u64: 1_000_000_000_000,
+            a_u128: 18_446_744_073_709_551_621u128,
+            a_usize: 12345,
             a_i8: -42,
             a_i16: -1000,
             a_i32: -70000,
             a_i64: -1_000_000_000_000,
+            a_i128: -18_446_744_073_709_551_621i128,
+            a_isize: -12345,
             a_f32: 3.14,
             a_f64: 2.718281828459045,
+            a_char: 'ß',
             a_name: "hello".into(),
         };
 
@@ -214,12 +229,17 @@ mod tests {
         assert_eq!(result.a_u16, 1000);
         assert_eq!(result.a_u32, 70000);
         assert_eq!(result.a_u64, 1_000_000_000_000);
+        assert_eq!(result.a_u128, 18_446_744_073_709_551_621u128);
+        assert_eq!(result.a_usize, 12345);
         assert_eq!(result.a_i8, -42);
         assert_eq!(result.a_i16, -1000);
         assert_eq!(result.a_i32, -70000);
         assert_eq!(result.a_i64, -1_000_000_000_000);
+        assert_eq!(result.a_i128, -18_446_744_073_709_551_621i128);
+        assert_eq!(result.a_isize, -12345);
         assert_eq!(result.a_f32, 3.14);
         assert_eq!(result.a_f64, 2.718281828459045);
+        assert_eq!(result.a_char, 'ß');
         assert_eq!(result.a_name, "hello");
     }
 
@@ -234,12 +254,17 @@ mod tests {
             "a_u16": 1000,
             "a_u32": 70000,
             "a_u64": 1000000000000,
+            "a_u128": 18446744073709551621,
+            "a_usize": 12345,
             "a_i8": -42,
             "a_i16": -1000,
             "a_i32": -70000,
             "a_i64": -1000000000000,
+            "a_i128": -18446744073709551621,
+            "a_isize": -12345,
             "a_f32": 3.14,
             "a_f64": 2.718281828459045,
+            "a_char": "\u00df",
             "a_name": "hello"
         }"#;
 
@@ -251,12 +276,17 @@ mod tests {
         assert_eq!(result.a_u16, 1000);
         assert_eq!(result.a_u32, 70000);
         assert_eq!(result.a_u64, 1_000_000_000_000);
+        assert_eq!(result.a_u128, 18_446_744_073_709_551_621u128);
+        assert_eq!(result.a_usize, 12345);
         assert_eq!(result.a_i8, -42);
         assert_eq!(result.a_i16, -1000);
         assert_eq!(result.a_i32, -70000);
         assert_eq!(result.a_i64, -1_000_000_000_000);
+        assert_eq!(result.a_i128, -18_446_744_073_709_551_621i128);
+        assert_eq!(result.a_isize, -12345);
         assert_eq!(result.a_f32, 3.14);
         assert_eq!(result.a_f64, 2.718281828459045);
+        assert_eq!(result.a_char, 'ß');
         assert_eq!(result.a_name, "hello");
     }
 
