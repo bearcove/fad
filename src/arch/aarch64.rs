@@ -1289,6 +1289,108 @@ impl EmitCtx {
         );
     }
 
+    // ── Map support ─────────────────────────────────────────────────
+
+    /// Advance the out register (x21) by a constant offset.
+    ///
+    /// Used in map loops to move from the key slot to the value slot within a pair.
+    pub fn emit_advance_out_by(&mut self, offset: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; add x21, x21, #offset
+        );
+    }
+
+    /// Call `fad_map_build(from_pair_slice_fn, saved_out, pairs_buf, count)`.
+    ///
+    /// We cannot call `from_pair_slice` directly from JIT code because its
+    /// first arg `PtrUninit` is a 16-byte struct (passed in 2 registers on
+    /// aarch64).  `fad_map_build` is a plain-C trampoline that takes four
+    /// pointer-/usize-sized args and constructs `PtrUninit` internally.
+    pub fn emit_call_map_from_pairs(
+        &mut self,
+        from_pair_slice_fn: *const u8,
+        saved_out_slot: u32,
+        buf_slot: u32,
+        count_slot: u32,
+    ) {
+        let fn_val = from_pair_slice_fn as u64;
+        let trampoline = crate::intrinsics::fad_map_build as *const u8;
+        let trampoline_val = trampoline as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Load from_pair_slice_fn via x8, then mov to x0 (arg0)
+            ; movz x8, #((fn_val) & 0xFFFF) as u32
+            ; movk x8, #((fn_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((fn_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((fn_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; mov x0, x8                       // arg0 = from_pair_slice_fn
+            ; ldr x1, [sp, #saved_out_slot]    // arg1 = map_ptr
+            ; ldr x2, [sp, #buf_slot]           // arg2 = pairs_ptr
+            ; ldr x3, [sp, #count_slot]         // arg3 = count
+            ; movz x8, #((trampoline_val) & 0xFFFF) as u32
+            ; movk x8, #((trampoline_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((trampoline_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((trampoline_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+        );
+    }
+
+    /// Call `fad_map_build(from_pair_slice_fn, x21, null, 0)` — empty map.
+    ///
+    /// Same trampoline pattern as `emit_call_map_from_pairs`.
+    pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
+        let fn_val = from_pair_slice_fn as u64;
+        let trampoline = crate::intrinsics::fad_map_build as *const u8;
+        let trampoline_val = trampoline as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; movz x8, #((fn_val) & 0xFFFF) as u32
+            ; movk x8, #((fn_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((fn_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((fn_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; mov x0, x8                       // arg0 = from_pair_slice_fn
+            ; mov x1, x21                      // arg1 = map_ptr (current out)
+            ; mov x2, xzr                      // arg2 = null (count=0, never read)
+            ; mov x3, xzr                      // arg3 = count = 0
+            ; movz x8, #((trampoline_val) & 0xFFFF) as u32
+            ; movk x8, #((trampoline_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((trampoline_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((trampoline_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+        );
+    }
+
+    /// Call `fad_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
+    ///
+    /// Used on the success path after `from_pair_slice` has moved the pairs into the map.
+    /// Does NOT branch to error exit (pairs free on success path, not error).
+    pub fn emit_call_pairs_free(
+        &mut self,
+        free_fn: *const u8,
+        buf_slot: u32,
+        cap_slot: u32,
+        pair_stride: u32,
+        pair_align: u32,
+    ) {
+        let ptr_val = free_fn as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x0, [sp, #buf_slot]
+            ; ldr x1, [sp, #cap_slot]
+            ; movz x2, pair_stride
+            ; movz x3, pair_align
+            ; movz x8, #((ptr_val) & 0xFFFF) as u32
+            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+        );
+    }
+
     // ── Recipe emission ─────────────────────────────────────────────
 
     /// Emit a recipe — interpret a sequence of micro-ops into aarch64 instructions.

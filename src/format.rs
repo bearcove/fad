@@ -1,5 +1,5 @@
 use dynasmrt::DynamicLabel;
-use facet::{ScalarType, StructKind};
+use facet::{MapDef, ScalarType, StructKind};
 
 use crate::arch::EmitCtx;
 use crate::malum::{StringOffsets, VecOffsets};
@@ -67,6 +67,12 @@ pub trait Format {
     /// This is separate from `extra_stack_space` because Vec functions
     /// need stack slots for buf, count, counter, and saved out pointer.
     fn vec_extra_stack_space(&self) -> u32 {
+        0
+    }
+
+    /// Extra stack bytes needed when deserializing a Map.
+    /// Uses the same buffer infrastructure as Vec, so the same stack layout.
+    fn map_extra_stack_space(&self) -> u32 {
         0
     }
 
@@ -220,5 +226,30 @@ pub trait Format {
         _emit_elem: &mut dyn FnMut(&mut EmitCtx),
     ) {
         panic!("Vec deserialization not supported by this format");
+    }
+
+    /// Emit code to deserialize a `Map<K, V>` (key-value collection).
+    ///
+    /// Two-pass approach: collect (K, V) pairs into a temporary buffer, then call
+    /// `map_def.vtable.from_pair_slice` to construct the final map in one shot.
+    ///
+    /// - `map_def`: facet vtable describing the map type and pair layout.
+    /// - `emit_key`: callback to emit deserialization of one key at `out` offset 0.
+    /// - `emit_value`: callback to emit deserialization of one value at `out` offset 0.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_map(
+        &self,
+        _ectx: &mut EmitCtx,
+        _offset: usize,
+        _map_def: &'static MapDef,
+        _k_shape: &'static facet::Shape,
+        _v_shape: &'static facet::Shape,
+        _k_label: Option<DynamicLabel>,
+        _v_label: Option<DynamicLabel>,
+        _option_scratch_offset: u32,
+        _emit_key: &mut dyn FnMut(&mut EmitCtx),
+        _emit_value: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        panic!("Map deserialization not supported by this format");
     }
 }
