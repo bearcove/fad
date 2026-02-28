@@ -1,3 +1,4 @@
 /target
 .claude
 callgrind.out.*
+bench_report/
