@@ -36,6 +36,11 @@ snapshots-all: snapshots-native snapshots-x86_64
 bench:
     cargo bench
 
+# Run all benchmarks and generate bench_report/index.html
+bench-report:
+    ( cargo bench --bench deser_json; cargo bench --bench deser_postcard; ) 2>/dev/null \
+        | cargo run --example bench_report
+
 # Check + clippy
 check:
     cargo check

@@ -1,6 +1,8 @@
 //! Parse divan bench output from stdin and generate bench_report/index.html.
 //!
-//!   cargo bench --bench deser_json | cargo run --example bench_report
+//!   cargo bench --bench deser_json 2>/dev/null | cargo run --example bench_report
+//!   # or via justfile:
+//!   just bench-report
 
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -9,20 +11,25 @@ fn main() {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).expect("failed to read stdin");
 
-    let groups = parse_divan(&input);
+    let sections = parse_divan(&input);
 
-    if groups.is_empty() {
+    if sections.is_empty() || sections.iter().all(|s| s.groups.is_empty()) {
         eprintln!("no groups parsed — pipe in `cargo bench` output");
         std::process::exit(1);
     }
 
-    let html = render(&groups);
+    let html = render(&sections);
     std::fs::create_dir_all("bench_report").unwrap();
     std::fs::write("bench_report/index.html", &html).unwrap();
     eprintln!("→ bench_report/index.html");
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
+
+struct Section {
+    label: String,
+    groups: Vec<Group>,
+}
 
 struct Group {
     name: String,
@@ -36,8 +43,8 @@ struct Row {
 
 // ── Parser ─────────────────────────────────────────────────────────────────
 
-fn parse_divan(s: &str) -> Vec<Group> {
-    let mut groups: Vec<Group> = Vec::new();
+fn parse_divan(s: &str) -> Vec<Section> {
+    let mut sections: Vec<Section> = Vec::new();
 
     for line in s.lines() {
         let line = line.trim_end();
@@ -45,10 +52,23 @@ fn parse_divan(s: &str) -> Vec<Group> {
             continue;
         }
 
+        // Divan header line: "deser_json   fastest │ slowest │ ..."
+        // It has no box-drawing prefix and contains "fastest".
+        if !line.starts_with('│') && !line.starts_with('├') && !line.starts_with('╰')
+            && line.contains("fastest")
+        {
+            let label = line.split_whitespace().next().unwrap_or("bench").to_string();
+            sections.push(Section { label, groups: Vec::new() });
+            continue;
+        }
+
+        // Ensure there's a section to add to (handle output with no header line).
+        if sections.is_empty() {
+            sections.push(Section { label: "bench".to_string(), groups: Vec::new() });
+        }
+
         // Find the indentation prefix (leading │ and spaces) and the content after it.
-        let prefix_len = line
-            .find(|c| c != '│' && c != ' ')
-            .unwrap_or(line.len());
+        let prefix_len = line.find(|c| c != '│' && c != ' ').unwrap_or(line.len());
         let prefix = &line[..prefix_len];
         let content = &line[prefix_len..];
 
@@ -58,26 +78,22 @@ fn parse_divan(s: &str) -> Vec<Group> {
                 let segs: Vec<&str> = line.splitn(2, '│').collect();
                 let name = strip_box(segs[0]).trim().to_string();
                 if !name.is_empty() {
-                    groups.push(Group { name, rows: Vec::new() });
+                    sections.last_mut().unwrap().groups.push(Group { name, rows: Vec::new() });
                 }
             } else {
-                // Indented with │ or spaces → bench entry.
-                // Split on │ but skip a leading empty segment when the line
-                // itself begins with │ (bench entries in multi-group output).
+                // Indented → bench entry. Skip leading empty segment from a │-prefixed line.
                 let segs: Vec<&str> = line.split('│').collect();
                 let s = if segs.first().map_or(true, |s| s.trim().is_empty()) {
                     &segs[1..]
                 } else {
                     &segs[..]
                 };
-                // s[0] = name+fastest, s[1] = slowest, s[2] = median
-                if s.len() < 3 {
-                    continue;
-                }
+                // s[0]=name+fastest, s[1]=slowest, s[2]=median
+                if s.len() < 3 { continue; }
                 let name = name_only(strip_box(s[0]).trim());
                 let Some(median_ns) = parse_time(s[2].trim()) else { continue };
                 if !name.is_empty() {
-                    if let Some(g) = groups.last_mut() {
+                    if let Some(g) = sections.last_mut().and_then(|s| s.groups.last_mut()) {
                         g.rows.push(Row { name, median_ns });
                     }
                 }
@@ -85,7 +101,7 @@ fn parse_divan(s: &str) -> Vec<Group> {
         }
     }
 
-    groups
+    sections
 }
 
 /// Strip all Unicode box-drawing chars: │ ├ ╰ ─ etc.
@@ -146,12 +162,18 @@ fn esc(s: &str) -> String {
 // ── HTML ───────────────────────────────────────────────────────────────────
 
 fn bar_color(name: &str) -> &'static str {
-    if name.starts_with("fad") { "#E8A820" }       // amber — fad
-    else if name.starts_with("serde") { "#4A9EFF" } // blue  — serde_json
-    else { "#4B5563" }                               // slate — others
+    if name.starts_with("fad") { "#E8A820" }          // amber  — fad
+    else if name.starts_with("serde") { "#4A9EFF" }   // blue   — serde_json
+    else if name.starts_with("postcard") { "#34D399" } // teal   — postcard_serde
+    else { "#4B5563" }                                 // slate  — others
 }
 
-fn render(groups: &[Group]) -> String {
+/// True if this bench is the "reference" to compare others against.
+fn is_reference(name: &str) -> bool {
+    name.starts_with("serde") || name.starts_with("postcard")
+}
+
+fn render(sections: &[Section]) -> String {
     let mut h = String::new();
 
     h.push_str(r#"<!DOCTYPE html>
@@ -166,7 +188,7 @@ fn render(groups: &[Group]) -> String {
 :root{
   --bg:#080B10;--surface:#0D1117;--border:#1C2128;
   --text:#8B949E;--bright:#E6EDF3;--dim:#484F58;
-  --fad:#E8A820;--serde:#4A9EFF;
+  --fad:#E8A820;--serde:#4A9EFF;--postcard:#34D399;
   --font-mono:"JetBrains Mono",monospace;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -187,10 +209,16 @@ h1{
 .legend{display:flex;gap:12px;align-items:center;margin-left:auto}
 .legend-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text)}
 .swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.section-label{
+  font-family:"Barlow Condensed",sans-serif;
+  font-size:16px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);margin:16px 0 8px;
+}
+.section-label:first-child{margin-top:0}
 .grid{
   display:grid;
   grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
-  gap:8px;
+  gap:8px;margin-bottom:8px;
 }
 .group{
   background:var(--surface);border:1px solid var(--border);
@@ -232,50 +260,58 @@ h1{
   <div class="legend">
     <div class="legend-item"><div class="swatch" style="background:var(--fad)"></div>fad</div>
     <div class="legend-item"><div class="swatch" style="background:var(--serde)"></div>serde_json</div>
+    <div class="legend-item"><div class="swatch" style="background:var(--postcard)"></div>postcard</div>
   </div>
 </header>
-<div class="grid">
 "#);
 
-    for group in groups {
-        // Filter out facet_json entries
-        let rows: Vec<&Row> = group.rows.iter()
-            .filter(|r| !r.name.starts_with("facet"))
+    for section in sections {
+        let non_empty: Vec<&Group> = section.groups.iter()
+            .filter(|g| g.rows.iter().any(|r| !r.name.starts_with("facet")))
             .collect();
+        if non_empty.is_empty() { continue; }
 
-        if rows.is_empty() { continue; }
+        write!(h, r#"<div class="section-label">{}</div><div class="grid">"#,
+            esc(&section.label)).unwrap();
 
-        let max_ns = rows.iter().map(|r| r.median_ns).fold(0.0f64, f64::max);
-        if max_ns == 0.0 { continue; }
+        for group in non_empty {
+            let rows: Vec<&Row> = group.rows.iter()
+                .filter(|r| !r.name.starts_with("facet"))
+                .collect();
+            if rows.is_empty() { continue; }
 
-        let ref_ns = rows.iter()
-            .find(|r| r.name.starts_with("serde"))
-            .map(|r| r.median_ns);
+            let max_ns = rows.iter().map(|r| r.median_ns).fold(0.0f64, f64::max);
+            if max_ns == 0.0 { continue; }
 
-        write!(h, r#"<div class="group"><div class="gname">{}</div>"#, esc(&group.name)).unwrap();
+            let ref_ns = rows.iter().find(|r| is_reference(&r.name)).map(|r| r.median_ns);
 
-        for row in &rows {
-            let pct = (row.median_ns / max_ns * 100.0).clamp(0.5, 100.0);
-            let color = bar_color(&row.name);
+            write!(h, r#"<div class="group"><div class="gname">{}</div>"#, esc(&group.name)).unwrap();
 
-            let delta_html = match ref_ns {
-                Some(ref_ns) if !row.name.starts_with("serde") => {
-                    let ratio = row.median_ns / ref_ns;
-                    if ratio < 1.0 {
-                        format!(r#"<span class="mdelta win">+{:.0}%</span>"#, (1.0 - ratio) * 100.0)
-                    } else {
-                        format!(r#"<span class="mdelta lose">-{:.0}%</span>"#, (ratio - 1.0) * 100.0)
+            for row in &rows {
+                let pct = (row.median_ns / max_ns * 100.0).clamp(0.5, 100.0);
+                let color = bar_color(&row.name);
+
+                let delta_html = match ref_ns {
+                    Some(ref_ns) if !is_reference(&row.name) => {
+                        let ratio = row.median_ns / ref_ns;
+                        if ratio < 1.0 {
+                            format!(r#"<span class="mdelta win">+{:.0}%</span>"#, (1.0 - ratio) * 100.0)
+                        } else {
+                            format!(r#"<span class="mdelta lose">-{:.0}%</span>"#, (ratio - 1.0) * 100.0)
+                        }
                     }
-                }
-                _ => String::new(),
-            };
+                    _ => String::new(),
+                };
 
-            write!(h, r#"<div class="row"><div class="bname">{}</div><div class="track"><div class="fill" style="width:{:.1}%;background:{}"></div></div><div class="meta"><span class="mtime">{}</span>{}</div></div>"#,
-                esc(&row.name), pct, color, fmt_time(row.median_ns), delta_html,
-            ).unwrap();
+                write!(h, r#"<div class="row"><div class="bname">{}</div><div class="track"><div class="fill" style="width:{:.1}%;background:{}"></div></div><div class="meta"><span class="mtime">{}</span>{}</div></div>"#,
+                    esc(&row.name), pct, color, fmt_time(row.median_ns), delta_html,
+                ).unwrap();
+            }
+
+            h.push_str("</div>\n");
         }
 
-        h.push_str("</div>\n");
+        h.push_str("</div>\n"); // close .grid
     }
 
     h.push_str("</div>\n</body>\n</html>\n");
