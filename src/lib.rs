@@ -3523,4 +3523,24 @@ mod tests {
         );
     }
 
+    #[derive(Facet, Debug, PartialEq)]
+    struct UnitField {
+        geo: (),
+        name: String,
+    }
+
+    #[test]
+    fn json_unit_field() {
+        let input = br#"{"geo": null, "name": "test"}"#;
+        let deser = compile_deser(UnitField::SHAPE, &json::FadJson);
+        let result: UnitField = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            UnitField {
+                geo: (),
+                name: "test".into(),
+            }
+        );
+    }
+
 }

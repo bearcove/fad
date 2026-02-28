@@ -767,6 +767,42 @@ impl EmitCtx {
         );
     }
 
+    /// Call wrapper(fn_ptr, out + offset, extra_ptr).
+    /// Used for `fad_field_default_indirect(default_fn, out, shape)`.
+    pub fn emit_call_trampoline_3(
+        &mut self,
+        wrapper_fn: *const u8,
+        fn_ptr: *const u8,
+        offset: u32,
+        extra_ptr: *const u8,
+    ) {
+        let wrapper_val = wrapper_fn as u64;
+        let fn_val = fn_ptr as u64;
+        let extra_val = extra_ptr as u64;
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // arg0: fn_ptr
+            ; movz x0, #((fn_val) & 0xFFFF) as u32
+            ; movk x0, #((fn_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x0, #((fn_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x0, #((fn_val >> 48) & 0xFFFF) as u32, LSL #48
+            // arg1: out + offset
+            ; add x1, x21, #offset
+            // arg2: extra_ptr
+            ; movz x2, #((extra_val) & 0xFFFF) as u32
+            ; movk x2, #((extra_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x2, #((extra_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x2, #((extra_val >> 48) & 0xFFFF) as u32, LSL #48
+            // Call wrapper
+            ; movz x8, #((wrapper_val) & 0xFFFF) as u32
+            ; movk x8, #((wrapper_val >> 16) & 0xFFFF) as u32, LSL #16
+            ; movk x8, #((wrapper_val >> 32) & 0xFFFF) as u32, LSL #32
+            ; movk x8, #((wrapper_val >> 48) & 0xFFFF) as u32, LSL #48
+            ; blr x8
+        );
+    }
+
     /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_some(

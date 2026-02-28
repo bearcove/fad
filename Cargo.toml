@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "canada"
 harness = false
+
+[[bench]]
+name = "twitter"
+harness = false

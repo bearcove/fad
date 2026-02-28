@@ -768,6 +768,35 @@ impl EmitCtx {
         dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
     }
 
+    /// Call wrapper(fn_ptr, out + offset, extra_ptr).
+    /// Used for `fad_field_default_indirect(default_fn, out, shape)`.
+    pub fn emit_call_trampoline_3(
+        &mut self,
+        wrapper_fn: *const u8,
+        fn_ptr: *const u8,
+        offset: u32,
+        extra_ptr: *const u8,
+    ) {
+        let wrapper_val = wrapper_fn as i64;
+        let fn_val = fn_ptr as i64;
+        let extra_val = extra_ptr as i64;
+
+        // arg0: fn_ptr, arg1: out + offset, arg2: extra_ptr
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
+            ; mov rdi, QWORD fn_val
+            ; lea rsi, [r14 + offset as i32]
+            ; mov rdx, QWORD extra_val
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, QWORD fn_val
+            ; lea rdx, [r14 + offset as i32]
+            ; mov r8, QWORD extra_val
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
+    }
+
     /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_some(

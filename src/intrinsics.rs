@@ -707,6 +707,28 @@ pub unsafe extern "C" fn fad_field_default_custom(
     unsafe { default_fn(ptr_uninit) };
 }
 
+/// Initialize a field to its default value using an indirect `TypeOpsIndirect.default_in_place`.
+///
+/// Indirect types (generic containers like `Option<T>`, `Vec<T>`) use wide pointers
+/// (`OxPtrUninit` = pointer + shape) instead of thin pointers. This trampoline constructs
+/// the `OxPtrUninit` from the raw output pointer and shape.
+///
+/// # Safety
+/// - `default_fn` must be a valid `unsafe fn(OxPtrUninit) -> bool`
+/// - `out` must point to uninitialized memory of the correct size/alignment
+/// - `shape` must be the correct `&'static Shape` for the type
+#[unsafe(no_mangle)]
+#[allow(improper_ctypes_definitions)]
+pub unsafe extern "C" fn fad_field_default_indirect(
+    default_fn: unsafe fn(facet::OxPtrUninit) -> bool,
+    out: *mut u8,
+    shape: &'static facet::Shape,
+) {
+    let ptr_uninit = PtrUninit::new_sized(out);
+    let ox = facet::OxPtrUninit::new(ptr_uninit, shape);
+    unsafe { default_fn(ox) };
+}
+
 /// Trampoline: call `from_pair_slice` with a plain *mut u8 map pointer.
 ///
 /// JIT code cannot directly call `from_pair_slice` because its first argument,

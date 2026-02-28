@@ -13,6 +13,9 @@ pub struct DefaultInfo {
     pub trampoline: *const u8,
     /// Pointer to the actual default function (from TypeOps or custom expression).
     pub fn_ptr: *const u8,
+    /// For indirect types (generic containers), the shape needed to construct OxPtrUninit.
+    /// When Some, the 3-argument trampoline `fad_field_default_indirect` is used.
+    pub shape: Option<&'static facet::Shape>,
 }
 
 /// Information about a struct field needed during code emission.

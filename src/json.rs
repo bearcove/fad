@@ -516,6 +516,13 @@ impl Format for FadJson {
     // r[impl deser.json.scalar.float]
     // r[impl deser.json.scalar.bool]
     fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
+        // Unit type: skip the JSON value (always null), write nothing (ZST).
+        if scalar_type == ScalarType::Unit {
+            ectx.emit_call_intrinsic_ctx_only(
+                json_intrinsics::fad_json_skip_value as *const u8,
+            );
+            return;
+        }
         if scalar_type == ScalarType::F64 {
             ectx.emit_jit_f64_parse(offset as u32);
             return;
@@ -1281,11 +1288,7 @@ fn emit_default_or_required_check(ectx: &mut EmitCtx, fields: &[FieldEmitInfo]) 
             // If bit IS set, skip the default call.
             ectx.emit_test_bit_branch(BITSET_OFFSET, field.required_index as u32, after_default);
             // Bit not set — call the default trampoline.
-            ectx.emit_call_option_init_none(
-                default_info.trampoline,
-                default_info.fn_ptr,
-                field.offset as u32,
-            );
+            crate::compiler::emit_default_init(ectx, default_info, field.offset as u32);
             ectx.bind_label(after_default);
         } else {
             required_mask |= 1u64 << field.required_index;

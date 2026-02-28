@@ -195,11 +195,7 @@ impl<'fmt> Compiler<'fmt> {
         // r[impl deser.skip]
         // Emit default initialization for skipped fields before the key-dispatch loop.
         for sf in &skipped_fields {
-            self.ectx.emit_call_option_init_none(
-                sf.default.trampoline,
-                sf.default.fn_ptr,
-                sf.offset as u32,
-            );
+            emit_default_init(&mut self.ectx, &sf.default, sf.offset as u32);
         }
 
         let format = self.format;
@@ -704,6 +700,7 @@ fn collect_fields_recursive(
                 Some(DefaultInfo {
                     trampoline: crate::intrinsics::fad_field_default_custom as *const u8,
                     fn_ptr: custom_fn as *const u8,
+                    shape: None,
                 })
             }
             Some(DefaultSource::FromTrait) => {
@@ -758,14 +755,16 @@ fn resolve_trait_default(shape: &'static Shape) -> Option<crate::format::Default
             Some(DefaultInfo {
                 trampoline: crate::intrinsics::fad_field_default_trait as *const u8,
                 fn_ptr: default_fn as *const u8,
+                shape: None,
             })
         }
-        facet::TypeOps::Indirect(_ops) => {
-            // Indirect types (unsized) — not supported for field defaults in JIT.
-            panic!(
-                "unsized type {} cannot have a field default in JIT deserializer",
-                shape.type_identifier
-            );
+        facet::TypeOps::Indirect(ops) => {
+            let default_fn = ops.default_in_place?;
+            Some(DefaultInfo {
+                trampoline: crate::intrinsics::fad_field_default_indirect as *const u8,
+                fn_ptr: default_fn as *const u8,
+                shape: Some(shape),
+            })
         }
     }
 }
@@ -879,13 +878,37 @@ fn unwrap_inner_or_self(shape: &'static Shape) -> &'static Shape {
 }
 
 /// Returns true if the shape is a struct type.
+/// Emit a default initialization call for a field.
+///
+/// Direct types use a 2-arg call (trampoline, fn_ptr, offset).
+/// Indirect types (generic containers) use a 3-arg call that also passes the shape.
+pub fn emit_default_init(ectx: &mut EmitCtx, default: &crate::format::DefaultInfo, offset: u32) {
+    if let Some(shape) = default.shape {
+        ectx.emit_call_trampoline_3(
+            default.trampoline,
+            default.fn_ptr,
+            offset,
+            shape as *const _ as *const u8,
+        );
+    } else {
+        ectx.emit_call_option_init_none(default.trampoline, default.fn_ptr, offset);
+    }
+}
+
+fn is_unit(shape: &'static Shape) -> bool {
+    shape.scalar_type() == Some(ScalarType::Unit)
+}
+
 fn is_struct(shape: &'static Shape) -> bool {
-    matches!(&shape.ty, Type::User(UserType::Struct(_)))
+    matches!(&shape.ty, Type::User(UserType::Struct(_))) && !is_unit(shape)
 }
 
 /// Returns true if the shape needs its own compiled function
 /// (struct, enum, vec, map, or smart pointer).
 fn is_composite(shape: &'static Shape) -> bool {
+    if is_unit(shape) {
+        return false;
+    }
     matches!(
         &shape.ty,
         Type::User(UserType::Struct(_) | UserType::Enum(_))
@@ -1103,11 +1126,7 @@ fn emit_inline_struct(
 
     // Emit default initialization for skipped fields in the inlined struct.
     for sf in &skipped_fields {
-        ectx.emit_call_option_init_none(
-            sf.default.trampoline,
-            sf.default.fn_ptr,
-            (base_offset + sf.offset) as u32,
-        );
+        emit_default_init(ectx, &sf.default, (base_offset + sf.offset) as u32);
     }
 
     let adjusted: Vec<FieldEmitInfo> = inner_fields
