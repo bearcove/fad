@@ -3330,4 +3330,197 @@ mod tests {
         );
     }
 
+    // ── Smart pointer tests ──────────────────────────────────────────
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct BoxedScalar {
+        value: Box<u32>,
+    }
+
+    // r[verify deser.pointer]
+    // r[verify deser.pointer.scratch]
+    // r[verify deser.pointer.new-into]
+    // r[verify deser.pointer.format-transparent]
+    #[test]
+    fn json_box_scalar() {
+        let input = br#"{"value": 42}"#;
+        let deser = compile_deser(BoxedScalar::SHAPE, &json::FadJson);
+        let result: BoxedScalar = deserialize(&deser, input).unwrap();
+        assert_eq!(result, BoxedScalar { value: Box::new(42) });
+    }
+
+    // r[verify deser.pointer]
+    // r[verify deser.pointer.format-transparent]
+    #[test]
+    fn postcard_box_scalar() {
+        // Box<u32> is wire-transparent, so the postcard encoding is identical
+        // to a struct with a bare u32 field: just a varint.
+        #[derive(serde::Serialize)]
+        struct Ref {
+            value: u32,
+        }
+        let input = ::postcard::to_allocvec(&Ref { value: 42 }).unwrap();
+        let deser = compile_deser(BoxedScalar::SHAPE, &postcard::FadPostcard);
+        let result: BoxedScalar = deserialize(&deser, &input).unwrap();
+        assert_eq!(result, BoxedScalar { value: Box::new(42) });
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct BoxedString {
+        name: Box<String>,
+    }
+
+    // r[verify deser.pointer]
+    #[test]
+    fn json_box_string() {
+        let input = br#"{"name": "hello"}"#;
+        let deser = compile_deser(BoxedString::SHAPE, &json::FadJson);
+        let result: BoxedString = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            BoxedString {
+                name: Box::new("hello".to_string()),
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct BoxedNested {
+        inner: Box<Friend>,
+    }
+
+    // r[verify deser.pointer]
+    #[test]
+    fn json_box_nested_struct() {
+        let input = br#"{"inner": {"age": 30, "name": "Bob"}}"#;
+        let deser = compile_deser(BoxedNested::SHAPE, &json::FadJson);
+        let result: BoxedNested = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            BoxedNested {
+                inner: Box::new(Friend {
+                    age: 30,
+                    name: "Bob".to_string(),
+                }),
+            }
+        );
+    }
+
+    // r[verify deser.pointer]
+    #[test]
+    fn postcard_box_nested_struct() {
+        // Box<Friend> is wire-transparent — same encoding as a bare Friend.
+        #[derive(serde::Serialize)]
+        struct Ref {
+            inner: RefInner,
+        }
+        #[derive(serde::Serialize)]
+        struct RefInner {
+            age: u32,
+            name: String,
+        }
+        let input = ::postcard::to_allocvec(&Ref {
+            inner: RefInner {
+                age: 30,
+                name: "Bob".to_string(),
+            },
+        })
+        .unwrap();
+        let deser = compile_deser(BoxedNested::SHAPE, &postcard::FadPostcard);
+        let result: BoxedNested = deserialize(&deser, &input).unwrap();
+        assert_eq!(
+            result,
+            BoxedNested {
+                inner: Box::new(Friend {
+                    age: 30,
+                    name: "Bob".to_string(),
+                }),
+            }
+        );
+    }
+
+    // r[verify deser.pointer.nesting]
+    #[derive(Facet, Debug, PartialEq)]
+    struct OptionBox {
+        value: Option<Box<u32>>,
+    }
+
+    #[test]
+    fn json_option_box_some() {
+        let input = br#"{"value": 7}"#;
+        let deser = compile_deser(OptionBox::SHAPE, &json::FadJson);
+        let result: OptionBox = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            OptionBox {
+                value: Some(Box::new(7)),
+            }
+        );
+    }
+
+    #[test]
+    fn json_option_box_none() {
+        let input = br#"{"value": null}"#;
+        let deser = compile_deser(OptionBox::SHAPE, &json::FadJson);
+        let result: OptionBox = deserialize(&deser, input).unwrap();
+        assert_eq!(result, OptionBox { value: None });
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct VecBox {
+        items: Vec<Box<u32>>,
+    }
+
+    // r[verify deser.pointer.nesting]
+    #[test]
+    fn json_vec_box() {
+        let input = br#"{"items": [1, 2, 3]}"#;
+        let deser = compile_deser(VecBox::SHAPE, &json::FadJson);
+        let result: VecBox = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            VecBox {
+                items: vec![Box::new(1), Box::new(2), Box::new(3)],
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct ArcScalar {
+        value: std::sync::Arc<u32>,
+    }
+
+    // r[verify deser.pointer]
+    #[test]
+    fn json_arc_scalar() {
+        let input = br#"{"value": 99}"#;
+        let deser = compile_deser(ArcScalar::SHAPE, &json::FadJson);
+        let result: ArcScalar = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            ArcScalar {
+                value: std::sync::Arc::new(99),
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct RcScalar {
+        value: std::rc::Rc<u32>,
+    }
+
+    // r[verify deser.pointer]
+    #[test]
+    fn json_rc_scalar() {
+        let input = br#"{"value": 77}"#;
+        let deser = compile_deser(RcScalar::SHAPE, &json::FadJson);
+        let result: RcScalar = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            RcScalar {
+                value: std::rc::Rc::new(77),
+            }
+        );
+    }
+
 }

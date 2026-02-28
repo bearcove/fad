@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use dynasmrt::{AssemblyOffset, DynamicLabel};
-use facet::{Def, EnumRepr, ListDef, MapDef, OptionDef, ScalarType, Shape, Type, UserType};
+use facet::{
+    Def, EnumRepr, KnownPointer, ListDef, MapDef, OptionDef, PointerDef, ScalarType, Shape, Type,
+    UserType,
+};
 
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format, SkippedFieldInfo, VariantEmitInfo, VariantKind};
@@ -123,6 +126,13 @@ impl<'fmt> Compiler<'fmt> {
             return entry_label;
         }
 
+        // r[impl deser.pointer]
+        // Check for smart pointers (Box<T>, Arc<T>, Rc<T>) — detected by Def::Pointer.
+        if let Some(ptr_def) = get_pointer_def(shape) {
+            self.compile_pointer(shape, ptr_def, entry_label);
+            return entry_label;
+        }
+
         match &shape.ty {
             Type::User(UserType::Struct(_)) => {
                 self.compile_struct(shape, entry_label);
@@ -152,7 +162,7 @@ impl<'fmt> Compiler<'fmt> {
             fields
                 .iter()
                 .map(|f| {
-                    let target = option_inner_or_self(f.shape);
+                    let target = unwrap_inner_or_self(f.shape);
                     // Lists (Vec<T>) and Maps always need pre-compilation.
                     // Enums always need pre-compilation (can't be inlined).
                     if matches!(&target.ty, Type::User(UserType::Enum(_)))
@@ -168,7 +178,7 @@ impl<'fmt> Compiler<'fmt> {
             fields
                 .iter()
                 .map(|f| {
-                    let target = option_inner_or_self(f.shape);
+                    let target = unwrap_inner_or_self(f.shape);
                     if is_composite(target) {
                         Some(self.compile_shape(target))
                     } else {
@@ -407,6 +417,87 @@ impl<'fmt> Compiler<'fmt> {
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
     }
 
+    // r[impl deser.pointer]
+    // r[impl deser.pointer.scratch]
+    // r[impl deser.pointer.format-transparent]
+
+    /// Compile a smart pointer (Box<T>, Arc<T>, Rc<T>) into a function.
+    ///
+    /// Smart pointers are wire-transparent: the wire format contains just T.
+    /// We deserialize T into the scratch area, then call `new_into_fn` to
+    /// wrap it into the heap-allocated pointer at `out + 0`.
+    fn compile_pointer(
+        &mut self,
+        shape: &'static Shape,
+        ptr_def: &'static PointerDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+
+        let pointee = ptr_def
+            .pointee
+            .unwrap_or_else(|| panic!("pointer {} has no pointee", shape.type_identifier));
+        let new_into_fn = ptr_def.vtable.new_into_fn.unwrap_or_else(|| {
+            panic!("pointer {} has no new_into_fn", shape.type_identifier)
+        });
+
+        // Pre-compile inner type if composite.
+        let inner_label = if needs_precompilation(pointee) {
+            Some(self.compile_shape(pointee))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_func();
+
+        let option_scratch_offset = self.option_scratch_offset;
+        let string_offsets = &self.string_offsets;
+
+        // Redirect out to scratch area.
+        self.ectx.emit_redirect_out_to_stack(option_scratch_offset);
+
+        // Deserialize inner T at offset 0 (scratch area).
+        if let Some(label) = inner_label {
+            self.ectx.emit_call_emitted_func(label, 0);
+        } else if is_struct(pointee) && self.format.supports_inline_nested() {
+            emit_inline_struct(
+                &mut self.ectx,
+                self.format,
+                pointee,
+                0,
+                option_scratch_offset,
+                string_offsets,
+            );
+        } else {
+            match pointee.scalar_type() {
+                Some(st) if is_string_like_scalar(st) => {
+                    self.format
+                        .emit_read_string(&mut self.ectx, 0, st, string_offsets);
+                }
+                Some(st) => {
+                    self.format.emit_read_scalar(&mut self.ectx, 0, st);
+                }
+                None => panic!(
+                    "unsupported pointer inner type: {}",
+                    pointee.type_identifier,
+                ),
+            }
+        }
+
+        // Restore out, then call new_into_fn to wrap T into the pointer.
+        self.ectx.emit_restore_out(option_scratch_offset);
+        self.ectx.emit_call_option_init_some(
+            crate::intrinsics::fad_pointer_new_into as *const u8,
+            new_into_fn as *const u8,
+            0, // offset=0: function receives out pointing to the pointer slot
+            option_scratch_offset,
+        );
+
+        self.ectx.end_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
     // r[impl deser.postcard.enum]
     // r[impl deser.json.enum.external]
 
@@ -433,7 +524,7 @@ impl<'fmt> Compiler<'fmt> {
                     v.fields
                         .iter()
                         .map(|f| {
-                            let target = option_inner_or_self(f.shape);
+                            let target = unwrap_inner_or_self(f.shape);
                             if matches!(&target.ty, Type::User(UserType::Enum(_)))
                                 || matches!(&target.def, Def::List(_) | Def::Map(_))
                             {
@@ -452,7 +543,7 @@ impl<'fmt> Compiler<'fmt> {
                     v.fields
                         .iter()
                         .map(|f| {
-                            let target = option_inner_or_self(f.shape);
+                            let target = unwrap_inner_or_self(f.shape);
                             if is_composite(target) {
                                 Some(self.compile_shape(target))
                             } else {
@@ -752,13 +843,39 @@ fn get_option_def(shape: &'static Shape) -> Option<&'static OptionDef> {
     }
 }
 
-/// If the shape is an Option, return the inner T's shape; otherwise return the shape itself.
-/// Used for nested label pre-compilation — we need to compile the inner T, not Option<T>.
-fn option_inner_or_self(shape: &'static Shape) -> &'static Shape {
-    match get_option_def(shape) {
-        Some(opt_def) => opt_def.t,
-        None => shape,
+// r[impl deser.pointer]
+
+/// Returns the PointerDef if this shape is a supported smart pointer (Box, Arc, Rc).
+fn get_pointer_def(shape: &'static Shape) -> Option<&'static PointerDef> {
+    match &shape.def {
+        Def::Pointer(ptr_def)
+            if matches!(
+                ptr_def.known,
+                Some(KnownPointer::Box | KnownPointer::Arc | KnownPointer::Rc)
+            ) =>
+        {
+            Some(ptr_def)
+        }
+        _ => None,
     }
+}
+
+// r[impl deser.pointer.nesting]
+
+/// If the shape is an Option or smart pointer, return the inner T's shape;
+/// otherwise return the shape itself.
+/// Used for nested label pre-compilation — we need to compile the inner T,
+/// not Option<T> or Box<T>.
+fn unwrap_inner_or_self(shape: &'static Shape) -> &'static Shape {
+    if let Some(opt_def) = get_option_def(shape) {
+        return opt_def.t;
+    }
+    if let Some(ptr_def) = get_pointer_def(shape) {
+        if let Some(pointee) = ptr_def.pointee {
+            return pointee;
+        }
+    }
+    shape
 }
 
 /// Returns true if the shape is a struct type.
@@ -766,16 +883,17 @@ fn is_struct(shape: &'static Shape) -> bool {
     matches!(&shape.ty, Type::User(UserType::Struct(_)))
 }
 
-/// Returns true if the shape needs its own compiled function (struct, enum, vec, or map).
+/// Returns true if the shape needs its own compiled function
+/// (struct, enum, vec, map, or smart pointer).
 fn is_composite(shape: &'static Shape) -> bool {
     matches!(
         &shape.ty,
         Type::User(UserType::Struct(_) | UserType::Enum(_))
     ) || matches!(&shape.def, Def::List(_) | Def::Map(_))
+        || get_pointer_def(shape).is_some()
 }
 
 /// Returns true if the shape needs pre-compilation as a separate function.
-/// This includes structs, enums, and lists (Vec<T>).
 fn needs_precompilation(shape: &'static Shape) -> bool {
     is_composite(shape)
 }
@@ -846,6 +964,51 @@ fn emit_field(
                     }
                 }
             },
+        );
+        return;
+    }
+
+    // r[impl deser.pointer]
+    // r[impl deser.pointer.scratch]
+    // Check if this field is a smart pointer (Box<T>, Arc<T>, Rc<T>).
+    if let Some(ptr_def) = get_pointer_def(field.shape) {
+        let pointee = ptr_def
+            .pointee
+            .unwrap_or_else(|| panic!("pointer {} has no pointee", field.shape.type_identifier));
+        let new_into_fn = ptr_def.vtable.new_into_fn.unwrap_or_else(|| {
+            panic!("pointer {} has no new_into_fn", field.shape.type_identifier)
+        });
+
+        // Redirect out to scratch area, deserialize inner T, then wrap.
+        ectx.emit_redirect_out_to_stack(option_scratch_offset);
+
+        // Deserialize inner T at offset 0 (scratch area).
+        if let Some(label) = nested[idx] {
+            ectx.emit_call_emitted_func(label, 0);
+        } else if is_struct(pointee) && format.supports_inline_nested() {
+            emit_inline_struct(ectx, format, pointee, 0, option_scratch_offset, string_offsets);
+        } else {
+            match pointee.scalar_type() {
+                Some(st) if is_string_like_scalar(st) => {
+                    format.emit_read_string(ectx, 0, st, string_offsets);
+                }
+                Some(st) => {
+                    format.emit_read_scalar(ectx, 0, st);
+                }
+                None => panic!(
+                    "unsupported pointer inner type: {}",
+                    pointee.type_identifier,
+                ),
+            }
+        }
+
+        // Restore out, then call new_into_fn to wrap T into the pointer.
+        ectx.emit_restore_out(option_scratch_offset);
+        ectx.emit_call_option_init_some(
+            crate::intrinsics::fad_pointer_new_into as *const u8,
+            new_into_fn as *const u8,
+            field.offset as u32,
+            option_scratch_offset,
         );
         return;
     }
@@ -976,9 +1139,12 @@ fn emit_inline_struct(
     });
 }
 
-/// Compute the maximum Option inner type size across a shape tree.
-/// Returns 0 if no Option fields are found.
-fn max_option_inner_size(
+// r[impl deser.pointer.scratch]
+
+/// Compute the maximum scratch inner type size across a shape tree.
+/// Both Option<T> and smart pointers (Box<T>, Arc<T>, Rc<T>) need a scratch
+/// area to deserialize the inner T before wrapping. Returns 0 if none found.
+fn max_scratch_inner_size(
     shape: &'static Shape,
     visited: &mut std::collections::HashSet<*const Shape>,
 ) -> usize {
@@ -991,11 +1157,24 @@ fn max_option_inner_size(
 
     // Walk through List element types and Map key/value types.
     if let Def::List(list_def) = &shape.def {
-        max_size = max_size.max(max_option_inner_size(list_def.t, visited));
+        max_size = max_size.max(max_scratch_inner_size(list_def.t, visited));
     }
     if let Def::Map(map_def) = &shape.def {
-        max_size = max_size.max(max_option_inner_size(map_def.k, visited));
-        max_size = max_size.max(max_option_inner_size(map_def.v, visited));
+        max_size = max_size.max(max_scratch_inner_size(map_def.k, visited));
+        max_size = max_size.max(max_scratch_inner_size(map_def.v, visited));
+    }
+
+    // Check if shape itself is a pointer type (e.g. Vec<Box<T>> element)
+    if let Some(ptr_def) = get_pointer_def(shape) {
+        if let Some(pointee) = ptr_def.pointee {
+            let inner_size = pointee
+                .layout
+                .sized_layout()
+                .expect("Pointer inner type must be Sized")
+                .size();
+            max_size = max_size.max(inner_size);
+            max_size = max_size.max(max_scratch_inner_size(pointee, visited));
+        }
     }
 
     match &shape.ty {
@@ -1010,10 +1189,20 @@ fn max_option_inner_size(
                         .expect("Option inner type must be Sized")
                         .size();
                     max_size = max_size.max(inner_size);
-                    // Also recurse into the inner type
-                    max_size = max_size.max(max_option_inner_size(opt_def.t, visited));
+                    max_size = max_size.max(max_scratch_inner_size(opt_def.t, visited));
                 }
-                max_size = max_size.max(max_option_inner_size(field_shape, visited));
+                if let Some(ptr_def) = get_pointer_def(field_shape) {
+                    if let Some(pointee) = ptr_def.pointee {
+                        let inner_size = pointee
+                            .layout
+                            .sized_layout()
+                            .expect("Pointer inner type must be Sized")
+                            .size();
+                        max_size = max_size.max(inner_size);
+                        max_size = max_size.max(max_scratch_inner_size(pointee, visited));
+                    }
+                }
+                max_size = max_size.max(max_scratch_inner_size(field_shape, visited));
             }
         }
         Type::User(UserType::Enum(enum_type)) => {
@@ -1028,9 +1217,20 @@ fn max_option_inner_size(
                             .expect("Option inner type must be Sized")
                             .size();
                         max_size = max_size.max(inner_size);
-                        max_size = max_size.max(max_option_inner_size(opt_def.t, visited));
+                        max_size = max_size.max(max_scratch_inner_size(opt_def.t, visited));
                     }
-                    max_size = max_size.max(max_option_inner_size(field_shape, visited));
+                    if let Some(ptr_def) = get_pointer_def(field_shape) {
+                        if let Some(pointee) = ptr_def.pointee {
+                            let inner_size = pointee
+                                .layout
+                                .sized_layout()
+                                .expect("Pointer inner type must be Sized")
+                                .size();
+                            max_size = max_size.max(inner_size);
+                            max_size = max_size.max(max_scratch_inner_size(pointee, visited));
+                        }
+                    }
+                    max_size = max_size.max(max_scratch_inner_size(field_shape, visited));
                 }
             }
         }
@@ -1065,10 +1265,19 @@ fn has_seq_or_map_in_tree(
         }
     }
 
+    // Recurse through smart pointer inner types.
+    if let Some(ptr_def) = get_pointer_def(shape) {
+        if let Some(pointee) = ptr_def.pointee {
+            if has_seq_or_map_in_tree(pointee, visited) {
+                return true;
+            }
+        }
+    }
+
     match &shape.ty {
         Type::User(UserType::Struct(st)) => {
             for f in st.fields {
-                let target = option_inner_or_self(f.shape());
+                let target = unwrap_inner_or_self(f.shape());
                 if has_seq_or_map_in_tree(target, visited) {
                     return true;
                 }
@@ -1077,7 +1286,7 @@ fn has_seq_or_map_in_tree(
         Type::User(UserType::Enum(enum_type)) => {
             for v in enum_type.variants {
                 for f in v.data.fields {
-                    let target = option_inner_or_self(f.shape());
+                    let target = unwrap_inner_or_self(f.shape());
                     if has_seq_or_map_in_tree(target, visited) {
                         return true;
                     }
@@ -1100,6 +1309,10 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
         format.extra_stack_space(&[])
     } else if matches!(&shape.def, Def::Map(_)) {
         // Map<K,V> as root shape — format needs stack space for map loop state.
+        format.extra_stack_space(&[])
+    } else if get_pointer_def(shape).is_some() {
+        // Smart pointer as root shape — no format-specific stack needed at this level,
+        // but inner type may need stack (handled by recursive compilation).
         format.extra_stack_space(&[])
     } else {
         match &shape.ty {
@@ -1153,7 +1366,7 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     //
     // option_scratch_offset is the absolute sp offset where inner T is written.
     // The emit_redirect_out_to_stack method saves old out at scratch_offset-8.
-    let max_inner = max_option_inner_size(shape, &mut std::collections::HashSet::new());
+    let max_inner = max_scratch_inner_size(shape, &mut std::collections::HashSet::new());
     let (option_scratch_offset, extra_stack) = if max_inner > 0 {
         let option_extra = 8 + max_inner as u32;
         let base_frame = crate::arch::BASE_FRAME;

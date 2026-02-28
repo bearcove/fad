@@ -2054,6 +2054,38 @@ is one indirect call per Option/Result construction, negligible compared to
 the actual deserialization work. Special-casing known niche patterns is a
 future optimization, not the default path.
 
+### Smart pointers (Box, Arc, Rc)
+
+r[deser.pointer]
+Smart pointers (`Box<T>`, `Arc<T>`, `Rc<T>`) are wire-transparent: the wire
+format contains just `T`. fad detects them via `Def::Pointer` with a
+`KnownPointer` of `Box`, `Arc`, or `Rc`, and a non-None `new_into_fn` in
+the vtable.
+
+r[deser.pointer.scratch]
+Deserialization uses the same scratch area as `Option<T>`: the inner `T` is
+deserialized into a temporary stack slot, then the vtable's `new_into_fn`
+is called to move the value into the heap-allocated pointer.
+
+r[deser.pointer.new-into]
+The `new_into_fn` trampoline bridges thin raw pointers from JIT code to
+facet's wide pointer types (`PtrUninit`, `PtrMut`). It has the same
+three-argument ABI as `fad_option_init_some`: `(fn_ptr, out, value_ptr)`.
+
+r[deser.pointer.format-transparent]
+No format-level changes are needed — both JSON and postcard deserialize the
+inner `T` identically to a bare field. The pointer wrapping is purely a
+compiler concern.
+
+r[deser.pointer.nesting]
+Pointers compose with other wrappers:
+- `Option<Box<T>>`: Option dispatches on null/presence, then the Some path
+  deserializes `Box<T>` (which deserializes `T` + wraps).
+- `Box<Option<T>>`: the pointer wraps an Option, so `T` = `Option<U>` and
+  the inner deserialization handles the Option wire protocol.
+- `Vec<Box<T>>`: each Vec element is a pointer, using the scratch area per
+  element.
+
 ### Default values
 
 r[deser.default]

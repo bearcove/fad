@@ -452,6 +452,27 @@ pub unsafe extern "C" fn fad_option_init_some(
     unsafe { (init_some_fn)(ptr_uninit, ptr_mut) };
 }
 
+// r[impl deser.pointer.new-into]
+
+/// Wrap an already-deserialized T into a smart pointer (Box, Arc, Rc) using the
+/// vtable's `new_into_fn`.
+///
+/// Same ABI shape as `fad_option_init_some`: bridges thin raw pointers from JIT
+/// code to facet's wide pointer types (PtrUninit, PtrMut).
+///
+/// `value_ptr` points to an already-deserialized T. new_into_fn will _move_ it
+/// (read + write into the pointer), so the caller must not use value_ptr afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_pointer_new_into(
+    new_into_fn: facet::NewIntoFn,
+    out: *mut u8,
+    value_ptr: *mut u8,
+) {
+    let ptr_uninit = facet::PtrUninit::new_sized(out);
+    let ptr_mut = facet::PtrMut::new_sized(value_ptr);
+    unsafe { (new_into_fn)(ptr_uninit, ptr_mut) };
+}
+
 /// Validate UTF-8 and allocate a String from a raw byte slice, write to `*out`.
 ///
 /// This is the "lean" string intrinsic — it does NOT read the length varint,
