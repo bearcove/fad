@@ -34,9 +34,9 @@ pub fn deserialize<'input, T: facet::Facet<'input>>(
 }
 
 /// Deserialize a value of type `T` from raw bytes.
-pub fn from_bytes<T: for<'a> facet::Facet<'a>>(
+pub fn from_bytes<'input, T: facet::Facet<'input>>(
     deser: &CompiledDeser,
-    input: &[u8],
+    input: &'input [u8],
 ) -> Result<T, DeserError> {
     let mut ctx = DeserContext::from_bytes(input);
     deserialize_with_ctx(deser, &mut ctx)
@@ -45,9 +45,9 @@ pub fn from_bytes<T: for<'a> facet::Facet<'a>>(
 /// Deserialize a value of type `T` from UTF-8 input text.
 ///
 /// Trusted UTF-8 mode is enabled only when the compiled format supports it.
-pub fn from_str<T: for<'a> facet::Facet<'a>>(
+pub fn from_str<'input, T: facet::Facet<'input>>(
     deser: &CompiledDeser,
-    input: &str,
+    input: &'input str,
 ) -> Result<T, DeserError> {
     let mut ctx = if deser.supports_trusted_utf8_input() {
         DeserContext::from_str(input)
@@ -57,7 +57,7 @@ pub fn from_str<T: for<'a> facet::Facet<'a>>(
     deserialize_with_ctx(deser, &mut ctx)
 }
 
-fn deserialize_with_ctx<T: for<'a> facet::Facet<'a>>(
+fn deserialize_with_ctx<'input, T: facet::Facet<'input>>(
     deser: &CompiledDeser,
     ctx: &mut DeserContext,
 ) -> Result<T, DeserError> {
