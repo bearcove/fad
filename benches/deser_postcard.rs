@@ -220,9 +220,18 @@ static VEC_SCALAR_MEDIUM_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
 static VEC_STRUCT_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
     postcard::to_allocvec(&StructVecSerde {
         friends: vec![
-            FriendSerde { age: 25, name: "Alice".into() },
-            FriendSerde { age: 30, name: "Bob".into() },
-            FriendSerde { age: 35, name: "Charlie".into() },
+            FriendSerde {
+                age: 25,
+                name: "Alice".into(),
+            },
+            FriendSerde {
+                age: 30,
+                name: "Bob".into(),
+            },
+            FriendSerde {
+                age: 35,
+                name: "Charlie".into(),
+            },
         ],
     })
     .unwrap()
@@ -230,33 +239,26 @@ static VEC_STRUCT_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
-static FAD_FLAT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(FriendFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_FLAT: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(FriendFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(PersonFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_NESTED: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(PersonFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(OuterFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_DEEP: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(OuterFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(DocumentFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(DocumentFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(AnimalFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(AnimalFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(ScalarVecFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(ScalarVecFacet::SHAPE, &fad::postcard::FadPostcard));
 
-static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
-    fad::compile_deser(StructVecFacet::SHAPE, &fad::postcard::FadPostcard)
-});
+static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> =
+    LazyLock::new(|| fad::compile_deser(StructVecFacet::SHAPE, &fad::postcard::FadPostcard));
 
 static FACET_JIT_FLAT: LazyLock<
     facet_format::jit::CompiledFormatDeserializer<
@@ -264,8 +266,7 @@ static FACET_JIT_FLAT: LazyLock<
         facet_postcard::PostcardParser<'static>,
     >,
 > = LazyLock::new(|| {
-    facet_format::jit::get_format_deserializer()
-        .expect("FriendFacet should be Tier-2 compatible")
+    facet_format::jit::get_format_deserializer().expect("FriendFacet should be Tier-2 compatible")
 });
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
@@ -276,9 +277,7 @@ mod flat_struct {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*FLAT_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<FriendSerde>(black_box(data)).unwrap())
-        });
+        bencher.bench(|| black_box(postcard::from_bytes::<FriendSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]
@@ -303,9 +302,8 @@ mod flat_struct {
     fn fad(bencher: Bencher) {
         let data = &*FLAT_ENCODED;
         let deser = &*FAD_FLAT;
-        bencher.bench(|| {
-            black_box(fad::deserialize::<FriendFacet>(deser, black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(fad::deserialize::<FriendFacet>(deser, black_box(data)).unwrap()));
     }
 }
 
@@ -317,9 +315,7 @@ mod nested_struct {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*NESTED_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<PersonSerde>(black_box(data)).unwrap())
-        });
+        bencher.bench(|| black_box(postcard::from_bytes::<PersonSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]
@@ -334,9 +330,8 @@ mod nested_struct {
     fn fad(bencher: Bencher) {
         let data = &*NESTED_ENCODED;
         let deser = &*FAD_NESTED;
-        bencher.bench(|| {
-            black_box(fad::deserialize::<PersonFacet>(deser, black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(fad::deserialize::<PersonFacet>(deser, black_box(data)).unwrap()));
     }
 }
 
@@ -351,9 +346,7 @@ mod deep_nested_struct {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*DEEP_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<OuterSerde>(black_box(data)).unwrap())
-        });
+        bencher.bench(|| black_box(postcard::from_bytes::<OuterSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]
@@ -368,9 +361,8 @@ mod deep_nested_struct {
     fn fad(bencher: Bencher) {
         let data = &*DEEP_ENCODED;
         let deser = &*FAD_DEEP;
-        bencher.bench(|| {
-            black_box(fad::deserialize::<OuterFacet>(deser, black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(fad::deserialize::<OuterFacet>(deser, black_box(data)).unwrap()));
     }
 }
 
@@ -400,18 +392,15 @@ mod enum_struct_variant {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*ENUM_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<AnimalSerde>(black_box(data)).unwrap())
-        });
+        bencher.bench(|| black_box(postcard::from_bytes::<AnimalSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]
     fn fad(bencher: Bencher) {
         let data = &*ENUM_ENCODED;
         let deser = &*FAD_ENUM;
-        bencher.bench(|| {
-            black_box(fad::deserialize::<AnimalFacet>(deser, black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(fad::deserialize::<AnimalFacet>(deser, black_box(data)).unwrap()));
     }
 }
 
@@ -423,9 +412,8 @@ mod vec_scalar_small {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*VEC_SCALAR_SMALL_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<ScalarVecSerde>(black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(postcard::from_bytes::<ScalarVecSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]
@@ -446,9 +434,8 @@ mod vec_scalar_medium {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*VEC_SCALAR_MEDIUM_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<ScalarVecSerde>(black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(postcard::from_bytes::<ScalarVecSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]
@@ -469,9 +456,8 @@ mod vec_struct {
     #[divan::bench]
     fn postcard_serde(bencher: Bencher) {
         let data = &*VEC_STRUCT_ENCODED;
-        bencher.bench(|| {
-            black_box(postcard::from_bytes::<StructVecSerde>(black_box(data)).unwrap())
-        });
+        bencher
+            .bench(|| black_box(postcard::from_bytes::<StructVecSerde>(black_box(data)).unwrap()));
     }
 
     #[divan::bench]

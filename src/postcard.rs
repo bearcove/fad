@@ -127,8 +127,8 @@ impl Format for FadPostcard {
     }
 
     fn vec_extra_stack_space(&self) -> u32 {
-        // varint scratch (8) + saved_out (8) + buf (8) + count (8) + counter (8) = 40
-        40
+        // varint scratch (8) + saved_out (8) + buf (8) + count (8) + cursor (8) + end (8) = 48
+        48
     }
 
     // r[impl deser.postcard.seq]
@@ -155,7 +155,8 @@ impl Format for FadPostcard {
         let saved_out_slot = BASE_FRAME + 8;
         let buf_slot = BASE_FRAME + 16;
         let count_slot = BASE_FRAME + 24;
-        let counter_slot = BASE_FRAME + 32;
+        let save_x23_slot = BASE_FRAME + 32;  // save/restore callee-saved x23 (cursor)
+        let save_x24_slot = BASE_FRAME + 40;  // save/restore callee-saved x24 (end)
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
@@ -180,24 +181,37 @@ impl Format for FadPostcard {
             elem_align,
         );
 
-        // Save loop state: buf (x0), i=0, saved out (x21)
-        // count is already on the stack from emit_save_w9_to_stack above
-        ectx.emit_vec_loop_init(saved_out_slot, buf_slot, count_slot, counter_slot);
+        // Init loop: save x23/x24, set x23=cursor=buf, x24=end
+        ectx.emit_vec_loop_init_cursor(
+            saved_out_slot,
+            buf_slot,
+            count_slot,
+            save_x23_slot,
+            save_x24_slot,
+            elem_size,
+        );
 
         // === Loop body ===
         ectx.bind_label(loop_label);
 
-        // Set out = buf + i * elem_size
-        ectx.emit_vec_loop_slot(buf_slot, counter_slot, elem_size);
+        // Set out = cursor (register move, no memory)
+        ectx.emit_vec_loop_load_cursor(save_x23_slot);
 
         // Deserialize one element at out (offset 0)
         emit_elem(ectx);
 
-        // Check error, increment i, branch back if i < count
-        ectx.emit_vec_loop_advance(counter_slot, count_slot, loop_label, error_cleanup);
+        // Check error, advance cursor register, branch back if cursor < end
+        ectx.emit_vec_loop_advance_cursor(
+            save_x23_slot,
+            save_x24_slot,
+            elem_size,
+            loop_label,
+            error_cleanup,
+        );
 
         // === Write Vec to output ===
         // For postcard, len == cap == count (exact allocation)
+        ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
         ectx.emit_vec_store(
             offset as u32,
             saved_out_slot,
@@ -208,13 +222,14 @@ impl Format for FadPostcard {
         );
         ectx.emit_branch(done_label);
 
-        // === Empty path ===
+        // === Empty path (x23/x24 were never modified) ===
         ectx.bind_label(empty_label);
         ectx.emit_vec_store_empty_with_align(offset as u32, elem_align, vec_offsets);
         ectx.emit_branch(done_label);
 
         // === Error cleanup ===
         ectx.bind_label(error_cleanup);
+        ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
         ectx.emit_vec_error_cleanup(
             intrinsics::fad_vec_free as *const u8,
             saved_out_slot,

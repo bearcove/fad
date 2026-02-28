@@ -1238,45 +1238,51 @@ impl EmitCtx {
         );
     }
 
-    /// Initialize Vec loop state after allocation.
+    /// Initialize Vec loop state with cursor in x23, end in x24 (register-based).
     ///
-    /// Saves: out pointer, buf (alloc result in x0), counter=0.
-    /// Count must already be stored at count_slot (via emit_save_w9_to_stack).
-    pub fn emit_vec_loop_init(
+    /// Saves x23/x24 to stack (callee-saved), then sets x23 = buf, x24 = end.
+    /// Also saves out pointer and buf for final Vec store.
+    /// Count must already be stored at count_slot (via emit_save_count_to_stack).
+    pub fn emit_vec_loop_init_cursor(
         &mut self,
         saved_out_slot: u32,
         buf_slot: u32,
-        _count_slot: u32,
-        counter_slot: u32,
+        count_slot: u32,
+        save_x23_slot: u32,
+        save_x24_slot: u32,
+        elem_size: u32,
     ) {
         dynasm!(self.ops
             ; .arch aarch64
             ; str x21, [sp, #saved_out_slot]   // save out pointer
             ; str x0, [sp, #buf_slot]          // buf = alloc result
-            // count is already at count_slot (saved before alloc call)
-            ; str xzr, [sp, #counter_slot]     // i = 0
+            // Save callee-saved x23/x24
+            ; str x23, [sp, #save_x23_slot]
+            ; str x24, [sp, #save_x24_slot]
+            // x23 = cursor = buf
+            ; mov x23, x0
+            // x24 = end = buf + count * elem_size
+            ; ldr x10, [sp, #count_slot]
+            ; movz x11, elem_size
+            ; madd x24, x10, x11, x0
         );
     }
 
-    /// Emit Vec loop header: compute slot = buf + i * elem_size, set out = slot.
-    ///
-    /// Reads buf and i from stack slots.
-    pub fn emit_vec_loop_slot(&mut self, buf_slot: u32, counter_slot: u32, elem_size: u32) {
+    /// Set out = cursor (x21 = x23). Single register move, no memory access.
+    pub fn emit_vec_loop_load_cursor(&mut self, _cursor_slot: u32) {
         dynasm!(self.ops
             ; .arch aarch64
-            ; ldr x21, [sp, #buf_slot]         // buf
-            ; ldr x10, [sp, #counter_slot]     // i
-            ; movz x11, elem_size
-            ; madd x21, x10, x11, x21          // out = buf + i * elem_size
+            ; mov x21, x23
         );
     }
 
-    /// Emit Vec loop footer: increment i, compare with count, branch back if i < count.
-    /// Also checks error after element deserialization.
-    pub fn emit_vec_loop_advance(
+    /// Advance cursor register, check error, branch back if cursor < end.
+    /// All register ops — no memory access in the hot loop.
+    pub fn emit_vec_loop_advance_cursor(
         &mut self,
-        counter_slot: u32,
-        count_slot: u32,
+        _cursor_slot: u32,
+        _end_slot: u32,
+        elem_size: u32,
         loop_label: DynamicLabel,
         error_cleanup_label: DynamicLabel,
     ) {
@@ -1285,14 +1291,33 @@ impl EmitCtx {
             // Check error from element deserialization
             ; ldr w10, [x22, #CTX_ERROR_CODE]
             ; cbnz w10, =>error_cleanup_label
-            // i += 1
-            ; ldr x10, [sp, #counter_slot]
-            ; add x10, x10, #1
-            ; str x10, [sp, #counter_slot]
-            // Compare with count
-            ; ldr x11, [sp, #count_slot]
-            ; cmp x10, x11
+            // cursor += elem_size (register only)
+            ; add x23, x23, elem_size
+            // Compare with end (register only)
+            ; cmp x23, x24
             ; b.lo =>loop_label
+        );
+    }
+
+    /// Restore x23/x24 from stack. Must be called on every exit path from a Vec loop.
+    pub fn emit_vec_restore_callee_saved(&mut self, save_x23_slot: u32, save_x24_slot: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x23, [sp, #save_x23_slot]
+            ; ldr x24, [sp, #save_x24_slot]
+        );
+    }
+
+    /// Emit Vec loop header: compute slot = buf + i * elem_size, set out = slot.
+    ///
+    /// Used by JSON where buf can change on growth and index-based access is needed.
+    pub fn emit_vec_loop_slot(&mut self, buf_slot: u32, counter_slot: u32, elem_size: u32) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x21, [sp, #buf_slot]         // buf
+            ; ldr x10, [sp, #counter_slot]     // i
+            ; movz x11, elem_size
+            ; madd x21, x10, x11, x21          // out = buf + i * elem_size
         );
     }
 
