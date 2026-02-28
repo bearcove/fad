@@ -2148,4 +2148,128 @@ mod tests {
         assert_eq!(result, Nums { vals: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10] });
     }
 
+    // ── JSON string escape sequence tests ────────────────────────────────
+
+    // r[verify deser.json.string.escape]
+
+    #[test]
+    fn json_string_escape_newline() {
+        let input = br#"{"age": 1, "name": "hello\nworld"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "hello\nworld");
+    }
+
+    #[test]
+    fn json_string_escape_tab() {
+        let input = br#"{"age": 1, "name": "hello\tworld"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "hello\tworld");
+    }
+
+    #[test]
+    fn json_string_escape_backslash() {
+        let input = br#"{"age": 1, "name": "hello\\world"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "hello\\world");
+    }
+
+    #[test]
+    fn json_string_escape_quote() {
+        let input = br#"{"age": 1, "name": "hello\"world"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "hello\"world");
+    }
+
+    #[test]
+    fn json_string_escape_all_simple() {
+        let input = br#"{"age": 1, "name": "a\"b\\c\/d\be\ff\ng\rh\ti"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "a\"b\\c/d\x08e\x0Cf\ng\rh\ti");
+    }
+
+    #[test]
+    fn json_string_unicode_escape_bmp() {
+        // \u0041 = 'A'
+        let input = br#"{"age": 1, "name": "\u0041lice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "Alice");
+    }
+
+    #[test]
+    fn json_string_unicode_escape_non_ascii() {
+        // \u00E9 = 'e' with acute accent
+        let input = br#"{"age": 1, "name": "caf\u00E9"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "caf\u{00E9}");
+    }
+
+    #[test]
+    fn json_string_unicode_surrogate_pair() {
+        // \uD83D\uDE00 = U+1F600 (grinning face emoji)
+        let input = br#"{"age": 1, "name": "\uD83D\uDE00"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result.name, "\u{1F600}");
+    }
+
+    #[test]
+    fn json_key_with_unicode_escape() {
+        // "na\u006De" unescapes to "name"
+        let input = br#"{"age": 42, "na\u006De": "Alice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Friend { age: 42, name: "Alice".into() });
+    }
+
+    #[test]
+    fn json_string_invalid_escape() {
+        let input = br#"{"age": 1, "name": "hello\xworld"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result = deserialize::<Friend>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::InvalidEscapeSequence);
+    }
+
+    #[test]
+    fn json_string_lone_high_surrogate() {
+        let input = br#"{"age": 1, "name": "\uD800"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result = deserialize::<Friend>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::InvalidEscapeSequence);
+    }
+
+    #[test]
+    fn json_string_truncated_unicode() {
+        let input = br#"{"age": 1, "name": "\u00"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result = deserialize::<Friend>(&deser, input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_skip_value_with_unicode_escape() {
+        // Unknown field "extra" has a string with \uXXXX — should be skipped correctly
+        let input = br#"{"age": 42, "extra": "test\uD83D\uDE00end", "name": "Alice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Friend { age: 42, name: "Alice".into() });
+    }
+
+    #[test]
+    fn json_skip_value_with_backslash_escape() {
+        // Unknown field with simple escapes in its value
+        let input = br#"{"age": 42, "extra": "test\n\t\\end", "name": "Alice"}"#;
+        let deser = compile_deser(Friend::SHAPE, &json::FadJson);
+        let result: Friend = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Friend { age: 42, name: "Alice".into() });
+    }
+
 }

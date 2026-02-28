@@ -11,6 +11,10 @@ pub struct DeserContext {
     pub input_end: *const u8,
     /// Error slot — checked after each intrinsic call.
     pub error: ErrorSlot,
+    /// Scratch buffer for unescaped JSON keys. Allocated on first use.
+    /// Only accessed by intrinsics (never by JIT code).
+    pub key_scratch_ptr: *mut u8,
+    pub key_scratch_cap: usize,
 }
 
 // r[impl error.slot]
@@ -47,6 +51,7 @@ pub enum ErrorCode {
     ExpectedTagKey = 15,
     AmbiguousVariant = 16,
     AllocError = 17,
+    InvalidEscapeSequence = 18,
 }
 
 impl fmt::Display for ErrorCode {
@@ -72,6 +77,9 @@ impl fmt::Display for ErrorCode {
                 write!(f, "ambiguous variant: multiple variants match")
             }
             ErrorCode::AllocError => write!(f, "memory allocation failed"),
+            ErrorCode::InvalidEscapeSequence => {
+                write!(f, "invalid JSON escape sequence")
+            }
         }
     }
 }
@@ -93,6 +101,8 @@ impl DeserContext {
                 code: 0,
                 offset: 0,
             },
+            key_scratch_ptr: core::ptr::null_mut(),
+            key_scratch_cap: 0,
         }
     }
 
@@ -105,5 +115,40 @@ impl DeserContext {
     pub fn set_error(&mut self, code: ErrorCode, input_start: *const u8) {
         self.error.code = code as u32;
         self.error.offset = unsafe { self.input_ptr.offset_from(input_start) as u32 };
+    }
+
+    /// Free the key scratch buffer, replacing it with the given Vec's allocation.
+    /// The old scratch buffer (if any) is freed.
+    ///
+    /// # Safety
+    /// The Vec must have been created with the global allocator.
+    pub unsafe fn replace_key_scratch(&mut self, buf: Vec<u8>) -> (*const u8, usize) {
+        // Free old scratch if any
+        if self.key_scratch_cap > 0 {
+            unsafe {
+                let layout =
+                    std::alloc::Layout::from_size_align_unchecked(self.key_scratch_cap, 1);
+                std::alloc::dealloc(self.key_scratch_ptr, layout);
+            }
+        }
+        let len = buf.len();
+        let cap = buf.capacity();
+        let ptr = buf.as_ptr();
+        core::mem::forget(buf);
+        self.key_scratch_ptr = ptr as *mut u8;
+        self.key_scratch_cap = cap;
+        (ptr, len)
+    }
+}
+
+impl Drop for DeserContext {
+    fn drop(&mut self) {
+        if self.key_scratch_cap > 0 {
+            unsafe {
+                let layout =
+                    std::alloc::Layout::from_size_align_unchecked(self.key_scratch_cap, 1);
+                std::alloc::dealloc(self.key_scratch_ptr, layout);
+            }
+        }
     }
 }
