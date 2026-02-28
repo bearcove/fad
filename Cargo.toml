@@ -32,11 +32,7 @@ brotli = "8"
 insta = "1"
 
 [[bench]]
-name = "json"
-harness = false
-
-[[bench]]
-name = "postcard"
+name = "synthetic"
 harness = false
 
 [[bench]]

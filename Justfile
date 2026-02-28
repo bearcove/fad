@@ -43,8 +43,7 @@ bench:
 bench-report:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo bench --bench json 2>/dev/null > /tmp/bench_out.txt
-    cargo bench --bench postcard 2>/dev/null >> /tmp/bench_out.txt
+    cargo bench --bench synthetic 2>/dev/null > /tmp/bench_out.txt
     cargo bench --bench canada 2>/dev/null >> /tmp/bench_out.txt
     cargo bench --bench twitter 2>/dev/null >> /tmp/bench_out.txt
     cargo bench --bench citm_catalog 2>/dev/null >> /tmp/bench_out.txt
