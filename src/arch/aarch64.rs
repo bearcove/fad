@@ -1,6 +1,7 @@
 use dynasmrt::{dynasm, DynasmApi, DynasmLabelApi, DynamicLabel, AssemblyOffset};
 
 use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END};
+use crate::recipe::{Op, Recipe, Slot, Width, ErrorTarget};
 
 pub type Assembler = dynasmrt::aarch64::Assembler;
 
@@ -393,163 +394,28 @@ impl EmitCtx {
         );
     }
 
-    // ── Inline scalar reads ──────────────────────────────────────────
-    //
-    // These emit scalar decode logic directly into the instruction stream,
-    // using cached registers (x19=input_ptr, x20=input_end, x21=out,
-    // x22=ctx). No cursor flush/reload, no indirect call.
+    // ── Inline scalar reads (recipe-based) ─────────────────────────────
 
-    /// Emit inline code to read a single byte (u8 or i8) and store to out+offset.
     pub fn emit_inline_read_byte(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Bounds check: need at least 1 byte
-            ; cmp x19, x20
-            ; b.hs =>eof_label
-            // Load, store, advance
-            ; ldrb w9, [x19]
-            ; strb w9, [x21, #offset]
-            ; add x19, x19, #1
-        );
-
-        // Defer cold eof path
-        let done_label = self.ops.new_dynamic_label();
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; b =>done_label
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_byte(offset));
     }
 
-    /// Emit inline code to read a single byte from input and store to sp+offset (stack slot).
     pub fn emit_inline_read_byte_to_stack(&mut self, sp_offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; cmp x19, x20
-            ; b.hs =>eof_label
-            ; ldrb w9, [x19]
-            ; strb w9, [sp, #sp_offset]
-            ; add x19, x19, #1
-            ; b =>done_label
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_byte_to_stack(sp_offset));
     }
 
-    /// Emit inline code to read a bool and store to out+offset.
-    /// Validates the byte is 0 or 1.
     pub fn emit_inline_read_bool(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let invalid_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Bounds check
-            ; cmp x19, x20
-            ; b.hs =>eof_label
-            // Load byte
-            ; ldrb w9, [x19]
-            // Validate: must be 0 or 1
-            ; cmp w9, #1
-            ; b.hi =>invalid_label
-            // Store and advance
-            ; strb w9, [x21, #offset]
-            ; add x19, x19, #1
-            ; b =>done_label
-
-            // Cold: invalid bool
-            ; =>invalid_label
-            ; movz w9, crate::context::ErrorCode::InvalidBool as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            // Cold: eof
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_bool(offset));
     }
 
-    /// Emit inline code to read 4 LE bytes (f32) and store to out+offset.
     pub fn emit_inline_read_f32(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Bounds check: need 4 bytes
-            ; sub x9, x20, x19
-            ; cmp x9, #4
-            ; b.lo =>eof_label
-            // Load 4 bytes (unaligned ok on aarch64), store, advance
-            ; ldr w9, [x19]
-            ; str w9, [x21, #offset]
-            ; add x19, x19, #4
-            ; b =>done_label
-
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_f32(offset));
     }
 
-    /// Emit inline code to read 8 LE bytes (f64) and store to out+offset.
     pub fn emit_inline_read_f64(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Bounds check: need 8 bytes
-            ; sub x9, x20, x19
-            ; cmp x9, #8
-            ; b.lo =>eof_label
-            // Load 8 bytes, store, advance
-            ; ldr x9, [x19]
-            ; str x9, [x21, #offset]
-            ; add x19, x19, #8
-            ; b =>done_label
-
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_f64(offset));
     }
 
-    /// Emit inline varint fast path: if the first byte has bit 7 clear
-    /// (single-byte varint, value < 128), store directly and advance.
-    /// Otherwise fall through to a full intrinsic call for multi-byte decode.
-    ///
-    /// `store_width`: 2 (u16/i16), 4 (u32/i32), or 8 (u64/i64).
-    /// `zigzag`: true for signed types (apply zigzag decode on fast path).
-    /// `intrinsic_fn_ptr`: full varint decode intrinsic for the slow path.
     pub fn emit_inline_varint_fast_path(
         &mut self,
         offset: u32,
@@ -557,184 +423,17 @@ impl EmitCtx {
         zigzag: bool,
         intrinsic_fn_ptr: *const u8,
     ) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let slow_path = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-        let ptr_val = intrinsic_fn_ptr as u64;
-
-        // Bounds check: need at least 1 byte
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; cmp x19, x20
-            ; b.hs =>eof_label
-            // Load first byte
-            ; ldrb w9, [x19]
-            // Test continuation bit (bit 7)
-            ; tbnz w9, #7, =>slow_path
-            // Fast path: single-byte varint, value in w9 (0..127)
-            ; add x19, x19, #1
-        );
-
-        if zigzag {
-            // Zigzag decode: decoded = (v >> 1) ^ -(v & 1)
-            dynasm!(self.ops
-                ; .arch aarch64
-                ; lsr w10, w9, #1          // w10 = v >> 1
-                ; and w11, w9, #1          // w11 = v & 1
-                ; neg w11, w11             // w11 = -(v & 1) = 0 or 0xFFFFFFFF
-                ; eor w9, w10, w11         // w9 = decoded value
-            );
-        }
-
-        // Store based on width
-        match store_width {
-            2 => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x21, #offset]),
-            4 => dynasm!(self.ops ; .arch aarch64 ; str w9, [x21, #offset]),
-            8 => dynasm!(self.ops ; .arch aarch64 ; str x9, [x21, #offset]),
+        let width = match store_width {
+            2 => Width::W2,
+            4 => Width::W4,
+            8 => Width::W8,
             _ => panic!("unsupported varint store width: {store_width}"),
-        }
-
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; b =>done_label
-
-            // Slow path: multi-byte varint, call intrinsic
-            ; =>slow_path
-            // Flush cached cursor back to ctx
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            // Set up arguments: x0 = ctx, x1 = out + offset
-            ; mov x0, x22
-            ; add x1, x21, #offset
-            // Load function pointer and call
-            ; movz x8, #((ptr_val) & 0xFFFF) as u32
-            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
-            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
-            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
-            ; blr x8
-            // Reload cursor and check error
-            ; ldr x19, [x22, #CTX_INPUT_PTR]
-            ; ldr w9, [x22, #CTX_ERROR_CODE]
-            ; cbnz w9, =>error_exit
-            ; b =>done_label
-
-            // Cold: eof
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            ; =>done_label
-        );
+        };
+        self.emit_recipe(&crate::recipe::varint_fast_path(offset, width, zigzag, intrinsic_fn_ptr));
     }
 
-    // ── Inline string reads ────────────────────────────────────────────
+    // ── Inline string reads (recipe-based) ──────────────────────────────
 
-    /// Emit inline postcard string deserialization.
-    ///
-    /// Inlines the varint length decode (fast path) and bounds check,
-    /// then calls a lean intrinsic for UTF-8 validation + allocation only.
-    /// Cursor advance is also inlined after the call.
-    ///
-    /// Stack usage: sp+48 holds the string length (u32) across the call.
-    /// This is within the extra stack area (postcard requests 8 bytes).
-    pub fn emit_inline_postcard_string(
-        &mut self,
-        offset: u32,
-        slow_varint_intrinsic: *const u8,
-        validate_alloc_intrinsic: *const u8,
-    ) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let varint_slow = self.ops.new_dynamic_label();
-        let have_length = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-        let varint_ptr = slow_varint_intrinsic as u64;
-        let alloc_ptr = validate_alloc_intrinsic as u64;
-
-        // Step 1: Inline varint length decode
-        // Fast path: single-byte varint (length < 128)
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Bounds check: need at least 1 byte for the varint
-            ; cmp x19, x20
-            ; b.hs =>eof_label
-            // Load first byte
-            ; ldrb w9, [x19]
-            // Test continuation bit (bit 7)
-            ; tbnz w9, #7, =>varint_slow
-            // Fast path: single-byte varint, length in w9
-            ; add x19, x19, #1
-            ; b =>have_length
-
-            // Slow path: multi-byte varint length
-            ; =>varint_slow
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; mov x0, x22
-            ; add x1, sp, #48               // temp u32 on stack
-            ; movz x8, #((varint_ptr) & 0xFFFF) as u32
-            ; movk x8, #((varint_ptr >> 16) & 0xFFFF) as u32, LSL #16
-            ; movk x8, #((varint_ptr >> 32) & 0xFFFF) as u32, LSL #32
-            ; movk x8, #((varint_ptr >> 48) & 0xFFFF) as u32, LSL #48
-            ; blr x8
-            ; ldr x19, [x22, #CTX_INPUT_PTR]
-            ; ldr w10, [x22, #CTX_ERROR_CODE]
-            ; cbnz w10, =>error_exit
-            ; ldr w9, [sp, #48]             // load decoded length
-            ; b =>have_length
-        );
-
-        // Step 2: Inline bounds check + call validate+alloc + advance cursor
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; =>have_length
-            // w9 = string length. Save to stack so it survives the blr.
-            ; str w9, [sp, #48]
-
-            // Bounds check: remaining >= length
-            // w9 is already zero-extended to x9 (ldrb and ldr w9 both clear upper 32 bits)
-            ; sub x10, x20, x19             // x10 = remaining bytes
-            ; cmp x10, x9                   // remaining >= length?
-            ; b.lo =>eof_label
-
-            // Call validate_and_alloc_string(ctx, out+offset, input_ptr, length)
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; mov x0, x22                   // arg0: ctx
-            ; add x1, x21, #offset          // arg1: out + offset
-            ; mov x2, x19                   // arg2: data_ptr = current input_ptr
-            ; mov w3, w9                    // arg3: data_len = length
-            ; movz x8, #((alloc_ptr) & 0xFFFF) as u32
-            ; movk x8, #((alloc_ptr >> 16) & 0xFFFF) as u32, LSL #16
-            ; movk x8, #((alloc_ptr >> 32) & 0xFFFF) as u32, LSL #32
-            ; movk x8, #((alloc_ptr >> 48) & 0xFFFF) as u32, LSL #48
-            ; blr x8
-
-            // Check error
-            ; ldr w10, [x22, #CTX_ERROR_CODE]
-            ; cbnz w10, =>error_exit
-
-            // Advance cursor by string length (reload from stack)
-            // ldr w9 zero-extends to x9, so x9 has the correct 64-bit value
-            ; ldr w9, [sp, #48]
-            ; add x19, x19, x9             // input_ptr += length
-            ; b =>done_label
-
-            // Cold: eof / bounds check failure
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            ; =>done_label
-        );
-    }
-
-    /// Emit postcard string deserialization with malum (direct layout write).
-    ///
-    /// Same varint decode + bounds check as `emit_inline_postcard_string`, but
-    /// instead of passing `out+offset` to the intrinsic and having it write a
-    /// `String` object, the intrinsic returns a raw buffer pointer and the JIT
-    /// writes `(ptr, len, cap)` directly at discovered offsets.
     pub fn emit_inline_postcard_string_malum(
         &mut self,
         offset: u32,
@@ -742,92 +441,12 @@ impl EmitCtx {
         slow_varint_intrinsic: *const u8,
         validate_alloc_copy_intrinsic: *const u8,
     ) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let varint_slow = self.ops.new_dynamic_label();
-        let have_length = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-        let varint_ptr = slow_varint_intrinsic as u64;
-        let alloc_ptr = validate_alloc_copy_intrinsic as u64;
-
-        let ptr_off = offset + string_offsets.ptr_offset;
-        let len_off = offset + string_offsets.len_offset;
-        let cap_off = offset + string_offsets.cap_offset;
-
-        // Step 1: Inline varint length decode (identical to non-malum)
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; cmp x19, x20
-            ; b.hs =>eof_label
-            ; ldrb w9, [x19]
-            ; tbnz w9, #7, =>varint_slow
-            ; add x19, x19, #1
-            ; b =>have_length
-
-            ; =>varint_slow
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; mov x0, x22
-            ; add x1, sp, #48
-            ; movz x8, #((varint_ptr) & 0xFFFF) as u32
-            ; movk x8, #((varint_ptr >> 16) & 0xFFFF) as u32, LSL #16
-            ; movk x8, #((varint_ptr >> 32) & 0xFFFF) as u32, LSL #32
-            ; movk x8, #((varint_ptr >> 48) & 0xFFFF) as u32, LSL #48
-            ; blr x8
-            ; ldr x19, [x22, #CTX_INPUT_PTR]
-            ; ldr w10, [x22, #CTX_ERROR_CODE]
-            ; cbnz w10, =>error_exit
-            ; ldr w9, [sp, #48]
-            ; b =>have_length
-        );
-
-        // Step 2: Bounds check + call validate_alloc_copy + write (ptr, len, cap)
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; =>have_length
-            // w9 = string length. Save to stack.
-            ; str w9, [sp, #48]
-
-            // Bounds check
-            ; sub x10, x20, x19
-            ; cmp x10, x9
-            ; b.lo =>eof_label
-
-            // Call fad_string_validate_alloc_copy(ctx, input_ptr, length)
-            // Returns buf pointer in x0 (or null on error)
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; mov x0, x22                   // arg0: ctx
-            ; mov x1, x19                   // arg1: data_ptr
-            ; mov w2, w9                    // arg2: data_len
-            ; movz x8, #((alloc_ptr) & 0xFFFF) as u32
-            ; movk x8, #((alloc_ptr >> 16) & 0xFFFF) as u32, LSL #16
-            ; movk x8, #((alloc_ptr >> 32) & 0xFFFF) as u32, LSL #32
-            ; movk x8, #((alloc_ptr >> 48) & 0xFFFF) as u32, LSL #48
-            ; blr x8
-
-            // Check error
-            ; ldr w10, [x22, #CTX_ERROR_CODE]
-            ; cbnz w10, =>error_exit
-
-            // x0 = buf pointer, reload length from stack
-            ; ldr w9, [sp, #48]
-
-            // Write String fields directly: ptr, len, cap at discovered offsets
-            ; str x0, [x21, #ptr_off]       // string.ptr = buf
-            ; str x9, [x21, #len_off]       // string.len = length
-            ; str x9, [x21, #cap_off]       // string.cap = length (exact alloc)
-
-            // Advance cursor
-            ; add x19, x19, x9
-            ; b =>done_label
-
-            // Cold: eof
-            ; =>eof_label
-            ; movz w9, crate::context::ErrorCode::UnexpectedEof as u32
-            ; str w9, [x22, #CTX_ERROR_CODE]
-            ; b =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::postcard_string_malum(
+            offset,
+            string_offsets,
+            slow_varint_intrinsic,
+            validate_alloc_copy_intrinsic,
+        ));
     }
 
     // ── Enum support ──────────────────────────────────────────────────
@@ -1666,6 +1285,285 @@ impl EmitCtx {
             ; ldr x10, [sp, #slot]
             ; add x10, x10, #1
             ; str x10, [sp, #slot]
+        );
+    }
+
+    // ── Recipe emission ─────────────────────────────────────────────
+
+    /// Emit a recipe — interpret a sequence of micro-ops into aarch64 instructions.
+    pub fn emit_recipe(&mut self, recipe: &Recipe) {
+        let error_exit = self.error_exit;
+
+        // Allocate dynamic labels for the recipe
+        let labels: Vec<DynamicLabel> = (0..recipe.label_count)
+            .map(|_| self.ops.new_dynamic_label())
+            .collect();
+
+        // Shared EOF error label (lazily bound on first use)
+        let eof_label = self.ops.new_dynamic_label();
+        let eof_emitted = false;
+
+        for op in &recipe.ops {
+            match op {
+                Op::BoundsCheck { count } => {
+                    if *count == 1 {
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; cmp x19, x20
+                            ; b.hs =>eof_label
+                        );
+                    } else {
+                        let count = *count;
+                        dynasm!(self.ops
+                            ; .arch aarch64
+                            ; sub x9, x20, x19
+                            ; cmp x9, #count
+                            ; b.lo =>eof_label
+                        );
+                    }
+                }
+                Op::LoadByte { dst } => match dst {
+                    Slot::A => dynasm!(self.ops ; .arch aarch64 ; ldrb w9, [x19]),
+                    Slot::B => dynasm!(self.ops ; .arch aarch64 ; ldrb w10, [x19]),
+                },
+                Op::LoadFromCursor { dst, width } => match (dst, width) {
+                    (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w9, [x19]),
+                    (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x9, [x19]),
+                    (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w10, [x19]),
+                    (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x10, [x19]),
+                    _ => panic!("unsupported LoadFromCursor width"),
+                },
+                Op::StoreToOut { src, offset, width } => {
+                    let offset = *offset;
+                    match (src, width) {
+                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w9, [x21, #offset]),
+                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x21, #offset]),
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w9, [x21, #offset]),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x9, [x21, #offset]),
+                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w10, [x21, #offset]),
+                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w10, [x21, #offset]),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w10, [x21, #offset]),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x10, [x21, #offset]),
+                    }
+                }
+                Op::StoreByteToStack { src, sp_offset } => {
+                    let sp_offset = *sp_offset;
+                    match src {
+                        Slot::A => dynasm!(self.ops ; .arch aarch64 ; strb w9, [sp, #sp_offset]),
+                        Slot::B => dynasm!(self.ops ; .arch aarch64 ; strb w10, [sp, #sp_offset]),
+                    }
+                }
+                Op::StoreToStack { src, sp_offset, width } => {
+                    let sp_offset = *sp_offset;
+                    match (src, width) {
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w9, [sp, #sp_offset]),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x9, [sp, #sp_offset]),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w10, [sp, #sp_offset]),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x10, [sp, #sp_offset]),
+                        _ => panic!("unsupported StoreToStack width"),
+                    }
+                }
+                Op::LoadFromStack { dst, sp_offset, width } => {
+                    let sp_offset = *sp_offset;
+                    match (dst, width) {
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w9, [sp, #sp_offset]),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x9, [sp, #sp_offset]),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w10, [sp, #sp_offset]),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x10, [sp, #sp_offset]),
+                        _ => panic!("unsupported LoadFromStack width"),
+                    }
+                }
+                Op::AdvanceCursor { count } => {
+                    let count = *count;
+                    dynasm!(self.ops ; .arch aarch64 ; add x19, x19, #count);
+                }
+                Op::AdvanceCursorBySlot { slot } => match slot {
+                    Slot::A => dynasm!(self.ops ; .arch aarch64 ; add x19, x19, x9),
+                    Slot::B => dynasm!(self.ops ; .arch aarch64 ; add x19, x19, x10),
+                },
+                Op::ZigzagDecode { slot } => match slot {
+                    Slot::A => dynasm!(self.ops
+                        ; .arch aarch64
+                        ; lsr w10, w9, #1
+                        ; and w11, w9, #1
+                        ; neg w11, w11
+                        ; eor w9, w10, w11
+                    ),
+                    Slot::B => dynasm!(self.ops
+                        ; .arch aarch64
+                        ; lsr w11, w10, #1
+                        ; and w9, w10, #1
+                        ; neg w9, w9
+                        ; eor w10, w11, w9
+                    ),
+                },
+                Op::ValidateMax { slot, max_val, error } => {
+                    let max_val = *max_val;
+                    let error_code = *error as u32;
+                    let invalid_label = self.ops.new_dynamic_label();
+                    let ok_label = self.ops.new_dynamic_label();
+                    match slot {
+                        Slot::A => dynasm!(self.ops
+                            ; .arch aarch64
+                            ; cmp w9, #max_val
+                            ; b.hi =>invalid_label
+                        ),
+                        Slot::B => dynasm!(self.ops
+                            ; .arch aarch64
+                            ; cmp w10, #max_val
+                            ; b.hi =>invalid_label
+                        ),
+                    }
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; b =>ok_label
+                        ; =>invalid_label
+                        ; movz w9, #error_code
+                        ; str w9, [x22, #CTX_ERROR_CODE]
+                        ; b =>error_exit
+                        ; =>ok_label
+                    );
+                }
+                Op::TestBit7Branch { slot, target } => {
+                    let label = labels[*target];
+                    match slot {
+                        Slot::A => dynasm!(self.ops ; .arch aarch64 ; tbnz w9, #7, =>label),
+                        Slot::B => dynasm!(self.ops ; .arch aarch64 ; tbnz w10, #7, =>label),
+                    }
+                }
+                Op::Branch { target } => {
+                    let label = labels[*target];
+                    dynasm!(self.ops ; .arch aarch64 ; b =>label);
+                }
+                Op::BindLabel { index } => {
+                    let label = labels[*index];
+                    dynasm!(self.ops ; .arch aarch64 ; =>label);
+                }
+                Op::CallIntrinsic { fn_ptr, field_offset } => {
+                    let ptr_val = *fn_ptr as u64;
+                    let field_offset = *field_offset;
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; str x19, [x22, #CTX_INPUT_PTR]
+                        ; mov x0, x22
+                        ; add x1, x21, #field_offset
+                        ; movz x8, #((ptr_val) & 0xFFFF) as u32
+                        ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+                        ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+                        ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+                        ; blr x8
+                        ; ldr x19, [x22, #CTX_INPUT_PTR]
+                        ; ldr w9, [x22, #CTX_ERROR_CODE]
+                        ; cbnz w9, =>error_exit
+                    );
+                }
+                Op::CallIntrinsicStackOut { fn_ptr, sp_offset } => {
+                    let ptr_val = *fn_ptr as u64;
+                    let sp_offset = *sp_offset;
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; str x19, [x22, #CTX_INPUT_PTR]
+                        ; mov x0, x22
+                        ; add x1, sp, #sp_offset
+                        ; movz x8, #((ptr_val) & 0xFFFF) as u32
+                        ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+                        ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+                        ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+                        ; blr x8
+                        ; ldr x19, [x22, #CTX_INPUT_PTR]
+                        ; ldr w10, [x22, #CTX_ERROR_CODE]
+                        ; cbnz w10, =>error_exit
+                    );
+                }
+                Op::ComputeRemaining { dst } => match dst {
+                    Slot::A => dynasm!(self.ops ; .arch aarch64 ; sub x9, x20, x19),
+                    Slot::B => dynasm!(self.ops ; .arch aarch64 ; sub x10, x20, x19),
+                },
+                Op::CmpBranchLo { lhs, rhs, on_fail } => {
+                    let target = match on_fail {
+                        ErrorTarget::Eof => eof_label,
+                        ErrorTarget::ErrorExit => error_exit,
+                    };
+                    match (lhs, rhs) {
+                        (Slot::A, Slot::B) => dynasm!(self.ops
+                            ; .arch aarch64
+                            ; cmp x9, x10
+                            ; b.lo =>target
+                        ),
+                        (Slot::B, Slot::A) => dynasm!(self.ops
+                            ; .arch aarch64
+                            ; cmp x10, x9
+                            ; b.lo =>target
+                        ),
+                        _ => panic!("CmpBranchLo requires different slots"),
+                    }
+                }
+                Op::SaveCursor { dst } => match dst {
+                    Slot::A => dynasm!(self.ops ; .arch aarch64 ; mov x9, x19),
+                    Slot::B => dynasm!(self.ops ; .arch aarch64 ; mov x10, x19),
+                },
+                Op::CallValidateAllocCopy { fn_ptr, data_src, len_src } => {
+                    let ptr_val = *fn_ptr as u64;
+                    // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
+                    // Returns buf pointer in x0
+                    dynasm!(self.ops ; .arch aarch64 ; str x19, [x22, #CTX_INPUT_PTR]);
+                    dynasm!(self.ops ; .arch aarch64 ; mov x0, x22);
+                    match data_src {
+                        Slot::A => dynasm!(self.ops ; .arch aarch64 ; mov x1, x9),
+                        Slot::B => dynasm!(self.ops ; .arch aarch64 ; mov x1, x10),
+                    }
+                    match len_src {
+                        Slot::A => dynasm!(self.ops ; .arch aarch64 ; mov w2, w9),
+                        Slot::B => dynasm!(self.ops ; .arch aarch64 ; mov w2, w10),
+                    }
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; movz x8, #((ptr_val) & 0xFFFF) as u32
+                        ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
+                        ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
+                        ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
+                        ; blr x8
+                        ; ldr w10, [x22, #CTX_ERROR_CODE]
+                        ; cbnz w10, =>error_exit
+                    );
+                }
+                Op::WriteMalumString { base_offset, ptr_off, len_off, cap_off, len_slot } => {
+                    let ptr_offset = *base_offset + *ptr_off;
+                    let len_offset = *base_offset + *len_off;
+                    let cap_offset = *base_offset + *cap_off;
+                    // x0 = buf pointer from previous call return
+                    dynasm!(self.ops ; .arch aarch64 ; str x0, [x21, #ptr_offset]);
+                    match len_slot {
+                        Slot::A => {
+                            dynasm!(self.ops
+                                ; .arch aarch64
+                                ; str x9, [x21, #len_offset]
+                                ; str x9, [x21, #cap_offset]
+                            );
+                        }
+                        Slot::B => {
+                            dynasm!(self.ops
+                                ; .arch aarch64
+                                ; str x10, [x21, #len_offset]
+                                ; str x10, [x21, #cap_offset]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Jump over cold path, then emit shared EOF error
+        let done_label = self.ops.new_dynamic_label();
+        let eof_code = crate::context::ErrorCode::UnexpectedEof as u32;
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; b =>done_label
+            ; =>eof_label
+            ; movz w9, #eof_code
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+            ; =>done_label
         );
     }
 

@@ -1,6 +1,7 @@
 use dynasmrt::{dynasm, DynasmApi, DynasmLabelApi, DynamicLabel, AssemblyOffset};
 
 use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END};
+use crate::recipe::{Op, Recipe, Slot, Width, ErrorTarget};
 
 pub type Assembler = dynasmrt::x64::Assembler;
 
@@ -363,156 +364,28 @@ impl EmitCtx {
         );
     }
 
-    // ── Inline scalar reads ──────────────────────────────────────────
-    //
-    // These emit scalar decode logic directly into the instruction stream,
-    // using cached registers (r12=input_ptr, r13=input_end, r14=out,
-    // r15=ctx). No cursor flush/reload, no indirect call.
+    // ── Inline scalar reads (recipe-based) ─────────────────────────────
 
-    /// Emit inline code to read a single byte (u8 or i8) and store to out+offset.
     pub fn emit_inline_read_byte(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Bounds check: need at least 1 byte
-            ; cmp r12, r13
-            ; jae =>eof_label
-            // Load, store, advance
-            ; movzx r10d, BYTE [r12]
-            ; mov BYTE [r14 + offset as i32], r10b
-            ; add r12, 1
-            ; jmp =>done_label
-
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_byte(offset));
     }
 
-    /// Emit inline code to read a single byte from input and store to rsp+offset (stack slot).
     pub fn emit_inline_read_byte_to_stack(&mut self, sp_offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch x64
-            ; cmp r12, r13
-            ; jae =>eof_label
-            ; movzx r10d, BYTE [r12]
-            ; mov BYTE [rsp + sp_offset as i32], r10b
-            ; add r12, 1
-            ; jmp =>done_label
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_byte_to_stack(sp_offset));
     }
 
-    /// Emit inline code to read a bool and store to out+offset.
-    /// Validates the byte is 0 or 1.
     pub fn emit_inline_read_bool(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let invalid_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Bounds check
-            ; cmp r12, r13
-            ; jae =>eof_label
-            // Load byte
-            ; movzx r10d, BYTE [r12]
-            // Validate: must be 0 or 1
-            ; cmp r10d, 1
-            ; ja =>invalid_label
-            // Store and advance
-            ; mov BYTE [r14 + offset as i32], r10b
-            ; add r12, 1
-            ; jmp =>done_label
-
-            // Cold: invalid bool
-            ; =>invalid_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::InvalidBool as i32
-            ; jmp =>error_exit
-
-            // Cold: eof
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_bool(offset));
     }
 
-    /// Emit inline code to read 4 LE bytes (f32) and store to out+offset.
     pub fn emit_inline_read_f32(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Bounds check: need 4 bytes
-            ; mov r10, r13
-            ; sub r10, r12
-            ; cmp r10, 4
-            ; jb =>eof_label
-            // Load 4 bytes, store, advance
-            ; mov r10d, DWORD [r12]
-            ; mov DWORD [r14 + offset as i32], r10d
-            ; add r12, 4
-            ; jmp =>done_label
-
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_f32(offset));
     }
 
-    /// Emit inline code to read 8 LE bytes (f64) and store to out+offset.
     pub fn emit_inline_read_f64(&mut self, offset: u32) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Bounds check: need 8 bytes
-            ; mov r10, r13
-            ; sub r10, r12
-            ; cmp r10, 8
-            ; jb =>eof_label
-            // Load 8 bytes, store, advance
-            ; mov r10, QWORD [r12]
-            ; mov QWORD [r14 + offset as i32], r10
-            ; add r12, 8
-            ; jmp =>done_label
-
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::read_f64(offset));
     }
 
-    /// Emit inline varint fast path: if the first byte has bit 7 clear
-    /// (single-byte varint, value < 128), store directly and advance.
-    /// Otherwise fall through to a full intrinsic call for multi-byte decode.
-    ///
-    /// `store_width`: 2 (u16/i16), 4 (u32/i32), or 8 (u64/i64).
-    /// `zigzag`: true for signed types (apply zigzag decode on fast path).
-    /// `intrinsic_fn_ptr`: full varint decode intrinsic for the slow path.
     pub fn emit_inline_varint_fast_path(
         &mut self,
         offset: u32,
@@ -520,173 +393,17 @@ impl EmitCtx {
         zigzag: bool,
         intrinsic_fn_ptr: *const u8,
     ) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let slow_path = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-        let ptr_val = intrinsic_fn_ptr as i64;
-
-        // Bounds check: need at least 1 byte
-        dynasm!(self.ops
-            ; .arch x64
-            ; cmp r12, r13
-            ; jae =>eof_label
-            // Load first byte
-            ; movzx r10d, BYTE [r12]
-            // Test continuation bit (bit 7)
-            ; test r10d, 0x80
-            ; jnz =>slow_path
-            // Fast path: single-byte varint, value in r10d (0..127)
-            ; add r12, 1
-        );
-
-        if zigzag {
-            // Zigzag decode: decoded = (v >> 1) ^ -(v & 1)
-            dynasm!(self.ops
-                ; .arch x64
-                ; mov r11d, r10d
-                ; shr r11d, 1              // r11d = v >> 1
-                ; and r10d, 1              // r10d = v & 1
-                ; neg r10d                 // r10d = -(v & 1) = 0 or 0xFFFFFFFF
-                ; xor r10d, r11d           // r10d = decoded value
-            );
-        }
-
-        // Store based on width
-        match store_width {
-            2 => dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset as i32], r10w),
-            4 => dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset as i32], r10d),
-            8 => dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset as i32], r10),
+        let width = match store_width {
+            2 => Width::W2,
+            4 => Width::W4,
+            8 => Width::W8,
             _ => panic!("unsupported varint store width: {store_width}"),
-        }
-
-        dynasm!(self.ops
-            ; .arch x64
-            ; jmp =>done_label
-
-            // Slow path: multi-byte varint, call intrinsic
-            ; =>slow_path
-            // Flush cached cursor back to ctx
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            // Set up arguments: rdi = ctx, rsi = out + offset
-            ; mov rdi, r15
-            ; lea rsi, [r14 + offset as i32]
-            // Load function pointer and call
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            // Reload cursor and check error
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-            ; jmp =>done_label
-
-            // Cold: eof
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
+        };
+        self.emit_recipe(&crate::recipe::varint_fast_path(offset, width, zigzag, intrinsic_fn_ptr));
     }
 
-    // ── Inline string reads ────────────────────────────────────────────
+    // ── Inline string reads (recipe-based) ──────────────────────────────
 
-    /// Emit inline postcard string deserialization.
-    ///
-    /// Inlines the varint length decode (fast path) and bounds check,
-    /// then calls a lean intrinsic for UTF-8 validation + allocation only.
-    /// Cursor advance is also inlined after the call.
-    ///
-    /// Stack usage: rsp+48 holds the string length (u32) across the call.
-    /// This is within the extra stack area (postcard requests 8 bytes).
-    pub fn emit_inline_postcard_string(
-        &mut self,
-        offset: u32,
-        slow_varint_intrinsic: *const u8,
-        validate_alloc_intrinsic: *const u8,
-    ) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let varint_slow = self.ops.new_dynamic_label();
-        let have_length = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-        let varint_ptr = slow_varint_intrinsic as i64;
-        let alloc_ptr = validate_alloc_intrinsic as i64;
-
-        // Step 1: Inline varint length decode
-        // Fast path: single-byte varint (length < 128)
-        dynasm!(self.ops
-            ; .arch x64
-            // Bounds check: need at least 1 byte for the varint
-            ; cmp r12, r13
-            ; jae =>eof_label
-            // Load first byte
-            ; movzx r10d, BYTE [r12]
-            // Test continuation bit (bit 7)
-            ; test r10d, 0x80
-            ; jnz =>varint_slow
-            // Fast path: single-byte varint, length in r10d
-            ; add r12, 1
-            ; jmp =>have_length
-
-            // Slow path: multi-byte varint length
-            ; =>varint_slow
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15
-            ; lea rsi, [rsp + 48]            // temp u32 on stack
-            ; mov rax, QWORD varint_ptr
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r11d, r11d
-            ; jnz =>error_exit
-            ; mov r10d, DWORD [rsp + 48]    // load decoded length
-            ; jmp =>have_length
-        );
-
-        // Step 2: Inline bounds check + call validate+alloc + advance cursor
-        dynasm!(self.ops
-            ; .arch x64
-            ; =>have_length
-            // r10d = string length. Save to stack so it survives the call.
-            ; mov DWORD [rsp + 48], r10d
-
-            // Bounds check: remaining >= length
-            ; mov r11, r13
-            ; sub r11, r12                  // r11 = remaining bytes
-            ; cmp r11, r10                  // remaining >= length?
-            ; jb =>eof_label
-
-            // Call validate_and_alloc_string(ctx, out+offset, input_ptr, length)
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15                  // arg0: ctx
-            ; lea rsi, [r14 + offset as i32] // arg1: out + offset
-            ; mov rdx, r12                  // arg2: data_ptr = current input_ptr
-            ; mov ecx, r10d                 // arg3: data_len = length
-            ; mov rax, QWORD alloc_ptr
-            ; call rax
-
-            // Check error
-            ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r11d, r11d
-            ; jnz =>error_exit
-
-            // Advance cursor by string length (reload from stack)
-            ; mov r10d, DWORD [rsp + 48]
-            ; add r12, r10                  // input_ptr += length
-            ; jmp =>done_label
-
-            // Cold: eof / bounds check failure
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
-    }
-
-    /// Emit postcard string deserialization with malum (direct layout write).
     pub fn emit_inline_postcard_string_malum(
         &mut self,
         offset: u32,
@@ -694,90 +411,12 @@ impl EmitCtx {
         slow_varint_intrinsic: *const u8,
         validate_alloc_copy_intrinsic: *const u8,
     ) {
-        let error_exit = self.error_exit;
-        let eof_label = self.ops.new_dynamic_label();
-        let varint_slow = self.ops.new_dynamic_label();
-        let have_length = self.ops.new_dynamic_label();
-        let done_label = self.ops.new_dynamic_label();
-        let varint_ptr = slow_varint_intrinsic as i64;
-        let alloc_ptr = validate_alloc_copy_intrinsic as i64;
-
-        let ptr_off = (offset + string_offsets.ptr_offset) as i32;
-        let len_off = (offset + string_offsets.len_offset) as i32;
-        let cap_off = (offset + string_offsets.cap_offset) as i32;
-
-        // Step 1: Inline varint length decode (identical to non-malum)
-        dynasm!(self.ops
-            ; .arch x64
-            ; cmp r12, r13
-            ; jae =>eof_label
-            ; movzx r10d, BYTE [r12]
-            ; test r10d, 0x80
-            ; jnz =>varint_slow
-            ; add r12, 1
-            ; jmp =>have_length
-
-            ; =>varint_slow
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15
-            ; lea rsi, [rsp + 48]
-            ; mov rax, QWORD varint_ptr
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r11d, r11d
-            ; jnz =>error_exit
-            ; mov r10d, DWORD [rsp + 48]
-            ; jmp =>have_length
-        );
-
-        // Step 2: Bounds check + call validate_alloc_copy + write (ptr, len, cap)
-        dynasm!(self.ops
-            ; .arch x64
-            ; =>have_length
-            ; mov DWORD [rsp + 48], r10d
-
-            // Bounds check
-            ; mov r11, r13
-            ; sub r11, r12
-            ; cmp r11, r10
-            ; jb =>eof_label
-
-            // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
-            // Returns buf pointer in rax
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-            ; mov rdi, r15                  // arg0: ctx
-            ; mov rsi, r12                  // arg1: data_ptr
-            ; mov edx, r10d                 // arg2: data_len
-            ; mov rax, QWORD alloc_ptr
-            ; call rax
-
-            // Check error
-            ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r11d, r11d
-            ; jnz =>error_exit
-
-            // rax = buf pointer, reload length
-            ; mov r10d, DWORD [rsp + 48]
-            // Zero-extend r10d to r10 for the 64-bit stores
-            // (mov r10d already zero-extends the upper 32 bits)
-
-            // Write String fields directly at discovered offsets
-            ; mov [r14 + ptr_off], rax       // string.ptr = buf
-            ; mov [r14 + len_off], r10       // string.len = length
-            ; mov [r14 + cap_off], r10       // string.cap = length
-
-            // Advance cursor
-            ; add r12, r10
-            ; jmp =>done_label
-
-            // Cold: eof
-            ; =>eof_label
-            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], crate::context::ErrorCode::UnexpectedEof as i32
-            ; jmp =>error_exit
-
-            ; =>done_label
-        );
+        self.emit_recipe(&crate::recipe::postcard_string_malum(
+            offset,
+            string_offsets,
+            slow_varint_intrinsic,
+            validate_alloc_copy_intrinsic,
+        ));
     }
 
     // ── Enum support ──────────────────────────────────────────────────
@@ -1512,6 +1151,295 @@ impl EmitCtx {
             ; mov rax, [rsp + slot as i32]
             ; add rax, 1
             ; mov [rsp + slot as i32], rax
+        );
+    }
+
+    // ── Recipe emission ─────────────────────────────────────────────
+
+    /// Emit a recipe — interpret a sequence of micro-ops into x86_64 instructions.
+    pub fn emit_recipe(&mut self, recipe: &Recipe) {
+        let error_exit = self.error_exit;
+
+        // Allocate dynamic labels for the recipe
+        let labels: Vec<DynamicLabel> = (0..recipe.label_count)
+            .map(|_| self.ops.new_dynamic_label())
+            .collect();
+
+        // Shared EOF error label
+        let eof_label = self.ops.new_dynamic_label();
+
+        for op in &recipe.ops {
+            match op {
+                Op::BoundsCheck { count } => {
+                    if *count == 1 {
+                        dynasm!(self.ops
+                            ; .arch x64
+                            ; cmp r12, r13
+                            ; jae =>eof_label
+                        );
+                    } else {
+                        let count = *count as i32;
+                        dynasm!(self.ops
+                            ; .arch x64
+                            ; mov r10, r13
+                            ; sub r10, r12
+                            ; cmp r10, count
+                            ; jb =>eof_label
+                        );
+                    }
+                }
+                Op::LoadByte { dst } => match dst {
+                    Slot::A => dynasm!(self.ops ; .arch x64 ; movzx r10d, BYTE [r12]),
+                    Slot::B => dynasm!(self.ops ; .arch x64 ; movzx r11d, BYTE [r12]),
+                },
+                Op::LoadFromCursor { dst, width } => match (dst, width) {
+                    (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r10d, DWORD [r12]),
+                    (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r10, QWORD [r12]),
+                    (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r11d, DWORD [r12]),
+                    (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r11, QWORD [r12]),
+                    _ => panic!("unsupported LoadFromCursor width"),
+                },
+                Op::StoreToOut { src, offset, width } => {
+                    let offset = *offset as i32;
+                    match (src, width) {
+                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch x64 ; mov BYTE [r14 + offset], r10b),
+                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset], r10w),
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset], r10d),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset], r10),
+                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch x64 ; mov BYTE [r14 + offset], r11b),
+                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset], r11w),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset], r11d),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset], r11),
+                    }
+                }
+                Op::StoreByteToStack { src, sp_offset } => {
+                    let sp_offset = *sp_offset as i32;
+                    match src {
+                        Slot::A => dynasm!(self.ops ; .arch x64 ; mov BYTE [rsp + sp_offset], r10b),
+                        Slot::B => dynasm!(self.ops ; .arch x64 ; mov BYTE [rsp + sp_offset], r11b),
+                    }
+                }
+                Op::StoreToStack { src, sp_offset, width } => {
+                    let sp_offset = *sp_offset as i32;
+                    match (src, width) {
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [rsp + sp_offset], r10d),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [rsp + sp_offset], r10),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [rsp + sp_offset], r11d),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [rsp + sp_offset], r11),
+                        _ => panic!("unsupported StoreToStack width"),
+                    }
+                }
+                Op::LoadFromStack { dst, sp_offset, width } => {
+                    let sp_offset = *sp_offset as i32;
+                    match (dst, width) {
+                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r10d, DWORD [rsp + sp_offset]),
+                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r10, QWORD [rsp + sp_offset]),
+                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r11d, DWORD [rsp + sp_offset]),
+                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r11, QWORD [rsp + sp_offset]),
+                        _ => panic!("unsupported LoadFromStack width"),
+                    }
+                }
+                Op::AdvanceCursor { count } => {
+                    let count = *count as i32;
+                    dynasm!(self.ops ; .arch x64 ; add r12, count);
+                }
+                Op::AdvanceCursorBySlot { slot } => match slot {
+                    Slot::A => dynasm!(self.ops ; .arch x64 ; add r12, r10),
+                    Slot::B => dynasm!(self.ops ; .arch x64 ; add r12, r11),
+                },
+                Op::ZigzagDecode { slot } => match slot {
+                    Slot::A => dynasm!(self.ops
+                        ; .arch x64
+                        ; mov r11d, r10d
+                        ; shr r11d, 1
+                        ; and r10d, 1
+                        ; neg r10d
+                        ; xor r10d, r11d
+                    ),
+                    Slot::B => dynasm!(self.ops
+                        ; .arch x64
+                        ; mov r10d, r11d
+                        ; shr r10d, 1
+                        ; and r11d, 1
+                        ; neg r11d
+                        ; xor r11d, r10d
+                    ),
+                },
+                Op::ValidateMax { slot, max_val, error } => {
+                    let max_val = *max_val as i32;
+                    let error_code = *error as i32;
+                    let invalid_label = self.ops.new_dynamic_label();
+                    let ok_label = self.ops.new_dynamic_label();
+                    match slot {
+                        Slot::A => dynasm!(self.ops
+                            ; .arch x64
+                            ; cmp r10d, max_val
+                            ; ja =>invalid_label
+                        ),
+                        Slot::B => dynasm!(self.ops
+                            ; .arch x64
+                            ; cmp r11d, max_val
+                            ; ja =>invalid_label
+                        ),
+                    }
+                    dynasm!(self.ops
+                        ; .arch x64
+                        ; jmp =>ok_label
+                        ; =>invalid_label
+                        ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+                        ; jmp =>error_exit
+                        ; =>ok_label
+                    );
+                }
+                Op::TestBit7Branch { slot, target } => {
+                    let label = labels[*target];
+                    match slot {
+                        Slot::A => dynasm!(self.ops
+                            ; .arch x64
+                            ; test r10d, 0x80
+                            ; jnz =>label
+                        ),
+                        Slot::B => dynasm!(self.ops
+                            ; .arch x64
+                            ; test r11d, 0x80
+                            ; jnz =>label
+                        ),
+                    }
+                }
+                Op::Branch { target } => {
+                    let label = labels[*target];
+                    dynasm!(self.ops ; .arch x64 ; jmp =>label);
+                }
+                Op::BindLabel { index } => {
+                    let label = labels[*index];
+                    dynasm!(self.ops ; .arch x64 ; =>label);
+                }
+                Op::CallIntrinsic { fn_ptr, field_offset } => {
+                    let ptr_val = *fn_ptr as i64;
+                    let field_offset = *field_offset as i32;
+                    dynasm!(self.ops
+                        ; .arch x64
+                        ; mov [r15 + CTX_INPUT_PTR as i32], r12
+                        ; mov rdi, r15
+                        ; lea rsi, [r14 + field_offset]
+                        ; mov rax, QWORD ptr_val
+                        ; call rax
+                        ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+                        ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+                        ; test r10d, r10d
+                        ; jnz =>error_exit
+                    );
+                }
+                Op::CallIntrinsicStackOut { fn_ptr, sp_offset } => {
+                    let ptr_val = *fn_ptr as i64;
+                    let sp_offset = *sp_offset as i32;
+                    dynasm!(self.ops
+                        ; .arch x64
+                        ; mov [r15 + CTX_INPUT_PTR as i32], r12
+                        ; mov rdi, r15
+                        ; lea rsi, [rsp + sp_offset]
+                        ; mov rax, QWORD ptr_val
+                        ; call rax
+                        ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+                        ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
+                        ; test r11d, r11d
+                        ; jnz =>error_exit
+                    );
+                }
+                Op::ComputeRemaining { dst } => match dst {
+                    Slot::A => dynasm!(self.ops
+                        ; .arch x64
+                        ; mov r10, r13
+                        ; sub r10, r12
+                    ),
+                    Slot::B => dynasm!(self.ops
+                        ; .arch x64
+                        ; mov r11, r13
+                        ; sub r11, r12
+                    ),
+                },
+                Op::CmpBranchLo { lhs, rhs, on_fail } => {
+                    let target = match on_fail {
+                        ErrorTarget::Eof => eof_label,
+                        ErrorTarget::ErrorExit => error_exit,
+                    };
+                    match (lhs, rhs) {
+                        (Slot::A, Slot::B) => dynasm!(self.ops
+                            ; .arch x64
+                            ; cmp r10, r11
+                            ; jb =>target
+                        ),
+                        (Slot::B, Slot::A) => dynasm!(self.ops
+                            ; .arch x64
+                            ; cmp r11, r10
+                            ; jb =>target
+                        ),
+                        _ => panic!("CmpBranchLo requires different slots"),
+                    }
+                }
+                Op::SaveCursor { dst } => match dst {
+                    Slot::A => dynasm!(self.ops ; .arch x64 ; mov r10, r12),
+                    Slot::B => dynasm!(self.ops ; .arch x64 ; mov r11, r12),
+                },
+                Op::CallValidateAllocCopy { fn_ptr, data_src, len_src } => {
+                    let ptr_val = *fn_ptr as i64;
+                    // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
+                    // Returns buf pointer in rax
+                    dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+                    dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
+                    match data_src {
+                        Slot::A => dynasm!(self.ops ; .arch x64 ; mov rsi, r10),
+                        Slot::B => dynasm!(self.ops ; .arch x64 ; mov rsi, r11),
+                    }
+                    match len_src {
+                        Slot::A => dynasm!(self.ops ; .arch x64 ; mov edx, r10d),
+                        Slot::B => dynasm!(self.ops ; .arch x64 ; mov edx, r11d),
+                    }
+                    dynasm!(self.ops
+                        ; .arch x64
+                        ; mov rax, QWORD ptr_val
+                        ; call rax
+                        ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
+                        ; test r11d, r11d
+                        ; jnz =>error_exit
+                    );
+                }
+                Op::WriteMalumString { base_offset, ptr_off, len_off, cap_off, len_slot } => {
+                    let ptr_offset = (*base_offset + *ptr_off) as i32;
+                    let len_offset = (*base_offset + *len_off) as i32;
+                    let cap_offset = (*base_offset + *cap_off) as i32;
+                    // rax = buf pointer from previous call return
+                    dynasm!(self.ops ; .arch x64 ; mov [r14 + ptr_offset], rax);
+                    match len_slot {
+                        Slot::A => {
+                            dynasm!(self.ops
+                                ; .arch x64
+                                ; mov [r14 + len_offset], r10
+                                ; mov [r14 + cap_offset], r10
+                            );
+                        }
+                        Slot::B => {
+                            dynasm!(self.ops
+                                ; .arch x64
+                                ; mov [r14 + len_offset], r11
+                                ; mov [r14 + cap_offset], r11
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Jump over cold path, then emit shared EOF error
+        let done_label = self.ops.new_dynamic_label();
+        let eof_code = crate::context::ErrorCode::UnexpectedEof as i32;
+        dynasm!(self.ops
+            ; .arch x64
+            ; jmp =>done_label
+            ; =>eof_label
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], eof_code
+            ; jmp =>error_exit
+            ; =>done_label
         );
     }
 

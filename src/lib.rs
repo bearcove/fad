@@ -7,6 +7,7 @@ pub mod json;
 pub mod json_intrinsics;
 pub mod malum;
 pub mod postcard;
+pub mod recipe;
 pub mod solver;
 
 use compiler::CompiledDeser;
