@@ -14,9 +14,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: x86_64
+          - arch: x86_64-linux
             runner: depot-ubuntu-24.04-16
-          - arch: aarch64
+          - arch: aarch64-linux
             runner: depot-ubuntu-24.04-arm-16
           - arch: x86_64-windows
             runner: depot-windows-2025-16
