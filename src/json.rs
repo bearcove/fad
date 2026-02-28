@@ -13,19 +13,19 @@ use crate::solver::{JsonValueType, LoweredSolver};
 // r[impl deser.json.struct.unknown-keys]
 
 // Stack layout (extra_stack = 48, offsets from sp):
-//   [sp+0..48)   callee-saved registers (base frame)
-//   [sp+48..56)  bitset (u64) — tracks which required fields have been seen
-//   [sp+56..64)  key_ptr (*const u8) — borrowed pointer into input
-//   [sp+64..72)  key_len (usize)
-//   [sp+72..80)  comma_or_end result (u8 + padding)
-//   [sp+80..88)  saved_cursor — saved input_ptr for solver restore
-//   [sp+88..96)  candidates — solver bitmask for object bucket disambiguation
-const BITSET_OFFSET: u32 = 48;
-const KEY_PTR_OFFSET: u32 = 56;
-const KEY_LEN_OFFSET: u32 = 64;
-const RESULT_BYTE_OFFSET: u32 = 72;
-const SAVED_CURSOR_OFFSET: u32 = 80;
-const CANDIDATES_OFFSET: u32 = 88;
+//   [sp+0..BASE_FRAME)                   callee-saved registers (+ shadow space on Windows)
+//   [sp+BASE_FRAME+0..BASE_FRAME+8)      bitset (u64) — tracks which required fields
+//   [sp+BASE_FRAME+8..BASE_FRAME+16)     key_ptr (*const u8) — borrowed pointer into input
+//   [sp+BASE_FRAME+16..BASE_FRAME+24)    key_len (usize)
+//   [sp+BASE_FRAME+24..BASE_FRAME+32)    comma_or_end result (u8 + padding)
+//   [sp+BASE_FRAME+32..BASE_FRAME+40)    saved_cursor — saved input_ptr for solver restore
+//   [sp+BASE_FRAME+40..BASE_FRAME+48)    candidates — solver bitmask for object bucket disambiguation
+const BITSET_OFFSET: u32 = BASE_FRAME;
+const KEY_PTR_OFFSET: u32 = BASE_FRAME + 8;
+const KEY_LEN_OFFSET: u32 = BASE_FRAME + 16;
+const RESULT_BYTE_OFFSET: u32 = BASE_FRAME + 24;
+const SAVED_CURSOR_OFFSET: u32 = BASE_FRAME + 32;
+const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
 
 /// JSON wire format — key-value pairs, linear key dispatch.
 pub struct FadJson;
