@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "citm_catalog"
 harness = false
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
