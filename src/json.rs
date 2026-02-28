@@ -261,18 +261,15 @@ impl Decoder for FadJson {
     }
 
     fn vec_extra_stack_space(&self) -> u32 {
-        // JSON Vec needs: result_byte + saved_out + buf + len + cap = 40 bytes
-        // plus the base JSON slots (bitset, key_ptr, key_len) = 24 bytes
-        // Total: 64 bytes (offsets 48..112 from sp)
-        64
+        // JSON Vec needs 48 bytes of base format slots (bitset, key_ptr, key_len,
+        // result_byte, saved_cursor, candidates) + saved_out + buf + len + cap = 32 bytes.
+        // Total: 80 bytes
+        80
     }
 
     fn map_extra_stack_space(&self) -> u32 {
-        // Same stack layout as JSON Vec: saved_out + buf + len + cap = 32 bytes
-        // on top of the base JSON struct slots (48 bytes) = 80 bytes total.
-        // We reuse the 64-byte vec_extra_stack_space since the slots don't overlap
-        // (map functions have their own separate frame).
-        64
+        // Same layout as vec: 48 bytes base format + 32 bytes (saved_out + buf + len + cap).
+        80
     }
 
     // r[impl deser.json.seq]
@@ -295,11 +292,11 @@ impl Decoder for FadJson {
         let elem_size = elem_layout.size() as u32;
         let elem_align = elem_layout.align() as u32;
 
-        // Stack slot offsets (relative to sp)
-        let saved_out_slot = BASE_FRAME + 32; // sp+80
-        let buf_slot = BASE_FRAME + 40; // sp+88
-        let len_slot = BASE_FRAME + 48; // sp+96
-        let cap_slot = BASE_FRAME + 56; // sp+104
+        // Stack slot offsets — after the 48 bytes of base format slots
+        let saved_out_slot = BASE_FRAME + 48;
+        let buf_slot = BASE_FRAME + 56;
+        let len_slot = BASE_FRAME + 64;
+        let cap_slot = BASE_FRAME + 72;
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
@@ -455,11 +452,11 @@ impl Decoder for FadJson {
             .align() as u32;
         let pair_align = k_align.max(v_align);
 
-        // Stack slot offsets — same layout as JSON Vec (after JSON struct base slots).
-        let saved_out_slot = BASE_FRAME + 32;
-        let buf_slot = BASE_FRAME + 40;
-        let len_slot = BASE_FRAME + 48;
-        let cap_slot = BASE_FRAME + 56;
+        // Stack slot offsets — after the 48 bytes of base format slots
+        let saved_out_slot = BASE_FRAME + 48;
+        let buf_slot = BASE_FRAME + 56;
+        let len_slot = BASE_FRAME + 64;
+        let cap_slot = BASE_FRAME + 72;
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();

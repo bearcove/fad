@@ -3,7 +3,7 @@ source: src/disasm_tests.rs
 expression: out
 ---
 === json/vec ===
-  sub sp, sp, #0x70
+  sub sp, sp, #0x80
   stp x29, x30, [sp]
   stp x19, x20, [sp, #0x10]
   stp x21, x22, [sp, #0x20]
@@ -49,17 +49,17 @@ expression: out
   ldr x19, [x22]
   ldr w10, [x22, #0x10]
   cbnz w10, $+0x18c
-  str x21, [sp, #0x50]
-  str x0, [sp, #0x58]
-  str xzr, [sp, #0x60]
+  str x21, [sp, #0x60]
+  str x0, [sp, #0x68]
+  str xzr, [sp, #0x70]
   mov x10, #<imm>
-  str x10, [sp, #0x68]
-  ldr x10, [sp, #0x60]
-  ldr x11, [sp, #0x68]
+  str x10, [sp, #0x78]
+  ldr x10, [sp, #0x70]
+  ldr x11, [sp, #0x78]
   cmp x10, x11
   b.eq $+0x90
-  ldr x21, [sp, #0x58]
-  ldr x10, [sp, #0x60]
+  ldr x21, [sp, #0x68]
+  ldr x10, [sp, #0x70]
   mov x11, #<imm>
   madd x21, x10, x11, x21
   str x19, [x22]
@@ -75,9 +75,9 @@ expression: out
   cbnz w9, $+0x12c
   ldr w10, [x22, #0x10]
   cbnz w10, $+0xe0
-  ldr x10, [sp, #0x60]
+  ldr x10, [sp, #0x70]
   add x10, x10, #0x1
-  str x10, [sp, #0x60]
+  str x10, [sp, #0x70]
   str x19, [x22]
   mov x0, x22
   add x1, sp, #0x48
@@ -94,12 +94,12 @@ expression: out
   b.eq $+0x64
   b $-0x98
   str x19, [x22]
-  ldr x10, [sp, #0x68]
+  ldr x10, [sp, #0x78]
   lsl x10, x10, #0x1
   mov x0, x22
-  ldr x1, [sp, #0x58]
-  ldr x2, [sp, #0x60]
-  ldr x3, [sp, #0x68]
+  ldr x1, [sp, #0x68]
+  ldr x2, [sp, #0x70]
+  ldr x3, [sp, #0x78]
   mov x4, x10
   mov x5, #<imm>
   mov x6, #<imm>
@@ -111,15 +111,15 @@ expression: out
   ldr x19, [x22]
   ldr w10, [x22, #0x10]
   cbnz w10, $+0x94
-  str x0, [sp, #0x58]
-  ldr x10, [sp, #0x68]
+  str x0, [sp, #0x68]
+  ldr x10, [sp, #0x78]
   lsl x10, x10, #0x1
-  str x10, [sp, #0x68]
+  str x10, [sp, #0x78]
   b $-0xe4
-  ldr x21, [sp, #0x50]
-  ldr x10, [sp, #0x58]
-  ldr x11, [sp, #0x60]
-  ldr x12, [sp, #0x68]
+  ldr x21, [sp, #0x60]
+  ldr x10, [sp, #0x68]
+  ldr x11, [sp, #0x70]
+  ldr x12, [sp, #0x78]
   str x10, [x21, #0x8]
   str x11, [x21, #0x10]
   str x12, [x21]
@@ -130,9 +130,9 @@ expression: out
   str xzr, [x21, #0x10]
   str xzr, [x21]
   b $+0x30
-  ldr x21, [sp, #0x50]
-  ldr x0, [sp, #0x58]
-  ldr x1, [sp, #0x68]
+  ldr x21, [sp, #0x60]
+  ldr x0, [sp, #0x68]
+  ldr x1, [sp, #0x78]
   mov x2, #<imm>
   mov x3, #<imm>
   mov x8, #<imm>
@@ -145,10 +145,10 @@ expression: out
   ldp x21, x22, [sp, #0x20]
   ldp x19, x20, [sp, #0x10]
   ldp x29, x30, [sp]
-  add sp, sp, #0x70
+  add sp, sp, #0x80
   ret
   ldp x21, x22, [sp, #0x20]
   ldp x19, x20, [sp, #0x10]
   ldp x29, x30, [sp]
-  add sp, sp, #0x70
+  add sp, sp, #0x80
   ret

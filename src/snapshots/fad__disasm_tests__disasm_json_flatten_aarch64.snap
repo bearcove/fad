@@ -31,7 +31,7 @@ expression: out
   b $+0x10
   mov w9, #0x5
   str w9, [x22, #0x10]
-  b $+0x2b8
+  b $+0x654
   str x19, [x22]
   mov x0, x22
   add x1, sp, #0x48
@@ -42,14 +42,77 @@ expression: out
   blr x8
   ldr x19, [x22]
   ldr w9, [x22, #0x10]
-  cbnz w9, $+0x28c
+  cbnz w9, $+0x628
   ldrb w9, [sp, #0x48]
   cmp w9, #0x7d
-  b.eq $+0x244
+  b.eq $+0x5e0
   str x19, [x22]
   mov x0, x22
-  add x1, sp, #0x38
-  add x2, sp, #0x40
+  mov x8, #<imm>
+  movk x8, #<imm>, lsl #16
+  movk x8, #<imm>, lsl #32
+  movk x8, #<imm>, lsl #48
+  blr x8
+  ldr x19, [x22]
+  cmp x19, x20
+  b.hs $+0x18
+  ldrb w9, [x19]
+  cmp w9, #0x22
+  b.ne $+0xc
+  add x19, x19, #0x1
+  b $+0x10
+  mov w9, #0x7
+  str w9, [x22, #0x10]
+  b $+0x5d4
+  str x19, [sp, #0x38]
+  movi v1.16b, #0x22
+  movi v2.16b, #0x5c
+  sub x9, x20, x19
+  cmp x9, #0x10
+  b.lo $+0x58
+  ld1 {v0.16b}, [x19]
+  cmeq v3.16b, v0.16b, v1.16b
+  cmeq v4.16b, v0.16b, v2.16b
+  orr v3.16b, v3.16b, v4.16b
+  umaxv b5, v3.16b
+  umov w9, v5.b[0]
+  cbz w9, $+0x34
+  mov x10, #<imm>
+  ldrb w9, [x19, x10]
+  cmp w9, #0x22
+  b.eq $+0x14
+  cmp w9, #0x5c
+  b.eq $+0xc
+  add x10, x10, #0x1
+  b $-0x18
+  add x19, x19, x10
+  cmp w9, #0x22
+  b.eq $+0x34
+  b $+0x44
+  add x19, x19, #0x10
+  b $-0x5c
+  cmp x19, x20
+  b.hs $+0x78
+  ldrb w9, [x19]
+  cmp w9, #0x22
+  b.eq $+0x14
+  cmp w9, #0x5c
+  b.eq $+0x20
+  add x19, x19, #0x1
+  b $-0x20
+  ldr x9, [sp, #0x38]
+  sub x10, x19, x9
+  str x10, [sp, #0x40]
+  add x19, x19, #0x1
+  b $+0x54
+  ldr x9, [sp, #0x38]
+  sub x10, x19, x9
+  str x19, [x22]
+  mov x0, x22
+  mov x1, x9
+  mov x2, x10
+  add x3, sp, #0x38
+  add x4, sp, #0x40
   mov x8, #<imm>
   movk x8, #<imm>, lsl #16
   movk x8, #<imm>, lsl #32
@@ -57,7 +120,11 @@ expression: out
   blr x8
   ldr x19, [x22]
   ldr w9, [x22, #0x10]
-  cbnz w9, $+0x250
+  cbnz w9, $+0x4f0
+  b $+0x10
+  mov w9, #0x8
+  str w9, [x22, #0x10]
+  b $+0x4e0
   cmp x19, x20
   b.hs $+0x3c
   ldrb w10, [x19]
@@ -76,7 +143,7 @@ expression: out
   b $+0x10
   mov w9, #0x6
   str w9, [x22, #0x10]
-  b $+0x204
+  b $+0x494
   ldr x0, [sp, #0x38]
   ldr x1, [sp, #0x40]
   mov x2, #<imm>
@@ -102,7 +169,7 @@ expression: out
   movk x8, #<imm>, lsl #32
   movk x8, #<imm>, lsl #48
   blr x8
-  cbnz x0, $+0x7c
+  cbnz x0, $+0x1c4
   ldr x0, [sp, #0x38]
   ldr x1, [sp, #0x40]
   mov x2, #<imm>
@@ -115,11 +182,89 @@ expression: out
   movk x8, #<imm>, lsl #32
   movk x8, #<imm>, lsl #48
   blr x8
-  cbnz x0, $+0x88
-  b $+0xc4
+  cbnz x0, $+0x1d0
+  b $+0x354
+  str x19, [x22]
+  mov x0, x22
+  mov x8, #<imm>
+  movk x8, #<imm>, lsl #16
+  movk x8, #<imm>, lsl #32
+  movk x8, #<imm>, lsl #48
+  blr x8
+  ldr x19, [x22]
+  cmp x19, x20
+  b.hs $+0x18
+  ldrb w9, [x19]
+  cmp w9, #0x22
+  b.ne $+0xc
+  add x19, x19, #0x1
+  b $+0x10
+  mov w9, #0x7
+  str w9, [x22, #0x10]
+  b $+0x3ac
+  str x19, [sp, #0x50]
+  movi v1.16b, #0x22
+  movi v2.16b, #0x5c
+  sub x9, x20, x19
+  cmp x9, #0x10
+  b.lo $+0x58
+  ld1 {v0.16b}, [x19]
+  cmeq v3.16b, v0.16b, v1.16b
+  cmeq v4.16b, v0.16b, v2.16b
+  orr v3.16b, v3.16b, v4.16b
+  umaxv b5, v3.16b
+  umov w9, v5.b[0]
+  cbz w9, $+0x34
+  mov x10, #<imm>
+  ldrb w9, [x19, x10]
+  cmp w9, #0x22
+  b.eq $+0x14
+  cmp w9, #0x5c
+  b.eq $+0xc
+  add x10, x10, #0x1
+  b $-0x18
+  add x19, x19, x10
+  cmp w9, #0x22
+  b.eq $+0x34
+  b $+0x80
+  add x19, x19, #0x10
+  b $-0x5c
+  cmp x19, x20
+  b.hs $+0xb0
+  ldrb w9, [x19]
+  cmp w9, #0x22
+  b.eq $+0x14
+  cmp w9, #0x5c
+  b.eq $+0x5c
+  add x19, x19, #0x1
+  b $-0x20
+  ldr x9, [sp, #0x50]
+  sub x10, x19, x9
+  str x10, [sp, #0x58]
+  str x19, [x22]
+  mov x0, x22
+  mov x1, x9
+  mov w2, w10
+  mov x8, #<imm>
+  movk x8, #<imm>, lsl #16
+  movk x8, #<imm>, lsl #32
+  movk x8, #<imm>, lsl #48
+  blr x8
+  ldr w9, [x22, #0x10]
+  cbnz w9, $+0x2e4
+  str x0, [x21, #0x8]
+  ldr x9, [sp, #0x58]
+  str x9, [x21, #0x10]
+  str x9, [x21]
+  add x19, x19, #0x1
+  b $+0x50
+  ldr x9, [sp, #0x50]
+  sub x10, x19, x9
   str x19, [x22]
   mov x0, x22
   add x1, x21, #0x0
+  mov x2, x9
+  mov x3, x10
   mov x8, #<imm>
   movk x8, #<imm>, lsl #16
   movk x8, #<imm>, lsl #32
@@ -127,12 +272,16 @@ expression: out
   blr x8
   ldr x19, [x22]
   ldr w9, [x22, #0x10]
-  cbnz w9, $+0x138
+  cbnz w9, $+0x290
+  b $+0x10
+  mov w9, #0x8
+  str w9, [x22, #0x10]
+  b $+0x280
   ldr x9, [sp, #0x30]
   mov x10, #<imm>
   orr x9, x9, x10
   str x9, [sp, #0x30]
-  b $+0xac
+  b $+0x1f4
   str x19, [x22]
   mov x0, x22
   add x1, x21, #0x30
@@ -143,15 +292,93 @@ expression: out
   blr x8
   ldr x19, [x22]
   ldr w9, [x22, #0x10]
-  cbnz w9, $+0xf8
+  cbnz w9, $+0x240
   ldr x9, [sp, #0x30]
   mov x10, #<imm>
   orr x9, x9, x10
   str x9, [sp, #0x30]
-  b $+0x6c
+  b $+0x1b4
+  str x19, [x22]
+  mov x0, x22
+  mov x8, #<imm>
+  movk x8, #<imm>, lsl #16
+  movk x8, #<imm>, lsl #32
+  movk x8, #<imm>, lsl #48
+  blr x8
+  ldr x19, [x22]
+  cmp x19, x20
+  b.hs $+0x18
+  ldrb w9, [x19]
+  cmp w9, #0x22
+  b.ne $+0xc
+  add x19, x19, #0x1
+  b $+0x10
+  mov w9, #0x7
+  str w9, [x22, #0x10]
+  b $+0x1e4
+  str x19, [sp, #0x50]
+  movi v1.16b, #0x22
+  movi v2.16b, #0x5c
+  sub x9, x20, x19
+  cmp x9, #0x10
+  b.lo $+0x58
+  ld1 {v0.16b}, [x19]
+  cmeq v3.16b, v0.16b, v1.16b
+  cmeq v4.16b, v0.16b, v2.16b
+  orr v3.16b, v3.16b, v4.16b
+  umaxv b5, v3.16b
+  umov w9, v5.b[0]
+  cbz w9, $+0x34
+  mov x10, #<imm>
+  ldrb w9, [x19, x10]
+  cmp w9, #0x22
+  b.eq $+0x14
+  cmp w9, #0x5c
+  b.eq $+0xc
+  add x10, x10, #0x1
+  b $-0x18
+  add x19, x19, x10
+  cmp w9, #0x22
+  b.eq $+0x34
+  b $+0x80
+  add x19, x19, #0x10
+  b $-0x5c
+  cmp x19, x20
+  b.hs $+0xb0
+  ldrb w9, [x19]
+  cmp w9, #0x22
+  b.eq $+0x14
+  cmp w9, #0x5c
+  b.eq $+0x5c
+  add x19, x19, #0x1
+  b $-0x20
+  ldr x9, [sp, #0x50]
+  sub x10, x19, x9
+  str x10, [sp, #0x58]
+  str x19, [x22]
+  mov x0, x22
+  mov x1, x9
+  mov w2, w10
+  mov x8, #<imm>
+  movk x8, #<imm>, lsl #16
+  movk x8, #<imm>, lsl #32
+  movk x8, #<imm>, lsl #48
+  blr x8
+  ldr w9, [x22, #0x10]
+  cbnz w9, $+0x11c
+  str x0, [x21, #0x20]
+  ldr x9, [sp, #0x58]
+  str x9, [x21, #0x28]
+  str x9, [x21, #0x18]
+  add x19, x19, #0x1
+  b $+0x50
+  ldr x9, [sp, #0x50]
+  sub x10, x19, x9
   str x19, [x22]
   mov x0, x22
   add x1, x21, #0x18
+  mov x2, x9
+  mov x3, x10
   mov x8, #<imm>
   movk x8, #<imm>, lsl #16
   movk x8, #<imm>, lsl #32
@@ -159,7 +386,11 @@ expression: out
   blr x8
   ldr x19, [x22]
   ldr w9, [x22, #0x10]
-  cbnz w9, $+0xb8
+  cbnz w9, $+0xc8
+  b $+0x10
+  mov w9, #0x8
+  str w9, [x22, #0x10]
+  b $+0xb8
   ldr x9, [sp, #0x30]
   mov x10, #<imm>
   orr x9, x9, x10
@@ -189,7 +420,7 @@ expression: out
   ldrb w9, [sp, #0x48]
   cmp w9, #0x1
   b.eq $+0xc
-  b $-0x23c
+  b $-0x5d8
   add x19, x19, #0x1
   ldr x9, [sp, #0x30]
   mov x10, #<imm>
