@@ -504,13 +504,18 @@ impl Format for FadJson {
             ScalarType::U16 => json_intrinsics::fad_json_read_u16 as _,
             ScalarType::U32 => json_intrinsics::fad_json_read_u32 as _,
             ScalarType::U64 => json_intrinsics::fad_json_read_u64 as _,
+            ScalarType::U128 => json_intrinsics::fad_json_read_u128 as _,
+            ScalarType::USize => json_intrinsics::fad_json_read_usize as _,
             ScalarType::I8 => json_intrinsics::fad_json_read_i8 as _,
             ScalarType::I16 => json_intrinsics::fad_json_read_i16 as _,
             ScalarType::I32 => json_intrinsics::fad_json_read_i32 as _,
             ScalarType::I64 => json_intrinsics::fad_json_read_i64 as _,
+            ScalarType::I128 => json_intrinsics::fad_json_read_i128 as _,
+            ScalarType::ISize => json_intrinsics::fad_json_read_isize as _,
             ScalarType::F32 => json_intrinsics::fad_json_read_f32 as _,
             ScalarType::F64 => unreachable!(),
             ScalarType::Bool => json_intrinsics::fad_json_read_bool as _,
+            ScalarType::Char => json_intrinsics::fad_json_read_char as _,
             _ => panic!("unsupported JSON scalar: {:?}", scalar_type),
         };
         ectx.emit_call_intrinsic(fn_ptr, offset as u32);
@@ -951,16 +956,21 @@ impl Format for FadJson {
                         }
                         _ => match inner_shape.scalar_type() {
                             Some(ScalarType::String) => string_variants.push(i),
+                            Some(ScalarType::Char) => string_variants.push(i),
                             Some(ScalarType::Bool) => bool_variants.push(i),
                             Some(
                                 ScalarType::U8
                                 | ScalarType::U16
                                 | ScalarType::U32
                                 | ScalarType::U64
+                                | ScalarType::U128
+                                | ScalarType::USize
                                 | ScalarType::I8
                                 | ScalarType::I16
                                 | ScalarType::I32
                                 | ScalarType::I64
+                                | ScalarType::I128
+                                | ScalarType::ISize
                                 | ScalarType::F32
                                 | ScalarType::F64,
                             ) => number_variants.push(i),

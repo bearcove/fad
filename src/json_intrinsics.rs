@@ -1,4 +1,5 @@
 use crate::context::{DeserContext, ErrorCode};
+use core::num::IntErrorKind;
 
 // r[impl deser.json.struct]
 
@@ -567,6 +568,60 @@ unsafe fn json_extract_number_bytes(ctx: &mut DeserContext) -> &[u8] {
     unsafe { core::slice::from_raw_parts(start, len) }
 }
 
+unsafe fn json_parse_u128(ctx: &mut DeserContext) -> u128 {
+    let bytes = unsafe { json_extract_number_bytes(ctx) };
+    if bytes.is_empty() {
+        ctx.error.code = ErrorCode::InvalidJsonNumber as u32;
+        return 0;
+    }
+    let s = match core::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            ctx.error.code = ErrorCode::InvalidJsonNumber as u32;
+            return 0;
+        }
+    };
+    match s.parse::<u128>() {
+        Ok(v) => v,
+        Err(e) => {
+            ctx.error.code = match e.kind() {
+                IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => {
+                    ErrorCode::NumberOutOfRange as u32
+                }
+                _ => ErrorCode::InvalidJsonNumber as u32,
+            };
+            0
+        }
+    }
+}
+
+unsafe fn json_parse_i128(ctx: &mut DeserContext) -> i128 {
+    let bytes = unsafe { json_extract_number_bytes(ctx) };
+    if bytes.is_empty() {
+        ctx.error.code = ErrorCode::InvalidJsonNumber as u32;
+        return 0;
+    }
+    let s = match core::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            ctx.error.code = ErrorCode::InvalidJsonNumber as u32;
+            return 0;
+        }
+    };
+    match s.parse::<i128>() {
+        Ok(v) => v,
+        Err(e) => {
+            ctx.error.code = match e.kind() {
+                IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => {
+                    ErrorCode::NumberOutOfRange as u32
+                }
+                _ => ErrorCode::InvalidJsonNumber as u32,
+            };
+            0
+        }
+    }
+}
+
 // --- Unsigned integer intrinsics ---
 
 #[unsafe(no_mangle)]
@@ -639,6 +694,43 @@ pub unsafe extern "C" fn fad_json_read_u64(ctx: *mut DeserContext, out: *mut u64
         return;
     }
     unsafe { *out = val };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_u128(ctx: *mut DeserContext, out: *mut u128) {
+    unsafe { fad_json_skip_ws(ctx) };
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let val = unsafe { json_parse_u128(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    unsafe { *out = val };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_usize(ctx: *mut DeserContext, out: *mut usize) {
+    unsafe { fad_json_skip_ws(ctx) };
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let val = unsafe { json_parse_u128(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let v = match usize::try_from(val) {
+        Ok(v) => v,
+        Err(_) => {
+            ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+            return;
+        }
+    };
+    unsafe { *out = v };
 }
 
 // --- Signed integer intrinsics ---
@@ -715,6 +807,43 @@ pub unsafe extern "C" fn fad_json_read_i64(ctx: *mut DeserContext, out: *mut i64
         return;
     }
     unsafe { *out = val };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_i128(ctx: *mut DeserContext, out: *mut i128) {
+    unsafe { fad_json_skip_ws(ctx) };
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let val = unsafe { json_parse_i128(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    unsafe { *out = val };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_isize(ctx: *mut DeserContext, out: *mut isize) {
+    unsafe { fad_json_skip_ws(ctx) };
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let val = unsafe { json_parse_i128(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let v = match isize::try_from(val) {
+        Ok(v) => v,
+        Err(_) => {
+            ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+            return;
+        }
+    };
+    unsafe { *out = v };
 }
 
 // --- Float intrinsics ---
@@ -868,6 +997,29 @@ pub unsafe extern "C" fn fad_json_read_string_value(ctx: *mut DeserContext, out:
         ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
     }
     ctx.error.code = ErrorCode::UnterminatedString as u32;
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_read_char(ctx: *mut DeserContext, out: *mut char) {
+    let mut s = String::new();
+    unsafe { fad_json_read_string_value(ctx, &mut s) };
+    let ctx = unsafe { &mut *ctx };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let mut chars = s.chars();
+    let ch = match chars.next() {
+        Some(ch) => ch,
+        None => {
+            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+            return;
+        }
+    };
+    if chars.next().is_some() {
+        ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+        return;
+    }
+    unsafe { *out = ch };
 }
 
 /// Slow path for string value reading: unescapes into a Vec, converts to String.

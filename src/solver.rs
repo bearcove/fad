@@ -26,7 +26,7 @@ impl JsonValueType {
             Type::User(UserType::Struct(_)) => JsonValueType::Object,
             Type::User(UserType::Enum(_)) => JsonValueType::Object,
             _ => match shape.scalar_type() {
-                Some(ScalarType::String) => JsonValueType::String,
+                Some(ScalarType::String | ScalarType::Char) => JsonValueType::String,
                 Some(ScalarType::Bool) => JsonValueType::Bool,
                 Some(
                     ScalarType::U8

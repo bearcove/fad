@@ -42,9 +42,50 @@ unsafe fn read_varint_u64(ctx: &mut DeserContext) -> u64 {
     }
 }
 
+/// Read a LEB128-encoded unsigned varint, returning up to 128 bits.
+/// Sets error on malformed varint or EOF.
+unsafe fn read_varint_u128(ctx: &mut DeserContext) -> u128 {
+    let mut result: u128 = 0;
+    let mut shift: u32 = 0;
+
+    loop {
+        if ctx.input_ptr >= ctx.input_end {
+            ctx.error.code = ErrorCode::UnexpectedEof as u32;
+            return 0;
+        }
+
+        let byte = unsafe { *ctx.input_ptr };
+        ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+
+        let value_bits = (byte & 0x7F) as u128;
+
+        if shift >= 127 && (byte & 0x7E) != 0 {
+            ctx.error.code = ErrorCode::InvalidVarint as u32;
+            return 0;
+        }
+
+        result |= value_bits << shift;
+        shift += 7;
+
+        if byte & 0x80 == 0 {
+            return result;
+        }
+
+        if shift >= 140 {
+            ctx.error.code = ErrorCode::InvalidVarint as u32;
+            return 0;
+        }
+    }
+}
+
 /// Decode a ZigZag-encoded i64 from a u64.
 fn zigzag_decode(encoded: u64) -> i64 {
     ((encoded >> 1) as i64) ^ -((encoded & 1) as i64)
+}
+
+/// Decode a ZigZag-encoded i128 from a u128.
+fn zigzag_decode_i128(encoded: u128) -> i128 {
+    ((encoded >> 1) as i128) ^ -((encoded & 1) as i128)
 }
 
 // --- Unsigned integer intrinsics ---
@@ -119,6 +160,33 @@ pub unsafe extern "C" fn fad_read_u64(ctx: *mut DeserContext, out: *mut u64) {
     unsafe { *out = val };
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_u128(ctx: *mut DeserContext, out: *mut u128) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u128(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    unsafe { *out = val };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_usize(ctx: *mut DeserContext, out: *mut usize) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let v = match usize::try_from(val) {
+        Ok(v) => v,
+        Err(_) => {
+            ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+            return;
+        }
+    };
+    unsafe { *out = v };
+}
+
 // --- Signed integer intrinsics ---
 // i8: raw byte in two's complement (per postcard spec)
 // i16/i32/i64: ZigZag + varint
@@ -173,6 +241,34 @@ pub unsafe extern "C" fn fad_read_i64(ctx: *mut DeserContext, out: *mut i64) {
         return;
     }
     unsafe { *out = zigzag_decode(val) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_i128(ctx: *mut DeserContext, out: *mut i128) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u128(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    unsafe { *out = zigzag_decode_i128(val) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_isize(ctx: *mut DeserContext, out: *mut isize) {
+    let ctx = unsafe { &mut *ctx };
+    let val = unsafe { read_varint_u64(ctx) };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let decoded = zigzag_decode(val);
+    let v = match isize::try_from(decoded) {
+        Ok(v) => v,
+        Err(_) => {
+            ctx.error.code = ErrorCode::NumberOutOfRange as u32;
+            return;
+        }
+    };
+    unsafe { *out = v };
 }
 
 // --- Float intrinsics (little-endian IEEE 754) ---
@@ -236,6 +332,48 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
     };
 
     unsafe { out.write(s.to_owned()) };
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_char(ctx: *mut DeserContext, out: *mut char) {
+    let mut len: u32 = 0;
+    unsafe { fad_read_varint_u32(ctx, &mut len) };
+    let ctx = unsafe { &mut *ctx };
+    if ctx.error.code != 0 {
+        return;
+    }
+    let len = len as usize;
+    if len == 0 || len > 4 {
+        ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+        return;
+    }
+    let remaining = unsafe { ctx.input_end.offset_from(ctx.input_ptr) as usize };
+    if remaining < len {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ctx.input_ptr, len) };
+    let s = match core::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+            return;
+        }
+    };
+    let mut chars = s.chars();
+    let ch = match chars.next() {
+        Some(ch) => ch,
+        None => {
+            ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+            return;
+        }
+    };
+    if chars.next().is_some() {
+        ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+        return;
+    }
+    unsafe { *out = ch };
     ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
 }
 
