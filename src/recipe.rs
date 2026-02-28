@@ -332,3 +332,14 @@ pub fn encode_varint(offset: u32, width: Width, zigzag: bool) -> Recipe {
     r.ops.push(Op::EncodeVarint { slot: Slot::A, wide });
     r
 }
+
+/// Write a literal byte sequence to the output buffer.
+/// Emits a single bounds check followed by one WriteByte per byte.
+pub fn write_literal(bytes: &[u8]) -> Recipe {
+    let mut r = Recipe::new();
+    r.ops.push(Op::OutputBoundsCheck { count: bytes.len() as u32 });
+    for &b in bytes {
+        r.ops.push(Op::WriteByte { value: b });
+    }
+    r
+}

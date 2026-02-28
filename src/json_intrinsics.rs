@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::context::{DeserContext, ErrorCode};
+use crate::context::{DeserContext, EncodeContext, ErrorCode};
 use core::num::IntErrorKind;
 
 // r[impl deser.json.struct]
@@ -1233,5 +1233,215 @@ pub unsafe extern "C" fn fad_json_comma_or_end_array(ctx: *mut DeserContext, out
         _ => {
             ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
         }
+    }
+}
+
+// =============================================================================
+// JSON Encode Intrinsics
+// =============================================================================
+
+/// Ensure the output buffer has at least `needed` bytes of capacity.
+unsafe fn enc_ensure(ctx: &mut EncodeContext, needed: usize) {
+    if ctx.remaining() < needed {
+        unsafe { ctx.grow(needed) };
+    }
+}
+
+/// Write a byte slice to the output buffer, ensuring capacity first.
+unsafe fn enc_write_bytes(ctx: &mut EncodeContext, bytes: &[u8]) {
+    unsafe { enc_ensure(ctx, bytes.len()) };
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ctx.output_ptr, bytes.len());
+        ctx.output_ptr = ctx.output_ptr.add(bytes.len());
+    }
+}
+
+macro_rules! json_write_unsigned {
+    ($name:ident, $ty:ty) => {
+        pub unsafe extern "C" fn $name(ctx: *mut EncodeContext, field_ptr: *const u8) {
+            let ctx = unsafe { &mut *ctx };
+            let value = unsafe { *(field_ptr as *const $ty) };
+            let mut buf = itoa::Buffer::new();
+            let s = buf.format(value);
+            unsafe { enc_write_bytes(ctx, s.as_bytes()) };
+        }
+    };
+}
+
+macro_rules! json_write_signed {
+    ($name:ident, $ty:ty) => {
+        pub unsafe extern "C" fn $name(ctx: *mut EncodeContext, field_ptr: *const u8) {
+            let ctx = unsafe { &mut *ctx };
+            let value = unsafe { *(field_ptr as *const $ty) };
+            let mut buf = itoa::Buffer::new();
+            let s = buf.format(value);
+            unsafe { enc_write_bytes(ctx, s.as_bytes()) };
+        }
+    };
+}
+
+json_write_unsigned!(fad_json_write_u8, u8);
+json_write_unsigned!(fad_json_write_u16, u16);
+json_write_unsigned!(fad_json_write_u32, u32);
+json_write_unsigned!(fad_json_write_u64, u64);
+json_write_unsigned!(fad_json_write_u128, u128);
+json_write_unsigned!(fad_json_write_usize, usize);
+json_write_signed!(fad_json_write_i8, i8);
+json_write_signed!(fad_json_write_i16, i16);
+json_write_signed!(fad_json_write_i32, i32);
+json_write_signed!(fad_json_write_i64, i64);
+json_write_signed!(fad_json_write_i128, i128);
+json_write_signed!(fad_json_write_isize, isize);
+
+pub unsafe extern "C" fn fad_json_write_f32(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const f32) };
+    if value.is_infinite() || value.is_nan() {
+        // JSON doesn't support Infinity or NaN — write null
+        unsafe { enc_write_bytes(ctx, b"null") };
+        return;
+    }
+    let mut buf = zmij::Buffer::new();
+    let s = buf.format(value);
+    // zmij may produce "1.0" or "1e10" etc. — check if it has a decimal point or exponent
+    let bytes = s.as_bytes();
+    unsafe { enc_write_bytes(ctx, bytes) };
+    // Ensure the output looks like a float (has '.' or 'e'/'E')
+    if !bytes.iter().any(|&b| b == b'.' || b == b'e' || b == b'E') {
+        unsafe { enc_write_bytes(ctx, b".0") };
+    }
+}
+
+pub unsafe extern "C" fn fad_json_write_f64(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const f64) };
+    if value.is_infinite() || value.is_nan() {
+        unsafe { enc_write_bytes(ctx, b"null") };
+        return;
+    }
+    let mut buf = zmij::Buffer::new();
+    let s = buf.format(value);
+    let bytes = s.as_bytes();
+    unsafe { enc_write_bytes(ctx, bytes) };
+    if !bytes.iter().any(|&b| b == b'.' || b == b'e' || b == b'E') {
+        unsafe { enc_write_bytes(ctx, b".0") };
+    }
+}
+
+pub unsafe extern "C" fn fad_json_write_bool(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const bool) };
+    if value {
+        unsafe { enc_write_bytes(ctx, b"true") };
+    } else {
+        unsafe { enc_write_bytes(ctx, b"false") };
+    }
+}
+
+pub unsafe extern "C" fn fad_json_write_char(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let value = unsafe { *(field_ptr as *const char) };
+    // JSON encodes char as a single-character string with escaping
+    let mut utf8_buf = [0u8; 4];
+    let encoded = value.encode_utf8(&mut utf8_buf);
+    // Worst case: opening quote + 6 bytes (\uXXXX) + closing quote = 8
+    unsafe { enc_ensure(ctx, 8) };
+    unsafe { *ctx.output_ptr = b'"' };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(1) };
+    unsafe { json_escape_bytes_to_ctx(ctx, encoded.as_bytes()) };
+    unsafe { enc_ensure(ctx, 1) };
+    unsafe { *ctx.output_ptr = b'"' };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(1) };
+}
+
+pub unsafe extern "C" fn fad_json_write_unit(ctx: *mut EncodeContext, _field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    unsafe { enc_write_bytes(ctx, b"null") };
+}
+
+/// Write a JSON string value: `"..."` with proper escaping.
+///
+/// Called as: fn(ctx, field_ptr) where field_ptr points at the String/&str in the input struct.
+pub unsafe extern "C" fn fad_json_write_string(ctx: *mut EncodeContext, field_ptr: *const u8) {
+    let ctx = unsafe { &mut *ctx };
+    let offsets = crate::malum::discover_string_offsets();
+
+    let data_ptr = unsafe { *(field_ptr.add(offsets.ptr_offset as usize) as *const *const u8) };
+    let data_len = unsafe { *(field_ptr.add(offsets.len_offset as usize) as *const usize) };
+
+    let bytes = if data_len > 0 {
+        unsafe { core::slice::from_raw_parts(data_ptr, data_len) }
+    } else {
+        &[]
+    };
+
+    // Opening quote
+    unsafe { enc_ensure(ctx, 1) };
+    unsafe { *ctx.output_ptr = b'"' };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(1) };
+
+    // Escaped content
+    unsafe { json_escape_bytes_to_ctx(ctx, bytes) };
+
+    // Closing quote
+    unsafe { enc_ensure(ctx, 1) };
+    unsafe { *ctx.output_ptr = b'"' };
+    ctx.output_ptr = unsafe { ctx.output_ptr.add(1) };
+}
+
+/// Escape a byte slice as JSON string content and write to the EncodeContext.
+/// Does NOT write the surrounding quotes.
+unsafe fn json_escape_bytes_to_ctx(ctx: &mut EncodeContext, bytes: &[u8]) {
+    // Fast path: scan for bytes that need escaping
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let escape = match b {
+            b'"' | b'\\' => Some(b),
+            b'\n' => Some(b'n'),
+            b'\r' => Some(b'r'),
+            b'\t' => Some(b't'),
+            0x08 => Some(b'b'),
+            0x0C => Some(b'f'),
+            0x00..=0x1F => None, // control chars needing \uXXXX
+            _ => continue,      // printable, no escape needed
+        };
+
+        // Flush unescaped prefix
+        if i > start {
+            let prefix = &bytes[start..i];
+            unsafe { enc_write_bytes(ctx, prefix) };
+        }
+
+        match escape {
+            Some(esc) => {
+                unsafe { enc_ensure(ctx, 2) };
+                unsafe {
+                    *ctx.output_ptr = b'\\';
+                    *ctx.output_ptr.add(1) = esc;
+                    ctx.output_ptr = ctx.output_ptr.add(2);
+                }
+            }
+            None => {
+                // \uXXXX for control chars
+                let hex = b"0123456789abcdef";
+                unsafe { enc_ensure(ctx, 6) };
+                unsafe {
+                    *ctx.output_ptr = b'\\';
+                    *ctx.output_ptr.add(1) = b'u';
+                    *ctx.output_ptr.add(2) = b'0';
+                    *ctx.output_ptr.add(3) = b'0';
+                    *ctx.output_ptr.add(4) = hex[(b >> 4) as usize];
+                    *ctx.output_ptr.add(5) = hex[(b & 0xF) as usize];
+                    ctx.output_ptr = ctx.output_ptr.add(6);
+                }
+            }
+        }
+        start = i + 1;
+    }
+
+    // Flush remaining unescaped tail
+    if start < bytes.len() {
+        let tail = &bytes[start..];
+        unsafe { enc_write_bytes(ctx, tail) };
     }
 }

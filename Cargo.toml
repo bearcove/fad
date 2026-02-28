@@ -14,6 +14,8 @@ readme = "README.md"
 facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
 dynasmrt = "5"
 dynasm = "5"
+itoa = "1"
+zmij = "1"
 
 [dev-dependencies]
 divan = "0.1"

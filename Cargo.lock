@@ -622,12 +622,14 @@ dependencies = [
  "facet-json",
  "facet-postcard",
  "insta",
+ "itoa",
  "postcard",
  "serde",
  "serde_json",
  "yaxpeax-arch",
  "yaxpeax-arm",
  "yaxpeax-x86",
+ "zmij",
 ]
 
 [[package]]
