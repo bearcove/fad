@@ -1,0 +1,136 @@
+---
+source: src/disasm_tests.rs
+expression: out
+---
+=== json/nested_struct ===
+000000:  sub sp, sp, #0x60
+000004:  stp x29, x30, [sp]
+000008:  stp x19, x20, [sp, #0x10]
+00000c:  stp x21, x22, [sp, #0x20]
+000010:  mov x29, sp
+000014:  mov x21, x0
+000018:  mov x22, x1
+00001c:  ldr x19, [x22]
+000020:  ldr x20, [x22, #0x8]
+000024:  str xzr, [sp, #0x30]
+000028:  str x19, [x22]
+00002c:  mov x0, x22
+000030:  mov x8, #<imm>
+000034:  movk x8, #<imm>, lsl #16
+000038:  movk x8, #<imm>, lsl #32
+00003c:  movk x8, #<imm>, lsl #48
+000040:  blr x8
+000044:  ldr x19, [x22]
+000048:  ldr w9, [x22, #0x10]
+00004c:  cbnz w9, $+0x1ac
+000050:  str x19, [x22]
+000054:  mov x0, x22
+000058:  add x1, sp, #0x48
+00005c:  mov x8, #<imm>
+000060:  movk x8, #<imm>, lsl #16
+000064:  movk x8, #<imm>, lsl #32
+000068:  movk x8, #<imm>, lsl #48
+00006c:  blr x8
+000070:  ldr x19, [x22]
+000074:  ldr w9, [x22, #0x10]
+000078:  cbnz w9, $+0x180
+00007c:  ldrb w9, [sp, #0x48]
+000080:  cmp w9, #0x7d
+000084:  b.eq $+0x138
+000088:  str x19, [x22]
+00008c:  mov x0, x22
+000090:  add x1, sp, #0x38
+000094:  add x2, sp, #0x40
+000098:  mov x8, #<imm>
+00009c:  movk x8, #<imm>, lsl #16
+0000a0:  movk x8, #<imm>, lsl #32
+0000a4:  movk x8, #<imm>, lsl #48
+0000a8:  blr x8
+0000ac:  ldr x19, [x22]
+0000b0:  ldr w9, [x22, #0x10]
+0000b4:  cbnz w9, $+0x144
+0000b8:  str x19, [x22]
+0000bc:  mov x0, x22
+0000c0:  mov x8, #<imm>
+0000c4:  movk x8, #<imm>, lsl #16
+0000c8:  movk x8, #<imm>, lsl #32
+0000cc:  movk x8, #<imm>, lsl #48
+0000d0:  blr x8
+0000d4:  ldr x19, [x22]
+0000d8:  ldr w9, [x22, #0x10]
+0000dc:  cbnz w9, $+0x11c
+0000e0:  ldr x0, [sp, #0x38]
+0000e4:  ldr x1, [sp, #0x40]
+0000e8:  mov x2, #<imm>
+0000ec:  movk x2, #<imm>, lsl #16
+0000f0:  movk x2, #<imm>, lsl #32
+0000f4:  movk x2, #<imm>, lsl #48
+0000f8:  mov x3, #<imm>
+0000fc:  mov x8, #<imm>
+000100:  movk x8, #<imm>, lsl #16
+000104:  movk x8, #<imm>, lsl #32
+000108:  movk x8, #<imm>, lsl #48
+00010c:  blr x8
+000110:  cbnz x0, $+0x8
+000114:  b $+0x44
+000118:  str x19, [x22]
+00011c:  mov x0, x22
+000120:  add x1, x21, #0x0
+000124:  mov x8, #<imm>
+000128:  movk x8, #<imm>, lsl #16
+00012c:  movk x8, #<imm>, lsl #32
+000130:  movk x8, #<imm>, lsl #48
+000134:  blr x8
+000138:  ldr x19, [x22]
+00013c:  ldr w9, [x22, #0x10]
+000140:  cbnz w9, $+0xb8
+000144:  ldr x9, [sp, #0x30]
+000148:  mov x10, #<imm>
+00014c:  orr x9, x9, x10
+000150:  str x9, [sp, #0x30]
+000154:  b $+0x2c
+000158:  str x19, [x22]
+00015c:  mov x0, x22
+000160:  mov x8, #<imm>
+000164:  movk x8, #<imm>, lsl #16
+000168:  movk x8, #<imm>, lsl #32
+00016c:  movk x8, #<imm>, lsl #48
+000170:  blr x8
+000174:  ldr x19, [x22]
+000178:  ldr w9, [x22, #0x10]
+00017c:  cbnz w9, $+0x7c
+000180:  str x19, [x22]
+000184:  mov x0, x22
+000188:  add x1, sp, #0x48
+00018c:  mov x8, #<imm>
+000190:  movk x8, #<imm>, lsl #16
+000194:  movk x8, #<imm>, lsl #32
+000198:  movk x8, #<imm>, lsl #48
+00019c:  blr x8
+0001a0:  ldr x19, [x22]
+0001a4:  ldr w9, [x22, #0x10]
+0001a8:  cbnz w9, $+0x50
+0001ac:  ldrb w9, [sp, #0x48]
+0001b0:  cmp w9, #0x1
+0001b4:  b.eq $+0xc
+0001b8:  b $-0x130
+0001bc:  add x19, x19, #0x1
+0001c0:  ldr x9, [sp, #0x30]
+0001c4:  mov x10, #<imm>
+0001c8:  and x11, x9, x10
+0001cc:  cmp x11, x10
+0001d0:  b.eq $+0x10
+0001d4:  mov w9, #0xa
+0001d8:  str w9, [x22, #0x10]
+0001dc:  b $+0x1c
+0001e0:  str x19, [x22]
+0001e4:  ldp x21, x22, [sp, #0x20]
+0001e8:  ldp x19, x20, [sp, #0x10]
+0001ec:  ldp x29, x30, [sp]
+0001f0:  add sp, sp, #0x60
+0001f4:  ret
+0001f8:  ldp x21, x22, [sp, #0x20]
+0001fc:  ldp x19, x20, [sp, #0x10]
+000200:  ldp x29, x30, [sp]
+000204:  add sp, sp, #0x60
+000208:  ret

@@ -921,161 +921,6 @@ mod tests {
         );
     }
 
-    /// Disassemble a byte slice, marking one offset with a label.
-    /// Stops after the second `ret` (to capture both success and error paths).
-    fn disasm_bytes(code: &[u8], base_addr: u64, marker_offset: Option<usize>) -> String {
-        let mut out = String::new();
-        use std::fmt::Write;
-        use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            use yaxpeax_arm::armv8::a64::InstDecoder;
-
-            let decoder = InstDecoder::default();
-            let mut reader = U8Reader::new(code);
-            let mut offset = 0usize;
-            let mut ret_count = 0u32;
-            while offset + 4 <= code.len() {
-                let marker = match marker_offset {
-                    Some(m) if m == offset => " <entry>",
-                    _ => "",
-                };
-                match decoder.decode(&mut reader) {
-                    Ok(inst) => {
-                        let addr = base_addr + offset as u64;
-                        writeln!(&mut out, "{addr:12x}:{marker}  {inst}").unwrap();
-                        let text = format!("{inst}");
-                        if text.trim() == "ret" {
-                            ret_count += 1;
-                            if ret_count >= 2 {
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let word = u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
-                        let addr = base_addr + offset as u64;
-                        writeln!(&mut out, "{addr:12x}:{marker}  <{e}> (0x{word:08x})").unwrap();
-                    }
-                }
-                offset += 4;
-            }
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            use yaxpeax_x86::amd64::InstDecoder;
-
-            let decoder = InstDecoder::default();
-            let mut reader = U8Reader::new(code);
-            let mut offset = 0usize;
-            let mut ret_count = 0u32;
-            while offset < code.len() {
-                let marker = match marker_offset {
-                    Some(m) if m == offset => " <entry>",
-                    _ => "",
-                };
-                match decoder.decode(&mut reader) {
-                    Ok(inst) => {
-                        let len = inst.len().to_const() as usize;
-                        let addr = base_addr + offset as u64;
-                        writeln!(&mut out, "{addr:12x}:{marker}  {inst}").unwrap();
-                        let text = format!("{inst}");
-                        if text.trim() == "ret" {
-                            ret_count += 1;
-                            if ret_count >= 2 {
-                                break;
-                            }
-                        }
-                        offset += len;
-                    }
-                    Err(_) => {
-                        let addr = base_addr + offset as u64;
-                        writeln!(
-                            &mut out,
-                            "{addr:12x}:{marker}  <decode error> (0x{:02x})",
-                            code[offset]
-                        )
-                        .unwrap();
-                        offset += 1;
-                    }
-                }
-            }
-        }
-
-        out
-    }
-
-    /// Disassemble a CompiledDeser's JIT code buffer.
-    fn disasm_jit(deser: &CompiledDeser) -> String {
-        let code = deser.code();
-        let base = code.as_ptr() as u64;
-        disasm_bytes(code, base, Some(deser.entry_offset()))
-    }
-
-    /// Disassemble a native function starting at `fn_ptr` for up to `max_bytes`.
-    /// Stops at the second `ret` instruction or when `max_bytes` is exhausted.
-    ///
-    /// # Safety
-    /// `fn_ptr` must point to valid executable code. `max_bytes` must not extend
-    /// past the end of the mapped region.
-    unsafe fn disasm_native(fn_ptr: *const u8, max_bytes: usize) -> String {
-        let code = unsafe { std::slice::from_raw_parts(fn_ptr, max_bytes) };
-        disasm_bytes(code, fn_ptr as u64, Some(0))
-    }
-
-    #[test]
-    fn disasm_postcard_deep_nested() {
-        let deser = compile_deser(Outer::SHAPE, &postcard::FadPostcard);
-        eprintln!(
-            "=== fad postcard deep_nested (Outer) ===\n{}",
-            disasm_jit(&deser)
-        );
-    }
-
-    #[test]
-    fn disasm_postcard_flat() {
-        let deser = compile_deser(Friend::SHAPE, &postcard::FadPostcard);
-        eprintln!("=== fad postcard flat (Friend) ===\n{}", disasm_jit(&deser));
-    }
-
-    #[test]
-    fn disasm_json_nested() {
-        let deser = compile_deser(Person::SHAPE, &json::FadJson);
-        eprintln!("=== fad json nested (Person) ===\n{}", disasm_jit(&deser));
-    }
-
-    #[test]
-    fn disasm_serde_postcard_deep_nested() {
-        // Force monomorphization of the serde path so we can disassemble it
-        fn serde_deser(data: &[u8]) -> OuterSerde {
-            ::postcard::from_bytes(data).unwrap()
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        #[allow(dead_code)]
-        struct InnerSerde {
-            x: u32,
-        }
-        #[derive(serde::Deserialize, Debug)]
-        #[allow(dead_code)]
-        struct MiddleSerde {
-            inner: InnerSerde,
-            y: u32,
-        }
-        #[derive(serde::Deserialize, Debug)]
-        #[allow(dead_code)]
-        struct OuterSerde {
-            middle: MiddleSerde,
-            z: u32,
-        }
-
-        let fn_ptr = serde_deser as *const u8;
-        let asm = unsafe { disasm_native(fn_ptr, 2048) };
-        eprintln!("=== serde postcard deep_nested (OuterSerde) @ {fn_ptr:?} ===\n{asm}");
-    }
-
     // --- Milestone 6: Enums ---
 
     #[derive(Facet, Debug, PartialEq)]
@@ -1326,38 +1171,6 @@ mod tests {
                 good_boy: true
             }
         );
-    }
-
-    #[test]
-    fn disasm_postcard_enum() {
-        let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
-        eprintln!("=== fad postcard enum (Animal) ===\n{}", disasm_jit(&deser));
-    }
-
-    #[test]
-    fn disasm_json_enum() {
-        let deser = compile_deser(Animal::SHAPE, &json::FadJson);
-        eprintln!("=== fad json enum (Animal) ===\n{}", disasm_jit(&deser));
-    }
-
-    #[test]
-    fn disasm_serde_postcard_enum() {
-        fn serde_deser(data: &[u8]) -> AnimalSerde {
-            ::postcard::from_bytes(data).unwrap()
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        #[allow(dead_code)]
-        #[repr(u8)]
-        enum AnimalSerde {
-            Cat,
-            Dog { name: String, good_boy: bool },
-            Parrot(String),
-        }
-
-        let fn_ptr = serde_deser as *const u8;
-        let asm = unsafe { disasm_native(fn_ptr, 2048) };
-        eprintln!("=== serde postcard enum (AnimalSerde) @ {fn_ptr:?} ===\n{asm}");
     }
 
     // --- Milestone 7: Flatten ---
@@ -3329,7 +3142,6 @@ mod tests {
             }
         );
     }
-
     // ── Smart pointer tests ──────────────────────────────────────────
 
     #[derive(Facet, Debug, PartialEq)]
@@ -3522,7 +3334,6 @@ mod tests {
             }
         );
     }
-
     #[derive(Facet, Debug, PartialEq)]
     struct UnitField {
         geo: (),
@@ -3542,5 +3353,7 @@ mod tests {
             }
         );
     }
-
 }
+
+#[cfg(test)]
+mod disasm_tests;

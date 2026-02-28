@@ -27,6 +27,7 @@ yaxpeax-arm = { version = "0.4", default-features = false, features = ["std", "f
 yaxpeax-x86 = { version = "2", default-features = false, features = ["std", "fmt"] }
 yaxpeax-arch = { version = "0.3", default-features = false, features = ["std"] }
 brotli = "8"
+insta = "1"
 
 [[bench]]
 name = "deser_postcard"

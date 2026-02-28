@@ -1,0 +1,91 @@
+---
+source: src/disasm_tests.rs
+expression: out
+---
+=== postcard/nested_struct ===
+000000: <entry>  sub sp, sp, #0x40
+000004:  stp x29, x30, [sp]
+000008:  stp x19, x20, [sp, #0x10]
+00000c:  stp x21, x22, [sp, #0x20]
+000010:  mov x29, sp
+000014:  mov x21, x0
+000018:  mov x22, x1
+00001c:  ldr x19, [x22]
+000020:  ldr x20, [x22, #0x8]
+000024:  cmp x19, x20
+000028:  b.hs $+0x48
+00002c:  ldrb w9, [x19]
+000030:  tbnz w9, #0x7, $+0x10
+000034:  add x19, x19, #0x1
+000038:  str w9, [x21]
+00003c:  b $+0x30
+000040:  str x19, [x22]
+000044:  mov x0, x22
+000048:  add x1, x21, #0x0
+00004c:  mov x8, #<imm>
+000050:  movk x8, #<imm>, lsl #16
+000054:  movk x8, #<imm>, lsl #32
+000058:  movk x8, #<imm>, lsl #48
+00005c:  blr x8
+000060:  ldr x19, [x22]
+000064:  ldr w9, [x22, #0x10]
+000068:  cbnz w9, $+0xdc
+00006c:  b $+0x10
+000070:  mov w9, #0x1
+000074:  str w9, [x22, #0x10]
+000078:  b $+0xcc
+00007c:  cmp x19, x20
+000080:  b.hs $+0x48
+000084:  ldrb w9, [x19]
+000088:  tbnz w9, #0x7, $+0x10
+00008c:  add x19, x19, #0x1
+000090:  str w9, [x21, #0x4]
+000094:  b $+0x30
+000098:  str x19, [x22]
+00009c:  mov x0, x22
+0000a0:  add x1, x21, #0x4
+0000a4:  mov x8, #<imm>
+0000a8:  movk x8, #<imm>, lsl #16
+0000ac:  movk x8, #<imm>, lsl #32
+0000b0:  movk x8, #<imm>, lsl #48
+0000b4:  blr x8
+0000b8:  ldr x19, [x22]
+0000bc:  ldr w9, [x22, #0x10]
+0000c0:  cbnz w9, $+0x84
+0000c4:  b $+0x10
+0000c8:  mov w9, #0x1
+0000cc:  str w9, [x22, #0x10]
+0000d0:  b $+0x74
+0000d4:  cmp x19, x20
+0000d8:  b.hs $+0x48
+0000dc:  ldrb w9, [x19]
+0000e0:  tbnz w9, #0x7, $+0x10
+0000e4:  add x19, x19, #0x1
+0000e8:  str w9, [x21, #0x8]
+0000ec:  b $+0x30
+0000f0:  str x19, [x22]
+0000f4:  mov x0, x22
+0000f8:  add x1, x21, #0x8
+0000fc:  mov x8, #<imm>
+000100:  movk x8, #<imm>, lsl #16
+000104:  movk x8, #<imm>, lsl #32
+000108:  movk x8, #<imm>, lsl #48
+00010c:  blr x8
+000110:  ldr x19, [x22]
+000114:  ldr w9, [x22, #0x10]
+000118:  cbnz w9, $+0x2c
+00011c:  b $+0x10
+000120:  mov w9, #0x1
+000124:  str w9, [x22, #0x10]
+000128:  b $+0x1c
+00012c:  str x19, [x22]
+000130:  ldp x21, x22, [sp, #0x20]
+000134:  ldp x19, x20, [sp, #0x10]
+000138:  ldp x29, x30, [sp]
+00013c:  add sp, sp, #0x40
+000140:  ret
+000144:  ldp x21, x22, [sp, #0x20]
+000148:  ldp x19, x20, [sp, #0x10]
+00014c:  ldp x29, x30, [sp]
+000150:  add sp, sp, #0x40
+000154:  ret
