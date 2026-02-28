@@ -2,3 +2,4 @@
 .claude
 callgrind.out.*
 bench_report/
+.handoffs/
