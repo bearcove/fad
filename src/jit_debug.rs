@@ -5,6 +5,7 @@
 //!
 //! Reference: <https://sourceware.org/gdb/current/onlinedocs/gdb.html/JIT-Interface.html>
 
+use std::io::Write;
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -133,7 +134,28 @@ pub fn register_jit_code(
         __jit_debug_register_code();
     }
 
+    write_perf_map(buf_base, symbols);
+
     JitRegistration { entry, _elf: elf }
+}
+
+// ---------------------------------------------------------------------------
+// perf map file — /tmp/perf-<pid>.map
+// ---------------------------------------------------------------------------
+
+fn write_perf_map(buf_base: *const u8, symbols: &[JitSymbolEntry]) {
+    let path = format!("/tmp/perf-{}.map", std::process::id());
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    for sym in symbols {
+        let addr = buf_base as usize + sym.offset;
+        let _ = writeln!(f, "{addr:x} {:x} {}", sym.size, sym.name);
+    }
 }
 
 // ---------------------------------------------------------------------------

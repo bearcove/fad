@@ -613,6 +613,97 @@ impl EmitCtx {
         );
     }
 
+    /// Inline skip-whitespace: loop over space/tab/newline/cr, advancing r12.
+    /// No function call, no ctx flush.
+    pub fn emit_inline_skip_ws(&mut self) {
+        let ws_loop = self.ops.new_dynamic_label();
+        let ws_done = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; =>ws_loop
+            ; cmp r12, r13
+            ; jae =>ws_done
+            ; movzx eax, BYTE [r12]
+            ; cmp al, b' ' as i8
+            ; je 2f // ->advance
+            ; cmp al, b'\n' as i8
+            ; je 2f
+            ; cmp al, b'\r' as i8
+            ; je 2f
+            ; cmp al, b'\t' as i8
+            ; jne =>ws_done
+            ; 2:
+            ; inc r12
+            ; jmp =>ws_loop
+            ; =>ws_done
+        );
+    }
+
+    /// Inline comma-or-end-array: skip whitespace, then check for ',' or ']'.
+    /// Writes 0 (comma) or 1 (']') to stack at sp_offset. Errors on anything else.
+    pub fn emit_inline_comma_or_end_array(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let got_comma = self.ops.new_dynamic_label();
+        let got_end = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::UnexpectedCharacter as i32;
+
+        self.emit_inline_skip_ws();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>error_exit
+            ; movzx eax, BYTE [r12]
+            ; inc r12
+            ; cmp al, b',' as i8
+            ; je =>got_comma
+            ; cmp al, b']' as i8
+            ; je =>got_end
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+            ; =>got_comma
+            ; mov BYTE [rsp + sp_offset as i32], 0
+            ; jmp =>done
+            ; =>got_end
+            ; mov BYTE [rsp + sp_offset as i32], 1
+            ; =>done
+        );
+    }
+
+    /// Inline comma-or-end-object: skip whitespace, then check for ',' or '}'.
+    /// Writes 0 (comma) or 1 ('}') to stack at sp_offset. Errors on anything else.
+    pub fn emit_inline_comma_or_end_object(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let got_comma = self.ops.new_dynamic_label();
+        let got_end = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::UnexpectedCharacter as i32;
+
+        self.emit_inline_skip_ws();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>error_exit
+            ; movzx eax, BYTE [r12]
+            ; inc r12
+            ; cmp al, b',' as i8
+            ; je =>got_comma
+            ; cmp al, b'}' as i8
+            ; je =>got_end
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+            ; =>got_comma
+            ; mov BYTE [rsp + sp_offset as i32], 0
+            ; jmp =>done
+            ; =>got_end
+            ; mov BYTE [rsp + sp_offset as i32], 1
+            ; =>done
+        );
+    }
+
     /// Store the cached cursor (r12) to a stack slot.
     pub fn emit_save_cursor_to_stack(&mut self, sp_offset: u32) {
         dynasm!(self.ops
@@ -623,25 +714,13 @@ impl EmitCtx {
 
     /// Emit: skip whitespace, expect and consume `"`, branch to error_exit if not found.
     /// After this, r12 points just after the opening `"`.
-    pub fn emit_json_expect_quote_after_ws(&mut self, ws_intrinsic: *const u8) {
+    pub fn emit_json_expect_quote_after_ws(&mut self, _ws_intrinsic: *const u8) {
         let error_exit = self.error_exit;
-        let ptr_val = ws_intrinsic as i64;
         let not_quote = self.ops.new_dynamic_label();
         let ok = self.ops.new_dynamic_label();
         let error_code = ErrorCode::ExpectedStringKey as i32;
 
-        // Call fad_json_skip_ws(ctx)
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
-        #[cfg(not(windows))]
-        dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
-        #[cfg(windows)]
-        dynasm!(self.ops ; .arch x64 ; mov rcx, r15);
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-        );
+        self.emit_inline_skip_ws();
 
         // Check bounds + opening '"'
         dynasm!(self.ops

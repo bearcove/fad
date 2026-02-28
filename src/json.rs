@@ -170,10 +170,7 @@ impl Decoder for FadJson {
         ectx.bind_label(after_dispatch);
 
         // comma_or_end → result byte: 0 = comma (continue), 1 = '}' (done)
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         // If result == 1 ('}'), jump to after_loop
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
         // Otherwise, loop back
@@ -357,11 +354,8 @@ impl Decoder for FadJson {
         // len += 1
         ectx.emit_inc_stack_slot(len_slot);
 
-        // comma_or_end_array
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_array as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        // comma_or_end_array (inlined)
+        ectx.emit_inline_comma_or_end_array(RESULT_BYTE_OFFSET);
         // If result == 1 (']'), we're done
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, write_vec_label);
         // Otherwise comma → loop back
@@ -522,10 +516,7 @@ impl Decoder for FadJson {
         ectx.emit_inc_stack_slot(len_slot);
 
         // comma_or_end_object: 0=comma (more entries), 1='}' (done)
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, write_map_label);
         ectx.emit_branch(loop_label);
 
@@ -1302,10 +1293,7 @@ impl Decoder for FadJson {
 
         // We're already inside the object, right after reading "tag_key": "VariantName".
         // Next is either ',' (more fields) or '}' (no variant fields).
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
 
         // === loop_top ===
@@ -1356,10 +1344,7 @@ impl Decoder for FadJson {
         ectx.bind_label(after_dispatch);
 
         // comma_or_end
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
         ectx.emit_branch(loop_top);
 
@@ -1506,10 +1491,7 @@ impl FadJson {
         ectx.emit_stack_zero_branch(CANDIDATES_OFFSET, error_no_match);
 
         // comma_or_end: '}' → resolve, ',' → continue scanning
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, resolve_label);
         ectx.emit_branch(scan_loop);
 
@@ -1709,10 +1691,7 @@ impl FadJson {
         ectx.emit_popcount_eq1_branch(CANDIDATES_OFFSET, after_sub_scan);
 
         // comma_or_end for inner object
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_sub_scan);
         ectx.emit_branch(sub_scan_loop);
 

@@ -559,6 +559,104 @@ impl EmitCtx {
         );
     }
 
+    /// Inline skip-whitespace: loop over space/tab/newline/cr, advancing x19.
+    /// No function call, no ctx flush.
+    pub fn emit_inline_skip_ws(&mut self) {
+        let ws_loop = self.ops.new_dynamic_label();
+        let ws_advance = self.ops.new_dynamic_label();
+        let ws_done = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; =>ws_loop
+            ; cmp x19, x20
+            ; b.hs =>ws_done
+            ; ldrb w9, [x19]
+            ; cmp w9, b' ' as u32
+            ; b.eq =>ws_advance
+            ; cmp w9, b'\n' as u32
+            ; b.eq =>ws_advance
+            ; cmp w9, b'\r' as u32
+            ; b.eq =>ws_advance
+            ; cmp w9, b'\t' as u32
+            ; b.ne =>ws_done
+            ; =>ws_advance
+            ; add x19, x19, 1
+            ; b =>ws_loop
+            ; =>ws_done
+        );
+    }
+
+    /// Inline comma-or-end-array: skip whitespace, then check for ',' or ']'.
+    /// Writes 0 (comma) or 1 (']') to stack at sp_offset. Errors on anything else.
+    pub fn emit_inline_comma_or_end_array(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let got_comma = self.ops.new_dynamic_label();
+        let got_end = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::UnexpectedCharacter as u32;
+
+        self.emit_inline_skip_ws();
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            // bounds check
+            ; cmp x19, x20
+            ; b.hs =>error_exit  // UnexpectedEof — reuse error_exit
+            ; ldrb w9, [x19]
+            ; add x19, x19, 1
+            ; cmp w9, b',' as u32
+            ; b.eq =>got_comma
+            ; cmp w9, b']' as u32
+            ; b.eq =>got_end
+            // unexpected character
+            ; movz w9, #error_code
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+            ; =>got_comma
+            ; strb wzr, [sp, #sp_offset]
+            ; b =>done
+            ; =>got_end
+            ; movz w9, 1
+            ; strb w9, [sp, #sp_offset]
+            ; =>done
+        );
+    }
+
+    /// Inline comma-or-end-object: skip whitespace, then check for ',' or '}'.
+    /// Writes 0 (comma) or 1 ('}') to stack at sp_offset. Errors on anything else.
+    pub fn emit_inline_comma_or_end_object(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let got_comma = self.ops.new_dynamic_label();
+        let got_end = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::UnexpectedCharacter as u32;
+
+        self.emit_inline_skip_ws();
+
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; cmp x19, x20
+            ; b.hs =>error_exit
+            ; ldrb w9, [x19]
+            ; add x19, x19, 1
+            ; cmp w9, b',' as u32
+            ; b.eq =>got_comma
+            ; cmp w9, b'}' as u32
+            ; b.eq =>got_end
+            ; movz w9, #error_code
+            ; str w9, [x22, #CTX_ERROR_CODE]
+            ; b =>error_exit
+            ; =>got_comma
+            ; strb wzr, [sp, #sp_offset]
+            ; b =>done
+            ; =>got_end
+            ; movz w9, 1
+            ; strb w9, [sp, #sp_offset]
+            ; =>done
+        );
+    }
+
     /// Store the cached cursor (x19) to a stack slot.
     pub fn emit_save_cursor_to_stack(&mut self, sp_offset: u32) {
         dynasm!(self.ops
@@ -569,25 +667,13 @@ impl EmitCtx {
 
     /// Emit: skip whitespace, expect and consume `"`, branch to error_exit if not found.
     /// After this, x19 points just after the opening `"`.
-    pub fn emit_json_expect_quote_after_ws(&mut self, ws_intrinsic: *const u8) {
+    pub fn emit_json_expect_quote_after_ws(&mut self, _ws_intrinsic: *const u8) {
         let error_exit = self.error_exit;
-        let ptr_val = ws_intrinsic as u64;
         let not_quote = self.ops.new_dynamic_label();
         let ok = self.ops.new_dynamic_label();
         let error_code = ErrorCode::ExpectedStringKey as u32;
 
-        // Call fad_json_skip_ws(ctx)
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; mov x0, x22
-            ; movz x8, #((ptr_val) & 0xFFFF) as u32
-            ; movk x8, #((ptr_val >> 16) & 0xFFFF) as u32, LSL #16
-            ; movk x8, #((ptr_val >> 32) & 0xFFFF) as u32, LSL #32
-            ; movk x8, #((ptr_val >> 48) & 0xFFFF) as u32, LSL #48
-            ; blr x8
-            ; ldr x19, [x22, #CTX_INPUT_PTR]
-        );
+        self.emit_inline_skip_ws();
 
         // Check bounds + opening '"'
         dynasm!(self.ops
