@@ -408,7 +408,7 @@ static FACET_JSON_JIT_FLAT: LazyLock<
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod flat_struct {
     use super::*;
 
@@ -446,7 +446,7 @@ mod flat_struct {
 
 // ── Benchmarks: nested struct ───────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod nested_struct {
     use super::*;
 
@@ -475,7 +475,7 @@ mod nested_struct {
 
 // ── Benchmarks: deeply nested struct ────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod deep_nested_struct {
     use super::*;
 
@@ -504,7 +504,7 @@ mod deep_nested_struct {
 
 // ── Benchmarks: enum (externally tagged, struct variant) ──────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_external {
     use super::*;
 
@@ -526,7 +526,7 @@ mod enum_external {
 
 // ── Benchmarks: flatten ───────────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod flatten {
     use super::*;
 
@@ -548,7 +548,7 @@ mod flatten {
 
 // ── Benchmarks: enum (adjacently tagged, struct variant) ──────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_adjacent {
     use super::*;
 
@@ -570,7 +570,7 @@ mod enum_adjacent {
 
 // ── Benchmarks: enum (internally tagged, struct variant) ──────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_internal {
     use super::*;
 
@@ -592,7 +592,7 @@ mod enum_internal {
 
 // ── Benchmarks: enum (untagged, struct variant via peek dispatch) ─────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged {
     use super::*;
 
@@ -618,7 +618,7 @@ mod enum_untagged {
 
 // ── Benchmarks: enum (untagged, solver — key presence only) ───────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged_solver {
     use super::*;
 
@@ -644,7 +644,7 @@ mod enum_untagged_solver {
 
 // ── Benchmarks: enum (untagged, solver — value-type evidence) ─────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged_value_type {
     use super::*;
 
@@ -672,7 +672,7 @@ mod enum_untagged_value_type {
 
 // ── Benchmarks: enum (untagged, solver — nested key evidence) ─────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged_nested_key {
     use super::*;
 
@@ -700,7 +700,7 @@ mod enum_untagged_nested_key {
 
 // ── Benchmarks: Vec<u32> (3 elements) ─────────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_scalar_small {
     use super::*;
 
@@ -727,7 +727,7 @@ mod vec_scalar_small {
 
 // ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_scalar_medium {
     use super::*;
 
@@ -751,7 +751,7 @@ mod vec_scalar_medium {
 
 // ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_struct {
     use super::*;
 
@@ -805,7 +805,7 @@ static FAD_MAP: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 // ── Benchmarks: HashMap<String, u32> (4 entries) ──────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod map_small {
     use super::*;
 
@@ -829,7 +829,7 @@ mod map_small {
 
 // ── Benchmarks: HashMap<String, u32> (16 entries) ─────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod map_medium {
     use super::*;
 
@@ -871,7 +871,7 @@ static FAD_MAP_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(||
 
 // ── Benchmarks: HashMap<String, Friend> (3 entries) ────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod map_struct {
     use super::*;
 
@@ -963,7 +963,7 @@ static FAD_VEC_STRING: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(||
 
 // ── Benchmarks: 6 short string fields (fast path) ─────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod string_many_fields {
     use super::*;
 
@@ -985,7 +985,7 @@ mod string_many_fields {
 
 // ── Benchmarks: single long string field (fast path scanning) ─────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod string_long_value {
     use super::*;
 
@@ -1007,7 +1007,7 @@ mod string_long_value {
 
 // ── Benchmarks: Vec<String> (8 elements) ──────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod string_vec {
     use super::*;
 
@@ -1029,7 +1029,7 @@ mod string_vec {
 
 // ── Benchmarks: 6 string fields with escape sequences (slow path) ─────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod string_heavy_escapes {
     use super::*;
 
@@ -1056,7 +1056,7 @@ static ESCAPE_JSON: &[u8] = br#"{"age": 42, "name": "hello\nworld\t\"escaped\"\u
 static FAD_ESCAPE: LazyLock<fad::compiler::CompiledDecoder> =
     LazyLock::new(|| fad::compile_decoder(FriendFacet::SHAPE, &fad::json::FadJson));
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod string_escapes {
     use super::*;
 
@@ -1078,7 +1078,7 @@ mod string_escapes {
 
 // ── Benchmarks: string-heavy payload (trusted UTF-8 path) ────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod string_heavy_utf8_trust {
     use super::*;
 
