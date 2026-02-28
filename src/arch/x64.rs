@@ -1430,7 +1430,7 @@ impl EmitCtx {
         count_slot: u32,
     ) {
         let fn_val = from_pair_slice_fn as i64;
-        let trampoline = crate::intrinsics::fad_map_build as i64;
+        let trampoline = crate::intrinsics::fad_map_build as *const () as i64;
 
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -1454,7 +1454,7 @@ impl EmitCtx {
     /// Same trampoline pattern as `emit_call_map_from_pairs`.
     pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
         let fn_val = from_pair_slice_fn as i64;
-        let trampoline = crate::intrinsics::fad_map_build as i64;
+        let trampoline = crate::intrinsics::fad_map_build as *const () as i64;
 
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
