@@ -1,6 +1,7 @@
 use dynasmrt::{dynasm, DynasmApi, DynasmLabelApi, DynamicLabel, AssemblyOffset};
 
-use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END, ErrorCode};
+use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END, ErrorCode,
+    ENC_ERROR_CODE, ENC_OUTPUT_PTR, ENC_OUTPUT_END};
 use crate::jit_f64;
 use crate::recipe::{Op, Recipe, Slot, Width, ErrorTarget};
 
@@ -2298,6 +2299,351 @@ impl EmitCtx {
 
         // ── Restore rbx ──
         dynasm!(self.ops ; .arch x64 ; mov rbx, [rsp + rbx_save_off]);
+    }
+
+    // =====================================================================
+    // Encode-direction methods
+    // =====================================================================
+    //
+    // Register assignments for encode (same callee-saved regs, different semantics):
+    //   r12 = cached output_ptr (write cursor)
+    //   r13 = cached output_end
+    //   r14 = input struct pointer (the typed value being serialized)
+    //   r15 = EncodeContext pointer
+    //
+    // Entry convention: arg0 = input struct ptr, arg1 = EncodeContext ptr
+    //   System V AMD64:  rdi = input, rsi = ctx
+    //   Windows x64:     rcx = input, rdx = ctx
+
+    /// Emit an encode function prologue.
+    ///
+    /// Caches output_ptr and output_end from EncodeContext into r12/r13.
+    /// Returns the entry offset and a fresh error_exit label.
+    pub fn begin_encode_func(&mut self) -> (AssemblyOffset, DynamicLabel) {
+        let error_exit = self.ops.new_dynamic_label();
+        let entry = self.ops.offset();
+        let frame_size = self.frame_size;
+
+        #[cfg(not(windows))]
+        dynasm!(self.ops
+            ; .arch x64
+            ; push rbp
+            ; sub rsp, frame_size as i32
+            ; mov [rsp], rbp
+            ; mov [rsp + 16], r12
+            ; mov [rsp + 24], r13
+            ; mov [rsp + 32], r14
+            ; mov [rsp + 40], r15
+            ; mov r14, rdi              // r14 = input struct pointer
+            ; mov r15, rsi              // r15 = EncodeContext pointer
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; push rbp
+            ; sub rsp, frame_size as i32
+            ; mov [rsp + 32], rbp
+            ; mov [rsp + 48], r12
+            ; mov [rsp + 56], r13
+            ; mov [rsp + 64], r14
+            ; mov [rsp + 72], r15
+            ; mov r14, rcx              // r14 = input struct pointer (Windows arg0)
+            ; mov r15, rdx              // r15 = EncodeContext pointer (Windows arg1)
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+        );
+
+        self.error_exit = error_exit;
+        (entry, error_exit)
+    }
+
+    /// Emit the success epilogue and error exit for an encode function.
+    ///
+    /// Flushes output_ptr back to ctx on success.
+    pub fn end_encode_func(&mut self, error_exit: DynamicLabel) {
+        let frame_size = self.frame_size as i32;
+
+        #[cfg(not(windows))]
+        dynasm!(self.ops
+            ; .arch x64
+            // Success path: flush output cursor, restore registers, return
+            ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
+            ; mov r15, [rsp + 40]
+            ; mov r14, [rsp + 32]
+            ; mov r13, [rsp + 24]
+            ; mov r12, [rsp + 16]
+            ; mov rbp, [rsp]
+            ; add rsp, frame_size
+            ; pop rbp
+            ; ret
+
+            // Error exit: just restore and return (error is already in ctx.error)
+            ; =>error_exit
+            ; mov r15, [rsp + 40]
+            ; mov r14, [rsp + 32]
+            ; mov r13, [rsp + 24]
+            ; mov r12, [rsp + 16]
+            ; mov rbp, [rsp]
+            ; add rsp, frame_size
+            ; pop rbp
+            ; ret
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            // Success path: flush output cursor, restore registers, return
+            ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
+            ; mov r15, [rsp + 72]
+            ; mov r14, [rsp + 64]
+            ; mov r13, [rsp + 56]
+            ; mov r12, [rsp + 48]
+            ; mov rbp, [rsp + 32]
+            ; add rsp, frame_size
+            ; pop rbp
+            ; ret
+
+            // Error exit: just restore and return (error is already in ctx.error)
+            ; =>error_exit
+            ; mov r15, [rsp + 72]
+            ; mov r14, [rsp + 64]
+            ; mov r13, [rsp + 56]
+            ; mov r12, [rsp + 48]
+            ; mov rbp, [rsp + 32]
+            ; add rsp, frame_size
+            ; pop rbp
+            ; ret
+        );
+    }
+
+    /// Emit a call to another emitted encode function.
+    ///
+    /// Convention: arg0 = input + field_offset, arg1 = ctx.
+    /// Flushes output cursor before call, reloads both output_ptr and output_end
+    /// after (buffer may have grown), checks error.
+    pub fn emit_enc_call_emitted_func(&mut self, label: DynamicLabel, field_offset: u32) {
+        let error_exit = self.error_exit;
+
+        dynasm!(self.ops
+            ; .arch x64
+            // Flush cached output cursor back to ctx
+            ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
+        );
+        // Set up arguments: arg0 = input + field_offset, arg1 = ctx
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; lea rdi, [r14 + field_offset as i32] ; mov rsi, r15);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; lea rcx, [r14 + field_offset as i32] ; mov rdx, r15);
+        dynasm!(self.ops
+            ; .arch x64
+            ; call =>label
+
+            // Reload both output_ptr and output_end (callee may have grown the buffer)
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+
+            // Check error
+            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Emit a call to an encode intrinsic that takes only ctx as argument.
+    /// Flushes output cursor, calls, reloads both ptrs, checks error.
+    pub fn emit_enc_call_intrinsic_ctx_only(&mut self, fn_ptr: *const u8) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15);
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Emit a call to an encode intrinsic: fn(ctx, arg1).
+    /// Flushes output cursor, calls, reloads both ptrs, checks error.
+    pub fn emit_enc_call_intrinsic(&mut self, fn_ptr: *const u8, arg1: u64) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+        let arg1_val = arg1 as i64;
+
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, QWORD arg1_val);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, QWORD arg1_val);
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Ensure the output buffer has at least `count` bytes of capacity.
+    /// Inlines the comparison; calls fad_output_grow only when needed.
+    pub fn emit_enc_ensure_capacity(&mut self, count: u32) {
+        let have_space = self.ops.new_dynamic_label();
+        let error_exit = self.error_exit;
+        let grow_ptr = crate::intrinsics::fad_output_grow as *const u8 as i64;
+
+        dynasm!(self.ops
+            ; .arch x64
+            // remaining = output_end - output_ptr
+            ; mov rax, r13
+            ; sub rax, r12
+            ; cmp rax, count as i32
+            ; jge =>have_space
+
+            // Not enough space — call fad_output_grow(ctx, needed)
+            ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
+        );
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, count as i32);
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, count as i32);
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD grow_ptr
+            ; call rax
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+            // Check for allocation error
+            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+
+            ; =>have_space
+        );
+    }
+
+    /// Write a single immediate byte to the output buffer and advance.
+    pub fn emit_enc_write_byte(&mut self, value: u8) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov BYTE [r12], value as i8
+            ; add r12, 1
+        );
+    }
+
+    /// Copy `count` bytes from a static pointer to the output buffer.
+    /// For small counts, uses inline stores. For larger, loads from memory.
+    pub fn emit_enc_write_static_bytes(&mut self, ptr: *const u8, count: u32) {
+        if count == 0 {
+            return;
+        }
+
+        // For very small counts, read the bytes at codegen time and emit immediate stores.
+        if count <= 8 {
+            // Read the actual bytes at codegen time
+            let bytes: &[u8] = unsafe { core::slice::from_raw_parts(ptr, count as usize) };
+
+            // Emit 8/4/2/1-byte stores from the end to cover the count
+            let mut offset = 0u32;
+            let mut remaining = count;
+            while remaining >= 8 {
+                let val = i64::from_le_bytes(bytes[offset as usize..offset as usize + 8].try_into().unwrap());
+                dynasm!(self.ops ; .arch x64 ; mov rax, QWORD val ; mov [r12 + offset as i32], rax);
+                offset += 8;
+                remaining -= 8;
+            }
+            if remaining >= 4 {
+                let val = i32::from_le_bytes(bytes[offset as usize..offset as usize + 4].try_into().unwrap());
+                dynasm!(self.ops ; .arch x64 ; mov DWORD [r12 + offset as i32], val);
+                offset += 4;
+                remaining -= 4;
+            }
+            if remaining >= 2 {
+                let val = i16::from_le_bytes(bytes[offset as usize..offset as usize + 2].try_into().unwrap());
+                dynasm!(self.ops ; .arch x64 ; mov WORD [r12 + offset as i32], val as i32);
+                offset += 2;
+                remaining -= 2;
+            }
+            if remaining >= 1 {
+                dynasm!(self.ops ; .arch x64 ; mov BYTE [r12 + offset as i32], bytes[offset as usize] as i8);
+            }
+        } else {
+            // For larger copies, load pointer and use rep movsb
+            let ptr_val = ptr as i64;
+            dynasm!(self.ops
+                ; .arch x64
+                // Save rdi/rsi (caller-saved, but just in case)
+                ; mov rax, QWORD ptr_val   // source
+                ; mov r10, rdi             // save rdi
+                ; mov r11, rsi             // save rsi (on SysV, not needed on Windows but harmless)
+                ; mov rsi, rax             // rsi = source
+                ; mov rdi, r12             // rdi = dest (output_ptr)
+                ; mov ecx, count as i32    // count
+                ; rep movsb
+                ; mov rdi, r10             // restore rdi
+                ; mov rsi, r11             // restore rsi
+            );
+        }
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; add r12, count as i32
+        );
+    }
+
+    /// Advance the output cursor by `count` bytes (no write).
+    pub fn emit_enc_advance_output(&mut self, count: u32) {
+        if count > 0 {
+            dynasm!(self.ops
+                ; .arch x64
+                ; add r12, count as i32
+            );
+        }
+    }
+
+    /// Load a value from the input struct at the given byte offset into a scratch register.
+    /// The value is left in eax/rax (32-bit for W1/W2/W4, 64-bit for W8).
+    pub fn emit_enc_load_from_input(&mut self, offset: u32, width: Width) {
+        match width {
+            Width::W1 => dynasm!(self.ops ; .arch x64 ; movzx eax, BYTE [r14 + offset as i32]),
+            Width::W2 => dynasm!(self.ops ; .arch x64 ; movzx eax, WORD [r14 + offset as i32]),
+            Width::W4 => dynasm!(self.ops ; .arch x64 ; mov eax, [r14 + offset as i32]),
+            Width::W8 => dynasm!(self.ops ; .arch x64 ; mov rax, [r14 + offset as i32]),
+        }
+    }
+
+    /// Store a value from eax/rax to the output buffer and advance the cursor.
+    pub fn emit_enc_store_to_output(&mut self, width: Width) {
+        match width {
+            Width::W1 => dynasm!(self.ops ; .arch x64
+                ; mov [r12], al
+                ; add r12, 1
+            ),
+            Width::W2 => dynasm!(self.ops ; .arch x64
+                ; mov [r12], ax
+                ; add r12, 2
+            ),
+            Width::W4 => dynasm!(self.ops ; .arch x64
+                ; mov [r12], eax
+                ; add r12, 4
+            ),
+            Width::W8 => dynasm!(self.ops ; .arch x64
+                ; mov [r12], rax
+                ; add r12, 8
+            ),
+        }
     }
 
     /// Commit and finalize the assembler, returning the executable buffer.
