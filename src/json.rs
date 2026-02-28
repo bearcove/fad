@@ -436,21 +436,14 @@ impl Decoder for FadJson {
         // Emit key deserialization at offset 0 (JSON string read)
         emit_key(ectx);
 
-        // Check error after key
-        ectx.emit_check_error_branch(error_cleanup);
-
         // Expect ':' separating key from value
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
-        ectx.emit_check_error_branch(error_cleanup);
 
         // Advance out to value position: out = pair_base + value_offset
         ectx.emit_advance_out_by(value_offset);
 
         // Emit value deserialization at offset 0
         emit_value(ectx);
-
-        // Check error after value
-        ectx.emit_check_error_branch(error_cleanup);
 
         // len += 1
         ectx.emit_inc_stack_slot(len_slot);
