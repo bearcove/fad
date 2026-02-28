@@ -2242,3 +2242,39 @@ Since field names and delimiters are known at JIT-compile time, the
 serializer merges adjacent constant byte sequences into the fewest possible
 store instructions. For example, `,"name":` (8 bytes) can be written as a
 single 8-byte store.
+
+## Future: two-pass deserialization for non-contiguous formats
+
+r[twopass]
+Some formats scatter values for a single logical field across the document.
+TOML is the primary example: `[[array_of_tables]]` spreads array elements
+across the file, so a single-pass deserializer would need to re-enter
+subtrees or buffer raw bytes for deferred parsing.
+
+r[twopass.format-level]
+Two-pass deserialization is a format-level decision, not a per-field one.
+A format declares whether it requires two passes. JSON and postcard are
+single-pass — all values are contiguous. TOML would be two-pass.
+
+r[twopass.passes]
+- **Pass 1 (index)**: Scan the document, identify keys and record byte
+  ranges for each value. No value parsing, no allocation beyond the index
+  itself. The result is a format-specific `DocIndex` — a compact mapping
+  from paths to `(start, end)` byte offsets in the input.
+- **Pass 2 (materialize)**: Walk the shape tree. For each field, look up
+  its byte range in the index, seek to that range, and deserialize the
+  value. This gives random access to the document in type-tree order.
+
+r[twopass.index-storage]
+The `DocIndex` must be compact. For TOML, it stores `(key_path, start, end)`
+triples. Key paths can be interned or referenced as byte ranges into the
+original input (zero-copy). The index is allocated on the format arena and
+freed in bulk after deserialization.
+
+r[twopass.not-needed-yet]
+JSON and postcard do not use two-pass deserialization. All their values are
+contiguous — arrays are delimited by `[...]`, objects by `{...}`, postcard
+sequences are length-prefixed. Even with `#[facet(flatten)]`, the value
+for each key is consumed in one shot when the key dispatches to it.
+
+Two-pass is reserved for formats where this property does not hold.
