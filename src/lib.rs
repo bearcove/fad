@@ -2584,4 +2584,444 @@ mod tests {
         assert_eq!(result, Big { data: expected });
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // #20: rename / rename_all
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct RenameField {
+        #[facet(rename = "user_name")]
+        name: String,
+        age: u32,
+    }
+
+    // r[verify deser.rename]
+    // r[verify deser.rename.json]
+    #[test]
+    fn json_rename_field() {
+        let input = br#"{"user_name": "Alice", "age": 30}"#;
+        let deser = compile_deser(RenameField::SHAPE, &json::FadJson);
+        let result: RenameField = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            RenameField {
+                name: "Alice".into(),
+                age: 30,
+            }
+        );
+    }
+
+    // r[verify deser.rename]
+    // r[verify deser.rename.json]
+    #[test]
+    fn json_rename_field_original_name_rejected() {
+        // Using the original Rust field name "name" should fail
+        // because the key dispatch only knows about "user_name".
+        let input = br#"{"name": "Alice", "age": 30}"#;
+        let deser = compile_deser(RenameField::SHAPE, &json::FadJson);
+        let result = deserialize::<RenameField>(&deser, input);
+        assert!(result.is_err(), "original field name should not match");
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(rename_all = "camelCase")]
+    struct CamelCaseStruct {
+        user_name: String,
+        birth_year: u32,
+    }
+
+    // r[verify deser.rename.all]
+    // r[verify deser.rename.json]
+    #[test]
+    fn json_rename_all_camel_case() {
+        let input = br#"{"userName": "Bob", "birthYear": 1990}"#;
+        let deser = compile_deser(CamelCaseStruct::SHAPE, &json::FadJson);
+        let result: CamelCaseStruct = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            CamelCaseStruct {
+                user_name: "Bob".into(),
+                birth_year: 1990,
+            }
+        );
+    }
+
+    // r[verify deser.rename.postcard-irrelevant]
+    #[test]
+    fn postcard_rename_ignored() {
+        // Postcard is positional — rename has no effect.
+        // Fields are deserialized in declaration order regardless of name.
+        let wire = ::postcard::to_allocvec(&("Alice".to_string(), 30u32)).unwrap();
+        let deser = compile_deser(RenameField::SHAPE, &postcard::FadPostcard);
+        let result: RenameField = deserialize(&deser, &wire).unwrap();
+        assert_eq!(
+            result,
+            RenameField {
+                name: "Alice".into(),
+                age: 30,
+            }
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // #23: transparent
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(transparent)]
+    struct Wrapper(u32);
+
+    // r[verify deser.transparent]
+    // r[verify deser.transparent.forwarding]
+    #[test]
+    fn json_transparent_scalar() {
+        let input = b"42";
+        let deser = compile_deser(Wrapper::SHAPE, &json::FadJson);
+        let result: Wrapper = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Wrapper(42));
+    }
+
+    // r[verify deser.transparent]
+    // r[verify deser.transparent.forwarding]
+    #[test]
+    fn postcard_transparent_scalar() {
+        let wire = ::postcard::to_allocvec(&42u32).unwrap();
+        let deser = compile_deser(Wrapper::SHAPE, &postcard::FadPostcard);
+        let result: Wrapper = deserialize(&deser, &wire).unwrap();
+        assert_eq!(result, Wrapper(42));
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(transparent)]
+    struct StringWrapper(String);
+
+    // r[verify deser.transparent]
+    #[test]
+    fn json_transparent_string() {
+        let input = br#""hello""#;
+        let deser = compile_deser(StringWrapper::SHAPE, &json::FadJson);
+        let result: StringWrapper = deserialize(&deser, input).unwrap();
+        assert_eq!(result, StringWrapper("hello".into()));
+    }
+
+    // r[verify deser.transparent]
+    #[test]
+    fn postcard_transparent_string() {
+        let wire = ::postcard::to_allocvec(&"hello".to_string()).unwrap();
+        let deser = compile_deser(StringWrapper::SHAPE, &postcard::FadPostcard);
+        let result: StringWrapper = deserialize(&deser, &wire).unwrap();
+        assert_eq!(result, StringWrapper("hello".into()));
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(transparent)]
+    struct StructWrapper(Friend);
+
+    // r[verify deser.transparent]
+    // r[verify deser.transparent.composite]
+    #[test]
+    fn json_transparent_composite() {
+        let input = br#"{"age": 25, "name": "Eve"}"#;
+        let deser = compile_deser(StructWrapper::SHAPE, &json::FadJson);
+        let result: StructWrapper = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            StructWrapper(Friend {
+                age: 25,
+                name: "Eve".into()
+            })
+        );
+    }
+
+    // r[verify deser.transparent]
+    // r[verify deser.transparent.composite]
+    #[test]
+    fn postcard_transparent_composite() {
+        let wire = ::postcard::to_allocvec(&(25u32, "Eve".to_string())).unwrap();
+        let deser = compile_deser(StructWrapper::SHAPE, &postcard::FadPostcard);
+        let result: StructWrapper = deserialize(&deser, &wire).unwrap();
+        assert_eq!(
+            result,
+            StructWrapper(Friend {
+                age: 25,
+                name: "Eve".into()
+            })
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // #21: deny_unknown_fields
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(deny_unknown_fields)]
+    struct Strict {
+        x: u32,
+        y: u32,
+    }
+
+    // r[verify deser.deny-unknown-fields]
+    // r[verify deser.deny-unknown-fields.json]
+    #[test]
+    fn json_deny_unknown_fields_rejects() {
+        let input = br#"{"x": 1, "y": 2, "z": 3}"#;
+        let deser = compile_deser(Strict::SHAPE, &json::FadJson);
+        let result = deserialize::<Strict>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::UnknownField);
+    }
+
+    // r[verify deser.deny-unknown-fields]
+    // r[verify deser.deny-unknown-fields.json]
+    #[test]
+    fn json_deny_unknown_fields_allows_known() {
+        let input = br#"{"x": 1, "y": 2}"#;
+        let deser = compile_deser(Strict::SHAPE, &json::FadJson);
+        let result: Strict = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Strict { x: 1, y: 2 });
+    }
+
+    // r[verify deser.deny-unknown-fields.postcard-irrelevant]
+    #[test]
+    fn postcard_deny_unknown_fields_irrelevant() {
+        // Postcard is positional — deny_unknown_fields has no effect.
+        let wire = ::postcard::to_allocvec(&(10u32, 20u32)).unwrap();
+        let deser = compile_deser(Strict::SHAPE, &postcard::FadPostcard);
+        let result: Strict = deserialize(&deser, &wire).unwrap();
+        assert_eq!(result, Strict { x: 10, y: 20 });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // #19: default
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct WithDefault {
+        name: String,
+        #[facet(default)]
+        score: u32,
+    }
+
+    // r[verify deser.default]
+    #[test]
+    fn json_default_field_missing() {
+        // "score" is missing — should get its Default (0).
+        let input = br#"{"name": "Alice"}"#;
+        let deser = compile_deser(WithDefault::SHAPE, &json::FadJson);
+        let result: WithDefault = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithDefault {
+                name: "Alice".into(),
+                score: 0,
+            }
+        );
+    }
+
+    // r[verify deser.default]
+    #[test]
+    fn json_default_field_present() {
+        // "score" is present — use the provided value.
+        let input = br#"{"name": "Alice", "score": 99}"#;
+        let deser = compile_deser(WithDefault::SHAPE, &json::FadJson);
+        let result: WithDefault = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithDefault {
+                name: "Alice".into(),
+                score: 99,
+            }
+        );
+    }
+
+    // r[verify deser.default]
+    #[test]
+    fn json_default_field_required_still_errors() {
+        // "name" has no default — missing it should error.
+        let input = br#"{"score": 50}"#;
+        let deser = compile_deser(WithDefault::SHAPE, &json::FadJson);
+        let result = deserialize::<WithDefault>(&deser, input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::MissingRequiredField);
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct WithDefaultString {
+        #[facet(default)]
+        label: String,
+        value: u32,
+    }
+
+    // r[verify deser.default]
+    #[test]
+    fn json_default_string_field() {
+        let input = br#"{"value": 42}"#;
+        let deser = compile_deser(WithDefaultString::SHAPE, &json::FadJson);
+        let result: WithDefaultString = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithDefaultString {
+                label: String::new(),
+                value: 42,
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    #[facet(default)]
+    struct AllDefault {
+        x: u32,
+        y: u32,
+    }
+
+    impl Default for AllDefault {
+        fn default() -> Self {
+            AllDefault { x: 10, y: 20 }
+        }
+    }
+
+    // r[verify deser.default]
+    #[test]
+    fn json_container_default_empty_object() {
+        // Container-level #[facet(default)] — all fields optional.
+        let input = br#"{}"#;
+        let deser = compile_deser(AllDefault::SHAPE, &json::FadJson);
+        let result: AllDefault = deserialize(&deser, input).unwrap();
+        assert_eq!(result, AllDefault { x: 0, y: 0 });
+    }
+
+    // r[verify deser.default]
+    #[test]
+    fn json_container_default_partial() {
+        let input = br#"{"x": 5}"#;
+        let deser = compile_deser(AllDefault::SHAPE, &json::FadJson);
+        let result: AllDefault = deserialize(&deser, input).unwrap();
+        assert_eq!(result, AllDefault { x: 5, y: 0 });
+    }
+
+    // r[verify deser.default.postcard-irrelevant]
+    #[test]
+    fn postcard_default_irrelevant() {
+        // Postcard is positional — all fields are always present, defaults don't apply.
+        let wire = ::postcard::to_allocvec(&("hello".to_string(), 7u32)).unwrap();
+        let deser = compile_deser(WithDefault::SHAPE, &postcard::FadPostcard);
+        let result: WithDefault = deserialize(&deser, &wire).unwrap();
+        assert_eq!(
+            result,
+            WithDefault {
+                name: "hello".into(),
+                score: 7,
+            }
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // #22: skip / skip_deserializing
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct WithSkip {
+        name: String,
+        #[facet(skip, default)]
+        cached: u32,
+    }
+
+    // r[verify deser.skip]
+    // r[verify deser.skip.json]
+    #[test]
+    fn json_skip_field() {
+        // "cached" is skipped — it should NOT appear in input and gets its default (0).
+        let input = br#"{"name": "Alice"}"#;
+        let deser = compile_deser(WithSkip::SHAPE, &json::FadJson);
+        let result: WithSkip = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithSkip {
+                name: "Alice".into(),
+                cached: 0,
+            }
+        );
+    }
+
+    // r[verify deser.skip]
+    // r[verify deser.skip.json]
+    #[test]
+    fn json_skip_field_in_input_treated_as_unknown() {
+        // If the skipped field's name appears in input, it's treated as unknown.
+        // Without deny_unknown_fields, it's silently skipped.
+        let input = br#"{"name": "Alice", "cached": 99}"#;
+        let deser = compile_deser(WithSkip::SHAPE, &json::FadJson);
+        let result: WithSkip = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithSkip {
+                name: "Alice".into(),
+                cached: 0, // default, NOT 99
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct WithSkipDeser {
+        name: String,
+        #[facet(skip_deserializing, default)]
+        internal: u32,
+    }
+
+    // r[verify deser.skip]
+    // r[verify deser.skip.json]
+    #[test]
+    fn json_skip_deserializing_field() {
+        let input = br#"{"name": "Bob"}"#;
+        let deser = compile_deser(WithSkipDeser::SHAPE, &json::FadJson);
+        let result: WithSkipDeser = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            WithSkipDeser {
+                name: "Bob".into(),
+                internal: 0,
+            }
+        );
+    }
+
+    // r[verify deser.skip]
+    // r[verify deser.skip.postcard]
+    #[test]
+    fn postcard_skip_field() {
+        // Postcard: skipped field is NOT on the wire. Only "name" is serialized.
+        let wire = ::postcard::to_allocvec(&("Alice".to_string(),)).unwrap();
+        let deser = compile_deser(WithSkip::SHAPE, &postcard::FadPostcard);
+        let result: WithSkip = deserialize(&deser, &wire).unwrap();
+        assert_eq!(
+            result,
+            WithSkip {
+                name: "Alice".into(),
+                cached: 0,
+            }
+        );
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct SkipWithCustomDefault {
+        value: u32,
+        #[facet(skip, default = 42)]
+        magic: u32,
+    }
+
+    // r[verify deser.skip]
+    // r[verify deser.skip.default-required]
+    #[test]
+    fn json_skip_with_custom_default() {
+        let input = br#"{"value": 10}"#;
+        let deser = compile_deser(SkipWithCustomDefault::SHAPE, &json::FadJson);
+        let result: SkipWithCustomDefault = deserialize(&deser, input).unwrap();
+        assert_eq!(
+            result,
+            SkipWithCustomDefault {
+                value: 10,
+                magic: 42,
+            }
+        );
+    }
+
 }

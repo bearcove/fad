@@ -35,10 +35,12 @@ impl Format for FadJson {
         48
     }
 
+    // r[impl deser.deny-unknown-fields.json]
     fn emit_struct_fields(
         &self,
         ectx: &mut EmitCtx,
         fields: &[FieldEmitInfo],
+        deny_unknown_fields: bool,
         emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     ) {
         let after_loop = ectx.new_label();
@@ -105,7 +107,11 @@ impl Format for FadJson {
 
         // === unknown key handler ===
         ectx.bind_label(unknown_key);
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        if deny_unknown_fields {
+            ectx.emit_error(ErrorCode::UnknownField);
+        } else {
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        }
 
         // === after_dispatch ===
         ectx.bind_label(after_dispatch);
@@ -127,9 +133,10 @@ impl Format for FadJson {
         // === after_loop ===
         ectx.bind_label(after_loop);
 
-        // Check that all required fields were seen
-        let expected_mask = (1u64 << fields.len()) - 1;
-        ectx.emit_check_bitset(BITSET_OFFSET, expected_mask);
+        // r[impl deser.default]
+        // For fields with defaults: if bit is NOT set, call the default function.
+        // For fields without defaults: they are required — check with bitset mask.
+        emit_default_or_required_check(ectx, fields);
     }
 
     // r[impl deser.json.option]
@@ -887,6 +894,7 @@ impl Format for FadJson {
                     self.emit_struct_fields_continuation(
                         ectx,
                         &variant.fields,
+                        false,
                         &mut |ectx, field| {
                             emit_variant_field(ectx, variant, field);
                         },
@@ -1147,6 +1155,7 @@ impl Format for FadJson {
         &self,
         ectx: &mut EmitCtx,
         fields: &[FieldEmitInfo],
+        deny_unknown_fields: bool,
         emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     ) {
         let after_loop = ectx.new_label();
@@ -1205,7 +1214,11 @@ impl Format for FadJson {
 
         // Unknown key handler
         ectx.bind_label(unknown_key);
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        if deny_unknown_fields {
+            ectx.emit_error(ErrorCode::UnknownField);
+        } else {
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        }
 
         // After dispatch
         ectx.bind_label(after_dispatch);
@@ -1221,9 +1234,37 @@ impl Format for FadJson {
         // === after_loop ===
         ectx.bind_label(after_loop);
 
-        // Check that all required fields were seen
-        let expected_mask = (1u64 << fields.len()) - 1;
-        ectx.emit_check_bitset(BITSET_OFFSET, expected_mask);
+        emit_default_or_required_check(ectx, fields);
+    }
+}
+
+/// Emit default-or-required field checks after a JSON struct loop.
+///
+/// For each field with a default: if its bitset bit is NOT set, call the default
+/// trampoline to initialize it. Then check that all required (non-default) fields
+/// were seen.
+fn emit_default_or_required_check(ectx: &mut EmitCtx, fields: &[FieldEmitInfo]) {
+    let mut required_mask = 0u64;
+    for field in fields {
+        if let Some(default_info) = &field.default {
+            let after_default = ectx.new_label();
+            // If bit IS set, skip the default call.
+            ectx.emit_test_bit_branch(BITSET_OFFSET, field.required_index as u32, after_default);
+            // Bit not set — call the default trampoline.
+            ectx.emit_call_option_init_none(
+                default_info.trampoline,
+                default_info.fn_ptr,
+                field.offset as u32,
+            );
+            ectx.bind_label(after_default);
+        } else {
+            required_mask |= 1u64 << field.required_index;
+        }
+    }
+
+    // Check that all required (non-default) fields were seen.
+    if required_mask != 0 {
+        ectx.emit_check_bitset(BITSET_OFFSET, required_mask);
     }
 }
 

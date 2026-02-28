@@ -458,6 +458,46 @@ pub unsafe extern "C" fn fad_vec_free(
     }
 }
 
+// --- Default field intrinsics ---
+
+// r[impl deser.default]
+// r[impl deser.default.fn-ptr]
+
+/// Initialize a field to its default value using the type's `Default` impl.
+///
+/// Wraps the facet `TypeOpsDirect.default_in_place` function, which has the ABI
+/// `unsafe fn(*mut ())`, into a thin `extern "C"` trampoline callable from JIT code.
+///
+/// # Safety
+/// - `default_fn` must be a valid `unsafe fn(*mut ())` from `TypeOpsDirect.default_in_place`
+/// - `out` must point to uninitialized memory of the correct size/alignment for the type
+#[unsafe(no_mangle)]
+#[allow(improper_ctypes_definitions)]
+pub unsafe extern "C" fn fad_field_default_trait(
+    default_fn: unsafe fn(*mut ()),
+    out: *mut u8,
+) {
+    unsafe { default_fn(out as *mut ()) };
+}
+
+/// Initialize a field to its default value using a custom default expression.
+///
+/// Wraps a `DefaultInPlaceFn` (`unsafe fn(PtrUninit) -> PtrMut`) into a thin
+/// `extern "C"` trampoline. Constructs the `PtrUninit` from the raw output pointer.
+///
+/// # Safety
+/// - `default_fn` must be a valid `DefaultInPlaceFn`
+/// - `out` must point to uninitialized memory of the correct size/alignment for the type
+#[unsafe(no_mangle)]
+#[allow(improper_ctypes_definitions)]
+pub unsafe extern "C" fn fad_field_default_custom(
+    default_fn: facet::DefaultInPlaceFn,
+    out: *mut u8,
+) {
+    let ptr_uninit = PtrUninit::new_sized(out);
+    unsafe { default_fn(ptr_uninit) };
+}
+
 /// Trampoline: call `from_pair_slice` with a plain *mut u8 map pointer.
 ///
 /// JIT code cannot directly call `from_pair_slice` because its first argument,

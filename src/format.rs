@@ -6,6 +6,15 @@ use crate::malum::{StringOffsets, VecOffsets};
 
 // r[impl no-ir.format-trait]
 
+/// Resolved default information for a field.
+#[derive(Clone, Copy)]
+pub struct DefaultInfo {
+    /// Pointer to the intrinsic trampoline (fad_field_default_trait or fad_field_default_custom).
+    pub trampoline: *const u8,
+    /// Pointer to the actual default function (from TypeOps or custom expression).
+    pub fn_ptr: *const u8,
+}
+
 /// Information about a struct field needed during code emission.
 pub struct FieldEmitInfo {
     /// Byte offset of this field within the output struct.
@@ -16,6 +25,18 @@ pub struct FieldEmitInfo {
     pub name: &'static str,
     /// Index of this field for required-field bitset tracking.
     pub required_index: usize,
+    /// If set, this field has a default value and is optional in JSON.
+    pub default: Option<DefaultInfo>,
+}
+
+// r[impl deser.skip]
+
+/// Information about a skipped field that needs default initialization.
+pub struct SkippedFieldInfo {
+    /// Byte offset of this field within the output struct.
+    pub offset: usize,
+    /// Default trampoline + function pointer for initializing this field.
+    pub default: DefaultInfo,
 }
 
 // r[impl deser.enum.variant-kinds]
@@ -90,10 +111,13 @@ pub trait Format {
     ///
     /// The format controls field ordering. For postcard, this just iterates
     /// fields in declaration order. For JSON, this would emit a key-dispatch loop.
+    ///
+    /// `deny_unknown_fields`: if true, error on unrecognized keys instead of skipping.
     fn emit_struct_fields(
         &self,
         ectx: &mut EmitCtx,
         fields: &[FieldEmitInfo],
+        deny_unknown_fields: bool,
         emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     );
 
@@ -200,6 +224,7 @@ pub trait Format {
         &self,
         _ectx: &mut EmitCtx,
         _fields: &[FieldEmitInfo],
+        _deny_unknown_fields: bool,
         _emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     ) {
         panic!("struct fields continuation not supported by this format");

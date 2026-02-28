@@ -446,6 +446,9 @@ impl EmitCtx {
             ; .arch x64
             ; mov rax, [rsp + sp_offset as i32]
             ; mov r10, QWORD expected_mask
+            // Check that (bitset & mask) == mask — all required bits are set.
+            // Extra bits (from optional/default fields) are ignored.
+            ; and rax, r10
             ; cmp rax, r10
             ; je =>ok_label
             // Not all required fields were seen — write error and bail
@@ -691,6 +694,19 @@ impl EmitCtx {
             ; mov r10, QWORD mask
             ; test rax, r10
             ; jnz =>label
+        );
+    }
+
+    /// Test a single bit at `bit_index` in the u64 at `[rsp + stack_offset]`.
+    /// Branch to `label` if the bit is CLEAR (zero) — i.e., the field was NOT seen.
+    pub fn emit_test_bit_branch_zero(&mut self, stack_offset: u32, bit_index: u32, label: DynamicLabel) {
+        let mask = (1u64 << bit_index) as i64;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, [rsp + stack_offset as i32]
+            ; mov r10, QWORD mask
+            ; test rax, r10
+            ; jz =>label
         );
     }
 

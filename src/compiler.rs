@@ -4,7 +4,7 @@ use dynasmrt::{AssemblyOffset, DynamicLabel};
 use facet::{Def, EnumRepr, ListDef, MapDef, OptionDef, ScalarType, Shape, Type, UserType};
 
 use crate::arch::EmitCtx;
-use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
+use crate::format::{FieldEmitInfo, Format, SkippedFieldInfo, VariantEmitInfo, VariantKind};
 use crate::malum::StringOffsets;
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
@@ -92,6 +92,13 @@ impl<'fmt> Compiler<'fmt> {
             },
         );
 
+        // r[impl deser.transparent]
+        // Check for transparent wrappers first — deserialize as the inner type.
+        if shape.is_transparent() {
+            self.compile_transparent(shape, entry_label);
+            return entry_label;
+        }
+
         // Check for List (Vec<T>) first — it's detected by Def, not Type.
         // Vec<T> has Type::User(UserType::Opaque) + Def::List.
         if let Def::List(list_def) = &shape.def {
@@ -125,7 +132,8 @@ impl<'fmt> Compiler<'fmt> {
         entry_label: DynamicLabel,
     ) {
         let key = shape as *const Shape;
-        let fields = collect_fields(shape);
+        let (fields, skipped_fields) = collect_fields(shape);
+        let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
         let inline = self.format.supports_inline_nested();
 
         // For non-inlining formats, depth-first compile all nested composite fields
@@ -167,18 +175,94 @@ impl<'fmt> Compiler<'fmt> {
         self.ectx.bind_label(entry_label);
         let (entry_offset, error_exit) = self.ectx.begin_func();
 
+        // r[impl deser.skip]
+        // Emit default initialization for skipped fields before the key-dispatch loop.
+        for sf in &skipped_fields {
+            self.ectx.emit_call_option_init_none(
+                sf.default.trampoline,
+                sf.default.fn_ptr,
+                sf.offset as u32,
+            );
+        }
+
         let format = self.format;
         let option_scratch_offset = self.option_scratch_offset;
         let string_offsets = &self.string_offsets;
         let ectx = &mut self.ectx;
 
-        format.emit_struct_fields(ectx, &fields, &mut |ectx, field| {
+        format.emit_struct_fields(ectx, &fields, deny_unknown_fields, &mut |ectx, field| {
             emit_field(ectx, format, field, &fields, &nested, option_scratch_offset, string_offsets);
         });
 
         self.ectx.end_func(error_exit);
 
         // Mark as finished with the resolved offset.
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    // r[impl deser.transparent]
+    // r[impl deser.transparent.forwarding]
+    // r[impl deser.transparent.composite]
+
+    /// Compile a transparent wrapper: deserialize as the inner type directly.
+    fn compile_transparent(
+        &mut self,
+        shape: &'static Shape,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+
+        // Get the inner shape from the transparent wrapper.
+        let inner_shape = shape.inner.unwrap_or_else(|| {
+            panic!(
+                "transparent shape {} has no inner shape",
+                shape.type_identifier
+            )
+        });
+
+        // Get the field offset — transparent structs have exactly one field.
+        let field_offset = match &shape.ty {
+            Type::User(UserType::Struct(st)) => {
+                assert!(
+                    st.fields.len() == 1,
+                    "transparent struct {} has {} fields, expected 1",
+                    shape.type_identifier,
+                    st.fields.len()
+                );
+                st.fields[0].offset
+            }
+            _ => 0, // Non-struct transparent (e.g. newtype via repr(transparent))
+        };
+
+        // Pre-compile the inner shape if it's composite.
+        let inner_label = if needs_precompilation(inner_shape) {
+            Some(self.compile_shape(inner_shape))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_func();
+
+        // Emit deserialization of the inner type at the field's offset.
+        if let Some(label) = inner_label {
+            self.ectx.emit_call_emitted_func(label, field_offset as u32);
+        } else {
+            match inner_shape.scalar_type() {
+                Some(ScalarType::String) => {
+                    self.format.emit_read_string(&mut self.ectx, field_offset, &self.string_offsets);
+                }
+                Some(st) => {
+                    self.format.emit_read_scalar(&mut self.ectx, field_offset, st);
+                }
+                None => panic!(
+                    "unsupported transparent inner type: {}",
+                    inner_shape.type_identifier,
+                ),
+            }
+        }
+
+        self.ectx.end_func(error_exit);
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
     }
 
@@ -363,7 +447,7 @@ impl<'fmt> Compiler<'fmt> {
             let nested = &nested_labels[variant.index];
 
             if variant.kind == VariantKind::Struct && !inline {
-                format.emit_struct_fields(ectx, &variant.fields, &mut |ectx, field| {
+                format.emit_struct_fields(ectx, &variant.fields, false, &mut |ectx, field| {
                     emit_field(ectx, format, field, &variant.fields, nested, option_scratch_offset, string_offsets);
                 });
                 return;
@@ -430,32 +514,108 @@ impl<'fmt> Compiler<'fmt> {
 // r[impl deser.flatten.offset-accumulation]
 // r[impl deser.flatten.inline]
 
-fn collect_fields(shape: &'static Shape) -> Vec<FieldEmitInfo> {
+fn collect_fields(shape: &'static Shape) -> (Vec<FieldEmitInfo>, Vec<SkippedFieldInfo>) {
     let mut out = Vec::new();
-    collect_fields_recursive(shape, 0, &mut out);
+    let mut skipped = Vec::new();
+    let container_has_default = shape.has_default_attr();
+    collect_fields_recursive(shape, 0, container_has_default, &mut out, &mut skipped);
     check_field_name_collisions(&out);
-    out
+    (out, skipped)
 }
 
+// r[impl deser.default]
+// r[impl deser.default.fn-ptr]
+// r[impl deser.skip]
+// r[impl deser.skip.filter]
 fn collect_fields_recursive(
     shape: &'static Shape,
     base_offset: usize,
+    container_has_default: bool,
     out: &mut Vec<FieldEmitInfo>,
+    skipped: &mut Vec<SkippedFieldInfo>,
 ) {
+    use crate::format::DefaultInfo;
+    use facet::DefaultSource;
+
     let st = match &shape.ty {
         Type::User(UserType::Struct(st)) => st,
         _ => panic!("unsupported shape: {}", shape.type_identifier),
     };
     for f in st.fields {
         if f.is_flattened() {
-            collect_fields_recursive(f.shape(), base_offset + f.offset, out);
-        } else {
-            out.push(FieldEmitInfo {
-                offset: base_offset + f.offset,
-                shape: f.shape(),
-                name: f.effective_name(),
-                required_index: out.len(),
+            collect_fields_recursive(f.shape(), base_offset + f.offset, container_has_default, out, skipped);
+            continue;
+        }
+
+        // Resolve default information for this field.
+        let default = match f.default {
+            Some(DefaultSource::Custom(custom_fn)) => {
+                // Custom default expression: #[facet(default = expr)]
+                Some(DefaultInfo {
+                    trampoline: crate::intrinsics::fad_field_default_custom as *const u8,
+                    fn_ptr: custom_fn as *const u8,
+                })
+            }
+            Some(DefaultSource::FromTrait) => {
+                // Field-level #[facet(default)] — use the field type's Default impl.
+                resolve_trait_default(f.shape())
+            }
+            None if container_has_default => {
+                // Container-level #[facet(default)] — all fields get Default.
+                resolve_trait_default(f.shape())
+            }
+            None => None,
+        };
+
+        // r[impl deser.skip.default-required]
+        if f.should_skip_deserializing() {
+            // Skipped fields are excluded from the dispatch list but need default init.
+            let default = default.unwrap_or_else(|| {
+                panic!(
+                    "field \"{}\" on {} is skipped but has no default — \
+                     add #[facet(default)] or impl Default",
+                    f.effective_name(),
+                    shape.type_identifier,
+                )
             });
+            skipped.push(SkippedFieldInfo {
+                offset: base_offset + f.offset,
+                default,
+            });
+            continue;
+        }
+
+        out.push(FieldEmitInfo {
+            offset: base_offset + f.offset,
+            shape: f.shape(),
+            name: f.effective_name(),
+            required_index: out.len(),
+            default,
+        });
+    }
+}
+
+/// Resolve a trait-based default for a field type.
+/// Returns the DefaultInfo if the type has a Default impl via its shape vtable.
+fn resolve_trait_default(shape: &'static Shape) -> Option<crate::format::DefaultInfo> {
+    use crate::format::DefaultInfo;
+
+    // Get the default_in_place function from the shape's TypeOps.
+    let type_ops = shape.type_ops?;
+    match type_ops {
+        facet::TypeOps::Direct(ops) => {
+            let default_fn = ops.default_in_place?;
+            Some(DefaultInfo {
+                trampoline: crate::intrinsics::fad_field_default_trait as *const u8,
+                fn_ptr: default_fn as *const u8,
+            })
+        }
+        facet::TypeOps::Indirect(_ops) => {
+            // Indirect types (unsized) — not supported for field defaults in JIT.
+            panic!(
+                "unsized type {} cannot have a field default in JIT deserializer",
+                shape.type_identifier
+            );
         }
     }
 }
@@ -483,18 +643,22 @@ fn collect_variants(enum_type: &'static facet::EnumType) -> Vec<VariantEmitInfo>
         .map(|(i, v)| {
             let kind = VariantKind::from_struct_type(&v.data);
             let mut fields = Vec::new();
+            let mut skipped = Vec::new();
             for f in v.data.fields {
                 if f.is_flattened() {
-                    collect_fields_recursive(f.shape(), f.offset, &mut fields);
+                    collect_fields_recursive(f.shape(), f.offset, false, &mut fields, &mut skipped);
                 } else {
                     fields.push(FieldEmitInfo {
                         offset: f.offset,
                         shape: f.shape(),
                         name: f.effective_name(),
                         required_index: fields.len(),
+                        default: None,
                     });
                 }
             }
+            // Note: skipped fields in enum variants are not yet supported.
+            // If needed, we'd emit default calls in the variant body.
             VariantEmitInfo {
                 index: i,
                 name: v.effective_name(),
@@ -678,7 +842,17 @@ fn emit_inline_struct(
     option_scratch_offset: u32,
     string_offsets: &StringOffsets,
 ) {
-    let inner_fields = collect_fields(shape);
+    let (inner_fields, skipped_fields) = collect_fields(shape);
+
+    // Emit default initialization for skipped fields in the inlined struct.
+    for sf in &skipped_fields {
+        ectx.emit_call_option_init_none(
+            sf.default.trampoline,
+            sf.default.fn_ptr,
+            (base_offset + sf.offset) as u32,
+        );
+    }
+
     let adjusted: Vec<FieldEmitInfo> = inner_fields
         .into_iter()
         .map(|f| FieldEmitInfo {
@@ -686,13 +860,16 @@ fn emit_inline_struct(
             shape: f.shape,
             name: f.name,
             required_index: f.required_index,
+            default: f.default,
         })
         .collect();
 
     // No nested labels — all struct fields will recurse into emit_inline_struct.
     let no_nested = vec![None; adjusted.len()];
 
-    format.emit_struct_fields(ectx, &adjusted, &mut |ectx, field| {
+    // Inline nested structs inherit the parent's deny_unknown_fields behavior,
+    // but currently inline is only used by postcard (positional, no unknown fields possible).
+    format.emit_struct_fields(ectx, &adjusted, false, &mut |ectx, field| {
         emit_field(ectx, format, field, &adjusted, &no_nested, option_scratch_offset, string_offsets);
     });
 }
@@ -813,7 +990,7 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     } else {
         match &shape.ty {
             Type::User(UserType::Struct(_)) => {
-                let fields = collect_fields(shape);
+                let (fields, _) = collect_fields(shape);
                 format.extra_stack_space(&fields)
             }
             Type::User(UserType::Enum(enum_type)) => {
@@ -828,6 +1005,7 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
                             shape: f.shape(),
                             name: f.name,
                             required_index: j,
+                            default: None,
                         }
                     }).collect();
                     max_extra = max_extra.max(format.extra_stack_space(&fields));

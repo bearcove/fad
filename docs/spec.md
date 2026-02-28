@@ -547,6 +547,28 @@ the inner type directly.
 r[ser.json.tuple-struct]
 JSON tuple structs with multiple fields are serialized as JSON arrays.
 
+## Transparent wrappers
+
+r[deser.transparent]
+`#[facet(transparent)]` on a struct causes it to be deserialized as its
+single inner field's type. The compiler detects the attribute via
+`shape.is_transparent()`, extracts the inner type from `shape.inner`, and
+emits deserialization of the inner type at the wrapper field's offset.
+
+r[deser.transparent.forwarding]
+Transparent deserialization is purely structural forwarding — no struct
+framing (no `{`/`}` for JSON, no field count for postcard). The wrapper
+is invisible on the wire. This works identically for JSON and postcard.
+
+r[deser.transparent.composite]
+If the inner type is composite (struct, enum, vec, map), the compiler
+pre-compiles it as a separate function and emits a call. If the inner type
+is a scalar or string, the compiler emits the appropriate read inline.
+
+r[ser.transparent]
+`#[facet(transparent)]` structs are serialized as their inner type directly,
+with no wrapper framing.
+
 ## emit_field_loop for postcard
 
 r[deser.postcard.struct]
@@ -674,7 +696,82 @@ loop:
 
 r[deser.json.struct.unknown-keys]
 Unknown keys in JSON objects are skipped via a `skip_value` call. They do not
-cause an error.
+cause an error (unless `deny_unknown_fields` is set).
+
+## Field renaming
+
+r[deser.rename]
+`#[facet(rename = "wireName")]` on a field causes the deserializer to match
+against the renamed string instead of the Rust field name. The rename is
+applied at JIT-compile time: `field.effective_name()` returns the renamed
+name, which is baked into the key-dispatch chain.
+
+r[deser.rename.all]
+`#[facet(rename_all = "camelCase")]` on a container applies a naming
+convention to all fields. The derive macro computes each field's renamed
+value at Rust compile time and stores it in the field metadata. The
+JIT compiler sees the final renamed names via `effective_name()` — no
+case conversion logic is needed in fad itself.
+
+r[deser.rename.json]
+For JSON, renamed field names are used in the key-matching dispatch chain.
+The emitted code compares runtime keys against the renamed strings.
+
+r[deser.rename.postcard-irrelevant]
+For postcard, field names are irrelevant (positional format). Rename
+attributes have no effect on postcard deserialization.
+
+r[ser.rename]
+Renamed field names are used as JSON keys during serialization.
+
+## Deny unknown fields
+
+r[deser.deny-unknown-fields]
+`#[facet(deny_unknown_fields)]` on a struct causes the deserializer to
+report an error when an unrecognized key is encountered, instead of
+silently skipping it.
+
+r[deser.deny-unknown-fields.json]
+For JSON, the unknown-key branch in the key-dispatch loop emits an error
+(`ErrorCode::UnknownField`) instead of calling `skip_value`. The check is
+a JIT-compile-time decision: the flag is read from `shape` metadata and
+controls which code path is emitted.
+
+r[deser.deny-unknown-fields.postcard-irrelevant]
+For postcard, deny_unknown_fields has no effect (positional format, no
+field names, no concept of unknown fields).
+
+## Skip fields
+
+r[deser.skip]
+`#[facet(skip)]` and `#[facet(skip_deserializing)]` on a field cause the
+deserializer to exclude that field from the wire format. The field is not
+included in the key-dispatch table (JSON) or the positional field sequence
+(postcard).
+
+r[deser.skip.default-required]
+Skipped fields must have a default value (`#[facet(default)]` or the
+container has `#[facet(default)]`). If a field is skipped but has no
+default source, the compiler panics at JIT-compile time.
+
+r[deser.skip.init]
+The emitted code initializes skipped fields to their default value at
+function entry, before the field-dispatch loop. This ensures the field
+has a valid value regardless of what appears in the input.
+
+r[deser.skip.json]
+For JSON, skipped fields are omitted from the key-dispatch chain. If the
+input contains a key matching a skipped field, it is treated as an unknown
+key (skipped or errored depending on `deny_unknown_fields`).
+
+r[deser.skip.postcard]
+For postcard, skipped fields are omitted from the positional field sequence.
+The emitted code does not read any bytes for skipped fields — it only
+writes their default value.
+
+r[ser.skip]
+`#[facet(skip)]` and `#[facet(skip_serializing)]` cause the serializer to
+omit the field from the output.
 
 ### JSON parsing behaviors
 

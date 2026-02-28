@@ -52,6 +52,7 @@ pub enum ErrorCode {
     AmbiguousVariant = 16,
     AllocError = 17,
     InvalidEscapeSequence = 18,
+    UnknownField = 19,
 }
 
 impl fmt::Display for ErrorCode {
@@ -80,6 +81,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::InvalidEscapeSequence => {
                 write!(f, "invalid JSON escape sequence")
             }
+            ErrorCode::UnknownField => write!(f, "unknown field"),
         }
     }
 }

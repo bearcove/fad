@@ -28,6 +28,7 @@ impl Format for FadPostcard {
         &self,
         ectx: &mut EmitCtx,
         fields: &[FieldEmitInfo],
+        _deny_unknown_fields: bool,
         emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
     ) {
         // Postcard: fields are serialized in declaration order, no keys.

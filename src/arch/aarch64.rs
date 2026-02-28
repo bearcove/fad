@@ -385,7 +385,10 @@ impl EmitCtx {
 
         dynasm!(self.ops
             ; .arch aarch64
-            ; cmp x9, x10
+            // Check that (bitset & mask) == mask — all required bits are set.
+            // Extra bits (from optional/default fields) are ignored.
+            ; and x11, x9, x10
+            ; cmp x11, x10
             ; b.eq =>ok_label
             // Not all required fields were seen — write error and bail
             ; movz w9, #error_code
@@ -685,6 +688,16 @@ impl EmitCtx {
             ; .arch aarch64
             ; ldr x9, [sp, #stack_offset]
             ; tbnz x9, #bit_index, =>label
+        );
+    }
+
+    /// Test a single bit at `bit_index` in the u64 at `[sp + stack_offset]`.
+    /// Branch to `label` if the bit is CLEAR (zero) — i.e., the field was NOT seen.
+    pub fn emit_test_bit_branch_zero(&mut self, stack_offset: u32, bit_index: u32, label: DynamicLabel) {
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldr x9, [sp, #stack_offset]
+            ; tbz x9, #bit_index, =>label
         );
     }
 
