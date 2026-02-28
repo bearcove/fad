@@ -145,6 +145,12 @@ fn esc(s: &str) -> String {
 
 // ── HTML ───────────────────────────────────────────────────────────────────
 
+fn bar_color(name: &str) -> &'static str {
+    if name.starts_with("fad") { "#E8A820" }       // amber — fad
+    else if name.starts_with("serde") { "#4A9EFF" } // blue  — serde_json
+    else { "#4B5563" }                               // slate — others
+}
+
 fn render(groups: &[Group]) -> String {
     let mut h = String::new();
 
@@ -154,125 +160,124 @@ fn render(groups: &[Group]) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bench Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Barlow+Condensed:wght@700&display=swap" rel="stylesheet">
 <style>
+:root{
+  --bg:#080B10;--surface:#0D1117;--border:#1C2128;
+  --text:#8B949E;--bright:#E6EDF3;--dim:#484F58;
+  --fad:#E8A820;--serde:#4A9EFF;
+  --font-mono:"JetBrains Mono",monospace;
+}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{
-  background:#0d0f14;color:#c9d1d9;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-  font-size:14px;line-height:1.5;
-  padding:32px 24px;max-width:900px;margin:0 auto;
+  background:var(--bg);color:var(--text);
+  font-family:var(--font-mono);font-size:11px;
+  padding:24px 20px;max-width:1100px;margin:0 auto;
 }
-h1{font-size:22px;font-weight:700;color:#f0f6fc;margin-bottom:4px}
-.sub{color:#6e7681;font-size:12px;margin-bottom:32px;font-family:monospace}
+header{
+  display:flex;align-items:baseline;gap:16px;
+  margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px;
+}
+h1{
+  font-family:"Barlow Condensed",sans-serif;
+  font-size:28px;font-weight:700;letter-spacing:.05em;
+  color:var(--bright);text-transform:uppercase;
+}
+.legend{display:flex;gap:12px;align-items:center;margin-left:auto}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text)}
+.swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
+  gap:8px;
+}
 .group{
-  background:#161b22;border:1px solid #21262d;
-  border-radius:10px;padding:18px 20px;margin-bottom:14px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;padding:10px 12px;
 }
 .gname{
-  font-family:"SFMono-Regular",Consolas,monospace;
-  font-size:13px;font-weight:600;color:#79c0ff;
-  margin-bottom:14px;letter-spacing:.02em;
+  font-size:10px;font-weight:600;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.08em;
+  margin-bottom:8px;
 }
 .row{
   display:grid;
-  grid-template-columns:170px 1fr 100px;
-  gap:0 10px;align-items:center;margin-bottom:6px;
+  grid-template-columns:90px 1fr 72px;
+  gap:0 8px;align-items:center;margin-bottom:3px;
 }
+.row:last-child{margin-bottom:0}
 .bname{
-  font-family:"SFMono-Regular",Consolas,monospace;
-  font-size:12px;color:#8b949e;
+  font-size:10px;color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.track{background:#21262d;border-radius:4px;height:24px;overflow:hidden}
-.fill{height:100%;border-radius:4px;min-width:3px}
-.fill-ref   {background:#4a5568}
-.fill-win   {background:linear-gradient(90deg,#196c2e,#2ea043)}
-.fill-lose  {background:linear-gradient(90deg,#7a1e1e,#c03b3b)}
-.fill-other {background:linear-gradient(90deg,#1a3a6c,#2f81c6)}
-.meta{
-  font-family:"SFMono-Regular",Consolas,monospace;
-  font-size:11px;text-align:right;
+.track{
+  background:#13181F;height:12px;
+  border-radius:2px;overflow:hidden;
 }
-.mtime{color:#e6edf3;display:block}
-.mdelta{font-size:10px;display:block}
-.win{color:#3fb950}
-.lose{color:#f85149}
+.fill{height:100%;min-width:2px;border-radius:2px}
+.meta{
+  font-size:10px;text-align:right;white-space:nowrap;
+  display:flex;flex-direction:column;align-items:flex-end;gap:0;
+}
+.mtime{color:var(--bright)}
+.mdelta{font-size:9px;color:var(--dim)}
+.mdelta.win{color:#3FB950}
+.mdelta.lose{color:#F85149}
 </style>
 </head>
 <body>
-<h1>Bench Report</h1>
-<div class="sub">fad vs serde_json &middot; cargo bench --bench deser_json</div>
+<header>
+  <h1>Bench Report</h1>
+  <div class="legend">
+    <div class="legend-item"><div class="swatch" style="background:var(--fad)"></div>fad</div>
+    <div class="legend-item"><div class="swatch" style="background:var(--serde)"></div>serde_json</div>
+  </div>
+</header>
+<div class="grid">
 "#);
 
     for group in groups {
-        let rows = &group.rows;
-        if rows.is_empty() {
-            continue;
-        }
+        // Filter out facet_json entries
+        let rows: Vec<&Row> = group.rows.iter()
+            .filter(|r| !r.name.starts_with("facet"))
+            .collect();
+
+        if rows.is_empty() { continue; }
 
         let max_ns = rows.iter().map(|r| r.median_ns).fold(0.0f64, f64::max);
-        if max_ns == 0.0 {
-            continue;
-        }
+        if max_ns == 0.0 { continue; }
 
-        // Find the serde_json reference (first bench whose name starts with "serde")
-        let ref_ns = rows
-            .iter()
+        let ref_ns = rows.iter()
             .find(|r| r.name.starts_with("serde"))
             .map(|r| r.median_ns);
 
         write!(h, r#"<div class="group"><div class="gname">{}</div>"#, esc(&group.name)).unwrap();
 
-        for row in rows {
+        for row in &rows {
             let pct = (row.median_ns / max_ns * 100.0).clamp(0.5, 100.0);
-            let is_ref = row.name.starts_with("serde");
+            let color = bar_color(&row.name);
 
-            let fill_class = if is_ref {
-                "fill-ref"
-            } else if let Some(ref_ns) = ref_ns {
-                if row.median_ns < ref_ns {
-                    "fill-win"
-                } else {
-                    "fill-lose"
+            let delta_html = match ref_ns {
+                Some(ref_ns) if !row.name.starts_with("serde") => {
+                    let ratio = row.median_ns / ref_ns;
+                    if ratio < 1.0 {
+                        format!(r#"<span class="mdelta win">+{:.0}%</span>"#, (1.0 - ratio) * 100.0)
+                    } else {
+                        format!(r#"<span class="mdelta lose">-{:.0}%</span>"#, (ratio - 1.0) * 100.0)
+                    }
                 }
-            } else {
-                "fill-other"
+                _ => String::new(),
             };
 
-            let delta_html = if is_ref {
-                String::new()
-            } else if let Some(ref_ns) = ref_ns {
-                let ratio = row.median_ns / ref_ns;
-                if ratio < 1.0 {
-                    let gain = (1.0 - ratio) * 100.0;
-                    format!(r#"<span class="mdelta win">+{gain:.0}% faster</span>"#)
-                } else {
-                    let loss = (ratio - 1.0) * 100.0;
-                    format!(r#"<span class="mdelta lose">{loss:.0}% slower</span>"#)
-                }
-            } else {
-                String::new()
-            };
-
-            write!(
-                h,
-                r#"<div class="row">
-  <div class="bname">{}</div>
-  <div class="track"><div class="fill {}" style="width:{:.1}%"></div></div>
-  <div class="meta"><span class="mtime">{}</span>{}</div>
-</div>"#,
-                esc(&row.name),
-                fill_class,
-                pct,
-                fmt_time(row.median_ns),
-                delta_html,
-            )
-            .unwrap();
+            write!(h, r#"<div class="row"><div class="bname">{}</div><div class="track"><div class="fill" style="width:{:.1}%;background:{}"></div></div><div class="meta"><span class="mtime">{}</span>{}</div></div>"#,
+                esc(&row.name), pct, color, fmt_time(row.median_ns), delta_html,
+            ).unwrap();
         }
 
         h.push_str("</div>\n");
     }
 
-    h.push_str("</body>\n</html>\n");
+    h.push_str("</div>\n</body>\n</html>\n");
     h
 }
