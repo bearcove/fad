@@ -32,11 +32,11 @@ brotli = "8"
 insta = "1"
 
 [[bench]]
-name = "deser_postcard"
+name = "json"
 harness = false
 
 [[bench]]
-name = "deser_json"
+name = "postcard"
 harness = false
 
 [[bench]]
