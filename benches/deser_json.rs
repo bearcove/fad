@@ -777,3 +777,31 @@ mod vec_struct {
         });
     }
 }
+
+// ── Benchmarks: string with escape sequences ───────────────────────────
+
+static ESCAPE_JSON: &[u8] = br#"{"age": 42, "name": "hello\nworld\t\"escaped\"\u0041"}"#;
+
+static FAD_ESCAPE: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(FriendFacet::SHAPE, &fad::json::FadJson)
+});
+
+#[divan::bench_group(sample_size = 65536)]
+mod string_escapes {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<FriendSerde>(black_box(ESCAPE_JSON)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_ESCAPE;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<FriendFacet>(deser, black_box(ESCAPE_JSON)).unwrap())
+        });
+    }
+}
