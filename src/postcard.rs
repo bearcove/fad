@@ -1,5 +1,5 @@
 use dynasmrt::DynamicLabel;
-use facet::ScalarType;
+use facet::{MapDef, ScalarType};
 
 use crate::arch::{EmitCtx, BASE_FRAME};
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo};
@@ -129,6 +129,12 @@ impl Format for FadPostcard {
 
     fn vec_extra_stack_space(&self) -> u32 {
         // varint scratch (8) + saved_out (8) + buf (8) + count (8) + cursor (8) + end (8) = 48
+        48
+    }
+
+    fn map_extra_stack_space(&self) -> u32 {
+        // Same layout as vec: saved_out (8) + buf (8) + count (8) + cursor (8) + end (8) = 48
+        // Plus varint scratch (8) = 48 (shared with vec_extra_stack_space base)
         48
     }
 
@@ -271,6 +277,138 @@ impl Format for FadPostcard {
             count_slot,
             elem_size,
             elem_align,
+        );
+
+        ectx.bind_label(done_label);
+    }
+
+    // r[impl deser.postcard.map]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_map(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        map_def: &'static MapDef,
+        _k_shape: &'static facet::Shape,
+        _v_shape: &'static facet::Shape,
+        _k_label: Option<DynamicLabel>,
+        _v_label: Option<DynamicLabel>,
+        _option_scratch_offset: u32,
+        emit_key: &mut dyn FnMut(&mut EmitCtx),
+        emit_value: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        let from_pair_slice_fn = map_def.vtable.from_pair_slice
+            .expect("MapVTable must have from_pair_slice for JIT deserialization") as *const u8;
+
+        let pair_stride = map_def.vtable.pair_stride as u32;
+        let value_offset = map_def.vtable.value_offset_in_pair as u32;
+
+        // Compute pair alignment: max of key and value alignment.
+        let k_align = map_def.k.layout.sized_layout()
+            .expect("Map key must be Sized").align() as u32;
+        let v_align = map_def.v.layout.sized_layout()
+            .expect("Map value must be Sized").align() as u32;
+        let pair_align = k_align.max(v_align);
+
+        // Stack slot offsets (relative to sp). Same layout as postcard Vec.
+        let saved_out_slot = BASE_FRAME + 8;
+        let buf_slot = BASE_FRAME + 16;
+        let count_slot = BASE_FRAME + 24;
+        let save_x23_slot = BASE_FRAME + 32;
+        let save_x24_slot = BASE_FRAME + 40;
+
+        let empty_label = ectx.new_label();
+        let done_label = ectx.new_label();
+        let loop_done_label = ectx.new_label();
+        let loop_label = ectx.new_label();
+        let error_cleanup = ectx.new_label();
+
+        // Read pair count (varint → w9/r10d)
+        ectx.emit_read_postcard_discriminant(intrinsics::fad_read_varint_u32 as *const u8);
+
+        // If count == 0, emit empty map directly
+        ectx.emit_cbz_count(empty_label);
+
+        // Save count before alloc call (caller-saved reg, clobbered by call)
+        ectx.emit_save_count_to_stack(count_slot);
+
+        // Allocate pairs buffer: fad_vec_alloc(ctx, count, pair_stride, pair_align)
+        ectx.emit_call_vec_alloc(
+            intrinsics::fad_vec_alloc as *const u8,
+            pair_stride,
+            pair_align,
+        );
+
+        // Init cursor loop: save x23/x24, set x23=buf, x24=end
+        ectx.emit_vec_loop_init_cursor(
+            saved_out_slot,
+            buf_slot,
+            count_slot,
+            save_x23_slot,
+            save_x24_slot,
+            pair_stride,
+        );
+
+        // === Loop body ===
+        ectx.bind_label(loop_label);
+
+        // Redirect errors to our cleanup label
+        let saved_error_exit = ectx.error_exit;
+        ectx.error_exit = error_cleanup;
+
+        // Load cursor for key: out = x23 (pair_base)
+        ectx.emit_vec_loop_load_cursor(save_x23_slot);
+
+        // Emit key deserialization at offset 0 from out
+        emit_key(ectx);
+
+        // Advance out to value position: out = x23 + value_offset
+        ectx.emit_advance_out_by(value_offset);
+
+        // Emit value deserialization at offset 0 from out
+        emit_value(ectx);
+
+        ectx.error_exit = saved_error_exit;
+
+        // Advance cursor by pair_stride; loop back if more pairs remain
+        ectx.emit_vec_loop_advance_no_error_check(
+            save_x24_slot,
+            pair_stride,
+            loop_label,
+        );
+
+        // === Loop done: build the final map from the pairs buffer ===
+        ectx.bind_label(loop_done_label);
+        ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
+        // Call from_pair_slice(saved_out + offset, pairs_buf, count)
+        // Note: offset is 0 when called as a standalone function (out already points to map slot)
+        let _ = offset; // offset=0 always for standalone map function
+        ectx.emit_call_map_from_pairs(from_pair_slice_fn, saved_out_slot, buf_slot, count_slot);
+        // Free the pairs buffer (count == cap for postcard's exact allocation)
+        ectx.emit_call_pairs_free(
+            intrinsics::fad_vec_free as *const u8,
+            buf_slot,
+            count_slot, // cap == count for postcard
+            pair_stride,
+            pair_align,
+        );
+        ectx.emit_branch(done_label);
+
+        // === Empty path: build empty map without allocating a pairs buffer ===
+        ectx.bind_label(empty_label);
+        ectx.emit_call_map_from_pairs_empty(from_pair_slice_fn);
+        ectx.emit_branch(done_label);
+
+        // === Error cleanup: restore callee-saved, free pairs buffer, exit ===
+        ectx.bind_label(error_cleanup);
+        ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
+        ectx.emit_vec_error_cleanup(
+            intrinsics::fad_vec_free as *const u8,
+            saved_out_slot,
+            buf_slot,
+            count_slot, // cap == count for postcard
+            pair_stride,
+            pair_align,
         );
 
         ectx.bind_label(done_label);

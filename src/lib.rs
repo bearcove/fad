@@ -2273,4 +2273,178 @@ mod tests {
         assert_eq!(result, Friend { age: 42, name: "Alice".into() });
     }
 
+    // --- Milestone 8: Map deserialization ---
+
+    // r[verify deser.postcard.map]
+    #[test]
+    fn postcard_map_string_to_u32() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Config {
+            scores: HashMap<String, u32>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct ConfigSerde {
+            scores: HashMap<String, u32>,
+        }
+
+        let mut scores = HashMap::new();
+        scores.insert("alice".to_string(), 42u32);
+        scores.insert("bob".to_string(), 7u32);
+        let source = ConfigSerde { scores: scores.clone() };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Config::SHAPE, &postcard::FadPostcard);
+        let result: Config = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Config { scores });
+    }
+
+    // r[verify deser.postcard.map]
+    #[test]
+    fn postcard_map_empty() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Config {
+            scores: HashMap<String, u32>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct ConfigSerde {
+            scores: HashMap<String, u32>,
+        }
+
+        let source = ConfigSerde { scores: HashMap::new() };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Config::SHAPE, &postcard::FadPostcard);
+        let result: Config = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Config { scores: HashMap::new() });
+    }
+
+    // r[verify deser.postcard.map]
+    #[test]
+    fn postcard_map_string_to_string() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Env {
+            vars: HashMap<String, String>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct EnvSerde {
+            vars: HashMap<String, String>,
+        }
+
+        let mut vars = HashMap::new();
+        vars.insert("HOME".to_string(), "/root".to_string());
+        vars.insert("PATH".to_string(), "/usr/bin".to_string());
+        let source = EnvSerde { vars: vars.clone() };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Env::SHAPE, &postcard::FadPostcard);
+        let result: Env = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Env { vars });
+    }
+
+    // r[verify deser.postcard.map]
+    #[test]
+    fn postcard_btreemap_string_to_u32() {
+        use std::collections::BTreeMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Config {
+            scores: BTreeMap<String, u32>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct ConfigSerde {
+            scores: BTreeMap<String, u32>,
+        }
+
+        let mut scores = BTreeMap::new();
+        scores.insert("alice".to_string(), 42u32);
+        scores.insert("bob".to_string(), 7u32);
+        let source = ConfigSerde { scores: scores.clone() };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_deser(Config::SHAPE, &postcard::FadPostcard);
+        let result: Config = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, Config { scores });
+    }
+
+    // r[verify deser.json.map]
+    #[test]
+    fn json_map_string_to_u32() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Config {
+            scores: HashMap<String, u32>,
+        }
+
+        let input = br#"{"scores": {"alice": 42, "bob": 7}}"#;
+        let deser = compile_deser(Config::SHAPE, &json::FadJson);
+        let result: Config = deserialize(&deser, input).unwrap();
+        let mut expected = HashMap::new();
+        expected.insert("alice".to_string(), 42u32);
+        expected.insert("bob".to_string(), 7u32);
+        assert_eq!(result, Config { scores: expected });
+    }
+
+    // r[verify deser.json.map]
+    #[test]
+    fn json_map_empty() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Config {
+            scores: HashMap<String, u32>,
+        }
+
+        let input = br#"{"scores": {}}"#;
+        let deser = compile_deser(Config::SHAPE, &json::FadJson);
+        let result: Config = deserialize(&deser, input).unwrap();
+        assert_eq!(result, Config { scores: HashMap::new() });
+    }
+
+    // r[verify deser.json.map]
+    #[test]
+    fn json_map_string_to_string() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Env {
+            vars: HashMap<String, String>,
+        }
+
+        let input = br#"{"vars": {"HOME": "/root", "PATH": "/usr/bin"}}"#;
+        let deser = compile_deser(Env::SHAPE, &json::FadJson);
+        let result: Env = deserialize(&deser, input).unwrap();
+        let mut expected = HashMap::new();
+        expected.insert("HOME".to_string(), "/root".to_string());
+        expected.insert("PATH".to_string(), "/usr/bin".to_string());
+        assert_eq!(result, Env { vars: expected });
+    }
+
+    // r[verify deser.json.map]
+    #[test]
+    fn json_map_growth() {
+        use std::collections::HashMap;
+
+        #[derive(facet::Facet, Debug, PartialEq)]
+        struct Big {
+            data: HashMap<String, u32>,
+        }
+
+        // More than initial cap=4 to trigger growth
+        let input = br#"{"data": {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6}}"#;
+        let deser = compile_deser(Big::SHAPE, &json::FadJson);
+        let result: Big = deserialize(&deser, input).unwrap();
+        let mut expected = HashMap::new();
+        for (k, v) in [("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5), ("f", 6)] {
+            expected.insert(k.to_string(), v as u32);
+        }
+        assert_eq!(result, Big { data: expected });
+    }
+
 }

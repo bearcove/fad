@@ -1,3 +1,5 @@
+use facet::{MapFromPairSliceFn, PtrUninit};
+
 use crate::context::{DeserContext, ErrorCode};
 
 // r[impl callconv.intrinsics]
@@ -454,4 +456,28 @@ pub unsafe extern "C" fn fad_vec_free(
         };
         unsafe { std::alloc::dealloc(buf, layout) };
     }
+}
+
+/// Trampoline: call `from_pair_slice` with a plain *mut u8 map pointer.
+///
+/// JIT code cannot directly call `from_pair_slice` because its first argument,
+/// `PtrUninit`, is a 16-byte `#[repr(C)]` struct — passed in two registers on
+/// aarch64 / Linux x64 but by pointer on Windows x64.  This trampoline takes
+/// only pointer-/usize-sized arguments (all single-register) and constructs the
+/// `PtrUninit` value internally using Rust's correct ABI handling.
+///
+/// # Safety
+/// - `from_pair_slice_fn` must be a valid `MapFromPairSliceFn` function pointer.
+/// - `map_ptr` must point to uninitialised memory sized and aligned for the map type.
+/// - `pairs_ptr` must point to a contiguous `count` pairs (or may be null when `count == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_map_build(
+    from_pair_slice_fn: *const u8,
+    map_ptr: *mut u8,
+    pairs_ptr: *mut u8,
+    count: usize,
+) {
+    let f: MapFromPairSliceFn = unsafe { core::mem::transmute(from_pair_slice_fn) };
+    let uninit = PtrUninit::new(map_ptr as *mut u8);
+    unsafe { f(uninit, pairs_ptr, count) };
 }

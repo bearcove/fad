@@ -1304,6 +1304,107 @@ impl EmitCtx {
         );
     }
 
+    // ── Map support ─────────────────────────────────────────────────
+
+    /// Advance the out register (r14) by a constant offset.
+    ///
+    /// Used in map loops to move from the key slot to the value slot within a pair.
+    pub fn emit_advance_out_by(&mut self, offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; add r14, offset as i32
+        );
+    }
+
+    /// Call `fad_map_build(from_pair_slice_fn, saved_out, pairs_buf, count)`.
+    ///
+    /// We cannot call `from_pair_slice` directly from JIT code because its
+    /// first arg `PtrUninit` is a 16-byte struct — passed in 2 registers on
+    /// Linux x64 but by hidden pointer on Windows x64.  `fad_map_build` is a
+    /// plain-C trampoline that takes four pointer-/usize-sized args and
+    /// constructs `PtrUninit` internally.
+    pub fn emit_call_map_from_pairs(
+        &mut self,
+        from_pair_slice_fn: *const u8,
+        saved_out_slot: u32,
+        buf_slot: u32,
+        count_slot: u32,
+    ) {
+        let fn_val = from_pair_slice_fn as i64;
+        let trampoline = crate::intrinsics::fad_map_build as i64;
+
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
+            ; mov rdi, QWORD fn_val                    // arg0 = from_pair_slice_fn
+            ; mov rsi, [rsp + saved_out_slot as i32]   // arg1 = map_ptr
+            ; mov rdx, [rsp + buf_slot as i32]         // arg2 = pairs_ptr
+            ; mov rcx, [rsp + count_slot as i32]       // arg3 = count
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, QWORD fn_val                    // arg0 = from_pair_slice_fn
+            ; mov rdx, [rsp + saved_out_slot as i32]   // arg1 = map_ptr
+            ; mov r8, [rsp + buf_slot as i32]          // arg2 = pairs_ptr
+            ; mov r9, [rsp + count_slot as i32]        // arg3 = count
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD trampoline ; call rax);
+    }
+
+    /// Call `fad_map_build(from_pair_slice_fn, r14, null, 0)` — empty map.
+    ///
+    /// Same trampoline pattern as `emit_call_map_from_pairs`.
+    pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
+        let fn_val = from_pair_slice_fn as i64;
+        let trampoline = crate::intrinsics::fad_map_build as i64;
+
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
+            ; mov rdi, QWORD fn_val  // arg0 = from_pair_slice_fn
+            ; mov rsi, r14           // arg1 = map_ptr (current out)
+            ; xor edx, edx           // arg2 = null pairs ptr
+            ; xor ecx, ecx           // arg3 = count = 0
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, QWORD fn_val  // arg0 = from_pair_slice_fn
+            ; mov rdx, r14           // arg1 = map_ptr (current out)
+            ; xor r8d, r8d           // arg2 = null pairs ptr
+            ; xor r9d, r9d           // arg3 = count = 0
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD trampoline ; call rax);
+    }
+
+    /// Call `fad_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
+    ///
+    /// Used on the success path after `from_pair_slice` has moved the pairs into the map.
+    /// Does NOT branch to error exit (pairs free on success path, not error).
+    pub fn emit_call_pairs_free(
+        &mut self,
+        free_fn: *const u8,
+        buf_slot: u32,
+        cap_slot: u32,
+        pair_stride: u32,
+        pair_align: u32,
+    ) {
+        let ptr_val = free_fn as i64;
+
+        #[cfg(not(windows))]
+        dynasm!(self.ops ; .arch x64
+            ; mov rdi, [rsp + buf_slot as i32]
+            ; mov rsi, [rsp + cap_slot as i32]
+            ; mov edx, pair_stride as i32
+            ; mov ecx, pair_align as i32
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops ; .arch x64
+            ; mov rcx, [rsp + buf_slot as i32]
+            ; mov rdx, [rsp + cap_slot as i32]
+            ; mov r8d, pair_stride as i32
+            ; mov r9d, pair_align as i32
+        );
+        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD ptr_val ; call rax);
+    }
+
     // ── Recipe emission ─────────────────────────────────────────────
 
     /// Emit a recipe — interpret a sequence of micro-ops into x86_64 instructions.

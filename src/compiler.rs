@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use dynasmrt::{AssemblyOffset, DynamicLabel};
-use facet::{Def, EnumRepr, ListDef, OptionDef, ScalarType, Shape, Type, UserType};
+use facet::{Def, EnumRepr, ListDef, MapDef, OptionDef, ScalarType, Shape, Type, UserType};
 
 use crate::arch::EmitCtx;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
@@ -99,6 +99,12 @@ impl<'fmt> Compiler<'fmt> {
             return entry_label;
         }
 
+        // Check for Map (HashMap<K,V> / BTreeMap<K,V>) — detected by Def::Map.
+        if let Def::Map(map_def) = &shape.def {
+            self.compile_map(shape, map_def, entry_label);
+            return entry_label;
+        }
+
         match &shape.ty {
             Type::User(UserType::Struct(_)) => {
                 self.compile_struct(shape, entry_label);
@@ -132,10 +138,10 @@ impl<'fmt> Compiler<'fmt> {
                 .iter()
                 .map(|f| {
                     let target = option_inner_or_self(f.shape);
-                    // Lists (Vec<T>) always need pre-compilation.
+                    // Lists (Vec<T>) and Maps always need pre-compilation.
                     // Enums always need pre-compilation (can't be inlined).
                     if matches!(&target.ty, Type::User(UserType::Enum(_)))
-                        || matches!(&target.def, Def::List(_))
+                        || matches!(&target.def, Def::List(_) | Def::Map(_))
                     {
                         Some(self.compile_shape(target))
                     } else {
@@ -223,6 +229,59 @@ impl<'fmt> Compiler<'fmt> {
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
     }
 
+    /// Compile a Map<K, V> shape into a function using the two-pass approach:
+    /// deserialize (K, V) pairs into a temp buffer, then call from_pair_slice.
+    fn compile_map(
+        &mut self,
+        shape: &'static Shape,
+        map_def: &'static MapDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+
+        let k_shape = map_def.k;
+        let v_shape = map_def.v;
+
+        // Pre-compile key and value shapes if they are composite.
+        let k_label = if needs_precompilation(k_shape) {
+            Some(self.compile_shape(k_shape))
+        } else {
+            None
+        };
+        let v_label = if needs_precompilation(v_shape) {
+            Some(self.compile_shape(v_shape))
+        } else {
+            None
+        };
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_func();
+
+        let format = self.format;
+        let option_scratch_offset = self.option_scratch_offset;
+        let string_offsets = &self.string_offsets;
+
+        format.emit_map(
+            &mut self.ectx,
+            0, // offset=0: function receives out pointing to the Map slot
+            map_def,
+            k_shape,
+            v_shape,
+            k_label,
+            v_label,
+            option_scratch_offset,
+            &mut |ectx| {
+                emit_elem(ectx, format, k_shape, k_label, option_scratch_offset, string_offsets);
+            },
+            &mut |ectx| {
+                emit_elem(ectx, format, v_shape, v_label, option_scratch_offset, string_offsets);
+            },
+        );
+
+        self.ectx.end_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
     // r[impl deser.postcard.enum]
     // r[impl deser.json.enum.external]
 
@@ -251,7 +310,7 @@ impl<'fmt> Compiler<'fmt> {
                         .map(|f| {
                             let target = option_inner_or_self(f.shape);
                             if matches!(&target.ty, Type::User(UserType::Enum(_)))
-                                || matches!(&target.def, Def::List(_))
+                                || matches!(&target.def, Def::List(_) | Def::Map(_))
                             {
                                 Some(self.compile_shape(target))
                             } else {
@@ -484,12 +543,12 @@ fn is_struct(shape: &'static Shape) -> bool {
     matches!(&shape.ty, Type::User(UserType::Struct(_)))
 }
 
-/// Returns true if the shape needs its own compiled function (struct, enum, or vec).
+/// Returns true if the shape needs its own compiled function (struct, enum, vec, or map).
 fn is_composite(shape: &'static Shape) -> bool {
     matches!(
         &shape.ty,
         Type::User(UserType::Struct(_) | UserType::Enum(_))
-    ) || matches!(&shape.def, Def::List(_))
+    ) || matches!(&shape.def, Def::List(_) | Def::Map(_))
 }
 
 /// Returns true if the shape needs pre-compilation as a separate function.
@@ -648,9 +707,13 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
 
     let mut max_size = 0usize;
 
-    // Walk through List element types too.
+    // Walk through List element types and Map key/value types.
     if let Def::List(list_def) = &shape.def {
         max_size = max_size.max(max_option_inner_size(list_def.t, visited));
+    }
+    if let Def::Map(map_def) = &shape.def {
+        max_size = max_size.max(max_option_inner_size(map_def.k, visited));
+        max_size = max_size.max(max_option_inner_size(map_def.v, visited));
     }
 
     match &shape.ty {
@@ -689,22 +752,33 @@ fn max_option_inner_size(shape: &'static Shape, visited: &mut std::collections::
     max_size
 }
 
-/// Check if a shape tree contains any List (Vec<T>) types.
-fn has_list_in_tree(shape: &'static Shape, visited: &mut std::collections::HashSet<*const Shape>) -> bool {
+/// Check if a shape tree contains any List (Vec<T>) or Map types that need
+/// the sequence buffer stack layout.
+fn has_seq_or_map_in_tree(shape: &'static Shape, visited: &mut std::collections::HashSet<*const Shape>) -> bool {
     let key = shape as *const Shape;
     if !visited.insert(key) {
         return false;
     }
 
-    if matches!(&shape.def, Def::List(_)) {
+    if matches!(&shape.def, Def::List(_) | Def::Map(_)) {
         return true;
+    }
+
+    // Recurse into map key/value types.
+    if let Def::Map(map_def) = &shape.def {
+        if has_seq_or_map_in_tree(map_def.k, visited) {
+            return true;
+        }
+        if has_seq_or_map_in_tree(map_def.v, visited) {
+            return true;
+        }
     }
 
     match &shape.ty {
         Type::User(UserType::Struct(st)) => {
             for f in st.fields {
                 let target = option_inner_or_self(f.shape());
-                if has_list_in_tree(target, visited) {
+                if has_seq_or_map_in_tree(target, visited) {
                     return true;
                 }
             }
@@ -713,7 +787,7 @@ fn has_list_in_tree(shape: &'static Shape, visited: &mut std::collections::HashS
             for v in enum_type.variants {
                 for f in v.data.fields {
                     let target = option_inner_or_self(f.shape());
-                    if has_list_in_tree(target, visited) {
+                    if has_seq_or_map_in_tree(target, visited) {
                         return true;
                     }
                 }
@@ -732,6 +806,9 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
     // enum handling computes its own stack needs.
     let mut format_extra = if matches!(&shape.def, Def::List(_)) {
         // Vec<T> as root shape — format needs stack space for vec loop state.
+        format.extra_stack_space(&[])
+    } else if matches!(&shape.def, Def::Map(_)) {
+        // Map<K,V> as root shape — format needs stack space for map loop state.
         format.extra_stack_space(&[])
     } else {
         match &shape.ty {
@@ -761,10 +838,11 @@ pub fn compile_deser(shape: &'static Shape, format: &dyn Format) -> CompiledDese
         }
     };
 
-    // If the shape tree contains any Vec types, ensure we have enough stack
-    // for Vec loop state (buf_ptr, count/cap, counter, saved_out).
-    if has_list_in_tree(shape, &mut std::collections::HashSet::new()) {
+    // If the shape tree contains any Vec or Map types, ensure we have enough stack
+    // for sequence buffer state (buf_ptr, count/cap, counter, saved_out).
+    if has_seq_or_map_in_tree(shape, &mut std::collections::HashSet::new()) {
         format_extra = format_extra.max(format.vec_extra_stack_space());
+        format_extra = format_extra.max(format.map_extra_stack_space());
     }
 
     // Compute Option scratch space: 8 bytes for saved out pointer + max inner T size.

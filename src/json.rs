@@ -1,5 +1,5 @@
 use dynasmrt::DynamicLabel;
-use facet::{ScalarType, Type, UserType};
+use facet::{MapDef, ScalarType, Type, UserType};
 
 use crate::arch::{EmitCtx, BASE_FRAME};
 use crate::context::ErrorCode;
@@ -192,6 +192,14 @@ impl Format for FadJson {
         64
     }
 
+    fn map_extra_stack_space(&self) -> u32 {
+        // Same stack layout as JSON Vec: saved_out + buf + len + cap = 32 bytes
+        // on top of the base JSON struct slots (48 bytes) = 80 bytes total.
+        // We reuse the 64-byte vec_extra_stack_space since the slots don't overlap
+        // (map functions have their own separate frame).
+        64
+    }
+
     // r[impl deser.json.seq]
     // r[impl seq.malum.json]
     #[allow(clippy::too_many_arguments)]
@@ -319,6 +327,165 @@ impl Format for FadJson {
             cap_slot,
             elem_size,
             elem_align,
+        );
+
+        ectx.bind_label(done_label);
+    }
+
+    // r[impl deser.json.map]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_map(
+        &self,
+        ectx: &mut EmitCtx,
+        _offset: usize,
+        map_def: &'static MapDef,
+        k_shape: &'static facet::Shape,
+        _v_shape: &'static facet::Shape,
+        _k_label: Option<DynamicLabel>,
+        _v_label: Option<DynamicLabel>,
+        _option_scratch_offset: u32,
+        emit_key: &mut dyn FnMut(&mut EmitCtx),
+        emit_value: &mut dyn FnMut(&mut EmitCtx),
+    ) {
+        // JSON map keys must be strings — JSON object keys are always quoted strings.
+        assert!(
+            matches!(k_shape.scalar_type(), Some(ScalarType::String)),
+            "JSON map deserialization only supports String keys, got: {}",
+            k_shape.type_identifier,
+        );
+
+        let from_pair_slice_fn = map_def.vtable.from_pair_slice
+            .expect("MapVTable must have from_pair_slice for JIT deserialization") as *const u8;
+
+        let pair_stride = map_def.vtable.pair_stride as u32;
+        let value_offset = map_def.vtable.value_offset_in_pair as u32;
+
+        let k_align = map_def.k.layout.sized_layout()
+            .expect("Map key must be Sized").align() as u32;
+        let v_align = map_def.v.layout.sized_layout()
+            .expect("Map value must be Sized").align() as u32;
+        let pair_align = k_align.max(v_align);
+
+        // Stack slot offsets — same layout as JSON Vec (after JSON struct base slots).
+        let saved_out_slot = BASE_FRAME + 32;
+        let buf_slot = BASE_FRAME + 40;
+        let len_slot = BASE_FRAME + 48;
+        let cap_slot = BASE_FRAME + 56;
+
+        let empty_label = ectx.new_label();
+        let done_label = ectx.new_label();
+        let loop_label = ectx.new_label();
+        let grow_label = ectx.new_label();
+        let after_grow = ectx.new_label();
+        let write_map_label = ectx.new_label();
+        let error_cleanup = ectx.new_label();
+
+        // Expect '{'
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_object_start as *const u8,
+        );
+
+        // Peek: check for empty object '}'
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'}', empty_label);
+
+        // Initial allocation: cap=4
+        let initial_cap: u32 = 4;
+        ectx.emit_call_json_vec_initial_alloc(
+            intrinsics::fad_vec_alloc as *const u8,
+            initial_cap,
+            pair_stride,
+            pair_align,
+        );
+
+        // Save loop state: saved_out, buf, len=0, cap=initial_cap
+        ectx.emit_json_vec_loop_init(saved_out_slot, buf_slot, len_slot, cap_slot, initial_cap);
+
+        // === Loop ===
+        ectx.bind_label(loop_label);
+
+        // Check if len == cap → grow
+        ectx.emit_cmp_stack_slots_branch_eq(len_slot, cap_slot, grow_label);
+        ectx.bind_label(after_grow);
+
+        // Compute pair slot: out = buf + len * pair_stride (points to key at offset 0)
+        ectx.emit_vec_loop_slot(buf_slot, len_slot, pair_stride);
+
+        // Emit key deserialization at offset 0 (JSON string read)
+        emit_key(ectx);
+
+        // Check error after key
+        ectx.emit_check_error_branch(error_cleanup);
+
+        // Expect ':' separating key from value
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_colon as *const u8,
+        );
+        ectx.emit_check_error_branch(error_cleanup);
+
+        // Advance out to value position: out = pair_base + value_offset
+        ectx.emit_advance_out_by(value_offset);
+
+        // Emit value deserialization at offset 0
+        emit_value(ectx);
+
+        // Check error after value
+        ectx.emit_check_error_branch(error_cleanup);
+
+        // len += 1
+        ectx.emit_inc_stack_slot(len_slot);
+
+        // comma_or_end_object: 0=comma (more entries), 1='}' (done)
+        ectx.emit_call_intrinsic_ctx_and_stack_out(
+            json_intrinsics::fad_json_comma_or_end_object as *const u8,
+            RESULT_BYTE_OFFSET,
+        );
+        ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, write_map_label);
+        ectx.emit_branch(loop_label);
+
+        // === Growth path ===
+        ectx.bind_label(grow_label);
+        ectx.emit_call_vec_grow(
+            intrinsics::fad_vec_grow as *const u8,
+            buf_slot,
+            len_slot,
+            cap_slot,
+            pair_stride,
+            pair_align,
+        );
+        ectx.emit_branch(after_grow);
+
+        // === Build map from pairs buffer ===
+        ectx.bind_label(write_map_label);
+        ectx.emit_call_map_from_pairs(from_pair_slice_fn, saved_out_slot, buf_slot, len_slot);
+        // Free the pairs buffer (using cap, which may be > len after growth)
+        ectx.emit_call_pairs_free(
+            intrinsics::fad_vec_free as *const u8,
+            buf_slot,
+            cap_slot,
+            pair_stride,
+            pair_align,
+        );
+        ectx.emit_branch(done_label);
+
+        // === Empty path: consume '}', build empty map ===
+        ectx.bind_label(empty_label);
+        ectx.emit_advance_cursor_by(1); // consume '}'
+        ectx.emit_call_map_from_pairs_empty(from_pair_slice_fn);
+        ectx.emit_branch(done_label);
+
+        // === Error cleanup: free pairs buffer, branch to error exit ===
+        ectx.bind_label(error_cleanup);
+        ectx.emit_vec_error_cleanup(
+            intrinsics::fad_vec_free as *const u8,
+            saved_out_slot,
+            buf_slot,
+            cap_slot,
+            pair_stride,
+            pair_align,
         );
 
         ectx.bind_label(done_label);
