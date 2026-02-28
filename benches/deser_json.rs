@@ -408,7 +408,7 @@ static FACET_JSON_JIT_FLAT: LazyLock<
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod flat_struct {
     use super::*;
 
@@ -446,7 +446,7 @@ mod flat_struct {
 
 // ── Benchmarks: nested struct ───────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod nested_struct {
     use super::*;
 
@@ -475,7 +475,7 @@ mod nested_struct {
 
 // ── Benchmarks: deeply nested struct ────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod deep_nested_struct {
     use super::*;
 
@@ -504,7 +504,7 @@ mod deep_nested_struct {
 
 // ── Benchmarks: enum (externally tagged, struct variant) ──────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_external {
     use super::*;
 
@@ -526,7 +526,7 @@ mod enum_external {
 
 // ── Benchmarks: flatten ───────────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod flatten {
     use super::*;
 
@@ -548,7 +548,7 @@ mod flatten {
 
 // ── Benchmarks: enum (adjacently tagged, struct variant) ──────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_adjacent {
     use super::*;
 
@@ -570,7 +570,7 @@ mod enum_adjacent {
 
 // ── Benchmarks: enum (internally tagged, struct variant) ──────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_internal {
     use super::*;
 
@@ -592,7 +592,7 @@ mod enum_internal {
 
 // ── Benchmarks: enum (untagged, struct variant via peek dispatch) ─────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged {
     use super::*;
 
@@ -618,7 +618,7 @@ mod enum_untagged {
 
 // ── Benchmarks: enum (untagged, solver — key presence only) ───────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged_solver {
     use super::*;
 
@@ -644,7 +644,7 @@ mod enum_untagged_solver {
 
 // ── Benchmarks: enum (untagged, solver — value-type evidence) ─────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged_value_type {
     use super::*;
 
@@ -672,7 +672,7 @@ mod enum_untagged_value_type {
 
 // ── Benchmarks: enum (untagged, solver — nested key evidence) ─────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_untagged_nested_key {
     use super::*;
 
@@ -700,7 +700,7 @@ mod enum_untagged_nested_key {
 
 // ── Benchmarks: Vec<u32> (3 elements) ─────────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_scalar_small {
     use super::*;
 
@@ -727,7 +727,7 @@ mod vec_scalar_small {
 
 // ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_scalar_medium {
     use super::*;
 
@@ -751,7 +751,7 @@ mod vec_scalar_medium {
 
 // ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_struct {
     use super::*;
 
@@ -773,6 +773,282 @@ mod vec_struct {
     }
 }
 
+// ── Shared types: HashMap<String, u32> ────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct MapSerde {
+    scores: std::collections::HashMap<String, u32>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct MapFacet {
+    scores: std::collections::HashMap<String, u32>,
+}
+
+// ── Encoded test data: maps ─────────────────────────────────────────────────
+
+static MAP_SMALL_JSON: &[u8] =
+    br#"{"scores": {"alice": 42, "bob": 7, "carol": 99, "dave": 15}}"#;
+
+static MAP_MEDIUM_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let scores = (0..16u32)
+        .map(|i| (format!("player{i}"), i * 10))
+        .collect();
+    serde_json::to_vec(&MapSerde { scores }).unwrap()
+});
+
+// ── Cached compiled deserializers: maps ─────────────────────────────────────
+
+static FAD_MAP: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(MapFacet::SHAPE, &fad::json::FadJson)
+});
+
+// ── Benchmarks: HashMap<String, u32> (4 entries) ──────────────────────────
+
+#[divan::bench_group]
+mod map_small {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<MapSerde>(black_box(MAP_SMALL_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_MAP;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<MapFacet>(deser, black_box(MAP_SMALL_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: HashMap<String, u32> (16 entries) ─────────────────────────
+
+#[divan::bench_group]
+mod map_medium {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        let data = &*MAP_MEDIUM_JSON;
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<MapSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*MAP_MEDIUM_JSON;
+        let deser = &*FAD_MAP;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<MapFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Shared types: HashMap<String, Friend> ─────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct MapStructSerde {
+    roster: std::collections::HashMap<String, FriendSerde>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct MapStructFacet {
+    roster: std::collections::HashMap<String, FriendFacet>,
+}
+
+static MAP_STRUCT_JSON: &[u8] = br#"{"roster": {"alice": {"age": 25, "name": "Alice"}, "bob": {"age": 30, "name": "Bob"}, "carol": {"age": 35, "name": "Carol"}}}"#;
+
+static FAD_MAP_STRUCT: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(MapStructFacet::SHAPE, &fad::json::FadJson)
+});
+
+// ── Benchmarks: HashMap<String, Friend> (3 entries) ────────────────────────
+
+#[divan::bench_group]
+mod map_struct {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<MapStructSerde>(black_box(MAP_STRUCT_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_MAP_STRUCT;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<MapStructFacet>(deser, black_box(MAP_STRUCT_JSON)).unwrap(),
+            )
+        });
+    }
+}
+
+// ── Shared types: string-heavy structs ────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct ManyStringsSerde {
+    first: String,
+    last: String,
+    email: String,
+    city: String,
+    country: String,
+    bio: String,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct ManyStringsFacet {
+    first: String,
+    last: String,
+    email: String,
+    city: String,
+    country: String,
+    bio: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct LongStringSerde {
+    content: String,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct LongStringFacet {
+    content: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct StringVecSerde {
+    names: Vec<String>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct StringVecFacet {
+    names: Vec<String>,
+}
+
+// ── Encoded test data: strings ──────────────────────────────────────────────
+
+static MANY_STRINGS_JSON: &[u8] = br#"{"first": "Alice", "last": "Johnson", "email": "alice@example.com", "city": "Portland", "country": "USA", "bio": "Software engineer"}"#;
+
+static LONG_STRING_JSON: &[u8] = br#"{"content": "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat."}"#;
+
+static VEC_STRING_JSON: &[u8] = br#"{"names": ["alice", "bob", "carol", "dave", "eve", "frank", "grace", "henry"]}"#;
+
+static HEAVY_ESCAPE_JSON: &[u8] = br#"{"first": "Alice \"Al\" Johnson", "last": "O\u0027Brien", "email": "alice+test@example.com", "city": "New\nYork", "country": "U\u0053A", "bio": "Writes code\t& drinks coffee"}"#;
+
+// ── Cached compiled deserializers: strings ──────────────────────────────────
+
+static FAD_MANY_STRINGS: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(ManyStringsFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_LONG_STRING: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(LongStringFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_VEC_STRING: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
+    fad::compile_decoder(StringVecFacet::SHAPE, &fad::json::FadJson)
+});
+
+// ── Benchmarks: 6 short string fields (fast path) ─────────────────────────
+
+#[divan::bench_group]
+mod string_many_fields {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<ManyStringsSerde>(black_box(MANY_STRINGS_JSON)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_MANY_STRINGS;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<ManyStringsFacet>(deser, black_box(MANY_STRINGS_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: single long string field (fast path scanning) ─────────────
+
+#[divan::bench_group]
+mod string_long_value {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<LongStringSerde>(black_box(LONG_STRING_JSON)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_LONG_STRING;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<LongStringFacet>(deser, black_box(LONG_STRING_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: Vec<String> (8 elements) ──────────────────────────────────
+
+#[divan::bench_group]
+mod string_vec {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<StringVecSerde>(black_box(VEC_STRING_JSON)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_VEC_STRING;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<StringVecFacet>(deser, black_box(VEC_STRING_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: 6 string fields with escape sequences (slow path) ─────────
+
+#[divan::bench_group]
+mod string_heavy_escapes {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<ManyStringsSerde>(black_box(HEAVY_ESCAPE_JSON)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_MANY_STRINGS;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<ManyStringsFacet>(deser, black_box(HEAVY_ESCAPE_JSON)).unwrap())
+        });
+    }
+}
+
 // ── Benchmarks: string with escape sequences ───────────────────────────
 
 static ESCAPE_JSON: &[u8] = br#"{"age": 42, "name": "hello\nworld\t\"escaped\"\u0041"}"#;
@@ -780,7 +1056,7 @@ static ESCAPE_JSON: &[u8] = br#"{"age": 42, "name": "hello\nworld\t\"escaped\"\u
 static FAD_ESCAPE: LazyLock<fad::compiler::CompiledDecoder> =
     LazyLock::new(|| fad::compile_decoder(FriendFacet::SHAPE, &fad::json::FadJson));
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod string_escapes {
     use super::*;
 
@@ -802,7 +1078,7 @@ mod string_escapes {
 
 // ── Benchmarks: string-heavy payload (trusted UTF-8 path) ────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod string_heavy_utf8_trust {
     use super::*;
 

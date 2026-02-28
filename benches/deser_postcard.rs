@@ -271,7 +271,7 @@ static FACET_JIT_FLAT: LazyLock<
 
 // ── Benchmarks: flat struct ─────────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod flat_struct {
     use super::*;
 
@@ -310,7 +310,7 @@ mod flat_struct {
 
 // ── Benchmarks: nested struct ───────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod nested_struct {
     use super::*;
 
@@ -341,7 +341,7 @@ mod nested_struct {
 
 // sample_size=65536 so that sub-nanosecond benchmarks don't hit the timer
 // precision floor (~41ns on Apple Silicon).
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod deep_nested_struct {
     use super::*;
 
@@ -370,7 +370,7 @@ mod deep_nested_struct {
 
 // ── Benchmarks: flatten ───────────────────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod flatten {
     use super::*;
 
@@ -388,7 +388,7 @@ mod flatten {
 
 // ── Benchmarks: enum (struct variant) ─────────────────────────────────────
 
-#[divan::bench_group(sample_size = 65536)]
+#[divan::bench_group]
 mod enum_struct_variant {
     use super::*;
 
@@ -411,7 +411,7 @@ mod enum_struct_variant {
 
 // Vec benchmarks allocate per iteration — force enough iters to amortize
 // the ~41ns timer precision on Apple Silicon.
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_scalar_small {
     use super::*;
 
@@ -434,7 +434,7 @@ mod vec_scalar_small {
 
 // ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_scalar_medium {
     use super::*;
 
@@ -457,7 +457,7 @@ mod vec_scalar_medium {
 
 // ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
 
-#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+#[divan::bench_group]
 mod vec_struct {
     use super::*;
 

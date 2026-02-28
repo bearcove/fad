@@ -55,9 +55,7 @@ impl Decoder for FadJson {
         ectx.emit_zero_stack_slot(BITSET_OFFSET);
 
         // expect '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // peek after whitespace — check for empty object
         ectx.emit_call_intrinsic_ctx_and_stack_out(
@@ -78,7 +76,7 @@ impl Decoder for FadJson {
         );
 
         // expect ':'
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Linear key dispatch chain
         let after_dispatch = ectx.new_label();
@@ -404,9 +402,7 @@ impl Decoder for FadJson {
         let error_cleanup = ectx.new_label();
 
         // Expect '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Peek: check for empty object '}'
         ectx.emit_call_intrinsic_ctx_and_stack_out(
@@ -440,21 +436,14 @@ impl Decoder for FadJson {
         // Emit key deserialization at offset 0 (JSON string read)
         emit_key(ectx);
 
-        // Check error after key
-        ectx.emit_check_error_branch(error_cleanup);
-
         // Expect ':' separating key from value
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
-        ectx.emit_check_error_branch(error_cleanup);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Advance out to value position: out = pair_base + value_offset
         ectx.emit_advance_out_by(value_offset);
 
         // Emit value deserialization at offset 0
         emit_value(ectx);
-
-        // Check error after value
-        ectx.emit_check_error_branch(error_cleanup);
 
         // len += 1
         ectx.emit_inc_stack_slot(len_slot);
@@ -630,9 +619,7 @@ impl Decoder for FadJson {
         ectx.bind_label(object_path);
 
         // Consume '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read the variant name key.
         ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
@@ -642,7 +629,7 @@ impl Decoder for FadJson {
         );
 
         // Consume ':'
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Compare against all variant names.
         let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
@@ -707,9 +694,7 @@ impl Decoder for FadJson {
         let done_label = ectx.new_label();
 
         // expect '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read first key
         ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
@@ -735,7 +720,7 @@ impl Decoder for FadJson {
         ectx.bind_label(tag_ok);
 
         // expect ':'
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Read variant name string
         ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
@@ -781,9 +766,7 @@ impl Decoder for FadJson {
                         KEY_PTR_OFFSET,
                         KEY_LEN_OFFSET,
                     );
-                    ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_expect_colon as *const u8,
-                    );
+                    ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
                     ectx.emit_call_intrinsic_ctx_only(
                         json_intrinsics::fad_json_skip_value as *const u8,
                     );
@@ -822,9 +805,7 @@ impl Decoder for FadJson {
                     // TODO: add ExpectedContentKey error for stricter validation.
 
                     // expect ':'
-                    ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_expect_colon as *const u8,
-                    );
+                    ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
                     // Dispatch variant body (writes discriminant + deserializes struct/tuple)
                     emit_variant_body(ectx, variant);
@@ -855,9 +836,7 @@ impl Decoder for FadJson {
         let done_label = ectx.new_label();
 
         // expect '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read first key
         ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
@@ -883,7 +862,7 @@ impl Decoder for FadJson {
         ectx.bind_label(tag_ok);
 
         // expect ':'
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Read variant name string
         ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
@@ -1218,7 +1197,7 @@ impl Decoder for FadJson {
         );
 
         // expect ':'
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Linear key dispatch chain
         let after_dispatch = ectx.new_label();
@@ -1327,9 +1306,7 @@ impl FadJson {
         ectx.emit_store_imm64_to_stack(CANDIDATES_OFFSET, solver.initial_mask);
 
         // Consume '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Check for empty object → resolve immediately
         ectx.emit_call_intrinsic_ctx_and_stack_out(
@@ -1350,7 +1327,7 @@ impl FadJson {
         );
 
         // Consume ':'
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // NOTE: skip_value is NOT called here — it's in each per-key handler,
         // because some handlers need to peek at or sub-scan the value first.
@@ -1562,9 +1539,7 @@ impl FadJson {
         ectx.bind_label(sub_scan_path);
 
         // Consume '{'
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_start as *const u8,
-        );
+        ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Check for empty inner object
         let sub_scan_loop = ectx.new_label();
@@ -1586,7 +1561,7 @@ impl FadJson {
             KEY_PTR_OFFSET,
             KEY_LEN_OFFSET,
         );
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
+        ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
         ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
 
         // Inner key dispatch: for each inner key, AND outer mask

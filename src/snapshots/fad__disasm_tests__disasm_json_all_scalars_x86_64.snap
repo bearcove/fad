@@ -3,632 +3,654 @@ source: src/disasm_tests.rs
 expression: out
 ---
 === json/all_scalars ===
-000000: <entry>  push rbp
-000001:  sub rsp, 0x60
-000008:  mov qword [rsp], rbp
-00000c:  mov qword [rsp + 0x10], r12
-000011:  mov qword [rsp + 0x18], r13
-000016:  mov qword [rsp + 0x20], r14
-00001b:  mov qword [rsp + 0x28], r15
-000020:  mov r14, rdi
-000023:  mov r15, rsi
-000026:  mov r12, qword [r15]
-00002d:  mov r13, qword [r15 + 0x8]
-000034:  mov qword [rsp + 0x30], 0x0
-000040:  mov qword [r15], r12
-000047:  mov rdi, r15
-00004a:  mov rax, 0x<imm>
-000054:  call rax
-000056:  mov r12, qword [r15]
-00005d:  mov r10d, dword [r15 + 0x10]
-000064:  test r10d, r10d
-000067:  jnz $+0xd2a
-00006d:  mov qword [r15], r12
-000074:  mov rdi, r15
-000077:  lea rsi, qword [rsp + 0x48]
-00007f:  mov rax, 0x<imm>
-000089:  call rax
-00008b:  mov r12, qword [r15]
-000092:  mov r10d, dword [r15 + 0x10]
-000099:  test r10d, r10d
-00009c:  jnz $+0xcf5
-0000a2:  movzx r10d, byte [rsp + 0x48]
-0000ab:  cmp r10d, 0x7d
-0000b2:  jz $+0xc82
-0000b8:  mov qword [r15], r12
-0000bf:  mov rdi, r15
-0000c2:  lea rsi, qword [rsp + 0x38]
-0000ca:  lea rdx, qword [rsp + 0x40]
-0000d2:  mov rax, 0x<imm>
-0000dc:  call rax
-0000de:  mov r12, qword [r15]
-0000e5:  mov r10d, dword [r15 + 0x10]
-0000ec:  test r10d, r10d
-0000ef:  jnz $+0xca2
-0000f5:  mov qword [r15], r12
-0000fc:  mov rdi, r15
-0000ff:  mov rax, 0x<imm>
-000109:  call rax
-00010b:  mov r12, qword [r15]
-000112:  mov r10d, dword [r15 + 0x10]
-000119:  test r10d, r10d
-00011c:  jnz $+0xc75
-000122:  mov rdi, qword [rsp + 0x38]
-00012a:  mov rsi, qword [rsp + 0x40]
-000132:  mov rdx, 0x<imm>
-00013c:  mov ecx, 0x6
-000141:  mov rax, 0x<imm>
-00014b:  call rax
-00014d:  test rax, rax
-000150:  jnz $+0x241
-000156:  mov rdi, qword [rsp + 0x38]
-00015e:  mov rsi, qword [rsp + 0x40]
-000166:  mov rdx, 0x<imm>
-000170:  mov ecx, 0x4
-000175:  mov rax, 0x<imm>
-00017f:  call rax
-000181:  test rax, rax
-000184:  jnz $+0x263
-00018a:  mov rdi, qword [rsp + 0x38]
-000192:  mov rsi, qword [rsp + 0x40]
-00019a:  mov rdx, 0x<imm>
-0001a4:  mov ecx, 0x5
-0001a9:  mov rax, 0x<imm>
-0001b3:  call rax
-0001b5:  test rax, rax
-0001b8:  jnz $+0x285
-0001be:  mov rdi, qword [rsp + 0x38]
-0001c6:  mov rsi, qword [rsp + 0x40]
-0001ce:  mov rdx, 0x<imm>
-0001d8:  mov ecx, 0x5
-0001dd:  mov rax, 0x<imm>
-0001e7:  call rax
-0001e9:  test rax, rax
-0001ec:  jnz $+0x2a7
-0001f2:  mov rdi, qword [rsp + 0x38]
-0001fa:  mov rsi, qword [rsp + 0x40]
-000202:  mov rdx, 0x<imm>
-00020c:  mov ecx, 0x5
-000211:  mov rax, 0x<imm>
-00021b:  call rax
-00021d:  test rax, rax
-000220:  jnz $+0x2c9
-000226:  mov rdi, qword [rsp + 0x38]
-00022e:  mov rsi, qword [rsp + 0x40]
-000236:  mov rdx, 0x<imm>
-000240:  mov ecx, 0x4
-000245:  mov rax, 0x<imm>
-00024f:  call rax
-000251:  test rax, rax
-000254:  jnz $+0x2eb
-00025a:  mov rdi, qword [rsp + 0x38]
-000262:  mov rsi, qword [rsp + 0x40]
-00026a:  mov rdx, 0x<imm>
-000274:  mov ecx, 0x5
-000279:  mov rax, 0x<imm>
-000283:  call rax
-000285:  test rax, rax
-000288:  jnz $+0x30d
-00028e:  mov rdi, qword [rsp + 0x38]
-000296:  mov rsi, qword [rsp + 0x40]
-00029e:  mov rdx, 0x<imm>
-0002a8:  mov ecx, 0x5
-0002ad:  mov rax, 0x<imm>
-0002b7:  call rax
-0002b9:  test rax, rax
-0002bc:  jnz $+0x32f
-0002c2:  mov rdi, qword [rsp + 0x38]
-0002ca:  mov rsi, qword [rsp + 0x40]
-0002d2:  mov rdx, 0x<imm>
-0002dc:  mov ecx, 0x5
-0002e1:  mov rax, 0x<imm>
-0002eb:  call rax
-0002ed:  test rax, rax
-0002f0:  jnz $+0x351
-0002f6:  mov rdi, qword [rsp + 0x38]
-0002fe:  mov rsi, qword [rsp + 0x40]
-000306:  mov rdx, 0x<imm>
-000310:  mov ecx, 0x5
-000315:  mov rax, 0x<imm>
-00031f:  call rax
-000321:  test rax, rax
-000324:  jnz $+0x373
-00032a:  mov rdi, qword [rsp + 0x38]
-000332:  mov rsi, qword [rsp + 0x40]
-00033a:  mov rdx, 0x<imm>
-000344:  mov ecx, 0x5
-000349:  mov rax, 0x<imm>
-000353:  call rax
-000355:  test rax, rax
-000358:  jnz $+0x395
-00035e:  mov rdi, qword [rsp + 0x38]
-000366:  mov rsi, qword [rsp + 0x40]
-00036e:  mov rdx, 0x<imm>
-000378:  mov ecx, 0x8
-00037d:  mov rax, 0x<imm>
-000387:  call rax
-000389:  test rax, rax
-00038c:  jnz $+0x8d5
-000392:  jmp $+0x926
-000397:  mov qword [r15], r12
-00039e:  mov rdi, r15
-0003a1:  lea rsi, qword [r14 + 0x40]
-0003a8:  mov rax, 0x<imm>
-0003b2:  call rax
-0003b4:  mov r12, qword [r15]
-0003bb:  mov r10d, dword [r15 + 0x10]
-0003c2:  test r10d, r10d
-0003c5:  jnz $+0x9cc
-0003cb:  mov rax, qword [rsp + 0x30]
-0003d3:  mov r10, 0x1
-0003dd:  or rax, r10
-0003e0:  mov qword [rsp + 0x30], rax
-0003e8:  jmp $+0x8fd
-0003ed:  mov qword [r15], r12
-0003f4:  mov rdi, r15
-0003f7:  lea rsi, qword [r14 + 0x41]
-0003fe:  mov rax, 0x<imm>
-000408:  call rax
-00040a:  mov r12, qword [r15]
-000411:  mov r10d, dword [r15 + 0x10]
-000418:  test r10d, r10d
-00041b:  jnz $+0x976
-000421:  mov rax, qword [rsp + 0x30]
-000429:  mov r10, 0x2
-000433:  or rax, r10
-000436:  mov qword [rsp + 0x30], rax
-00043e:  jmp $+0x8a7
-000443:  mov qword [r15], r12
-00044a:  mov rdi, r15
-00044d:  lea rsi, qword [r14 + 0x3c]
-000454:  mov rax, 0x<imm>
-00045e:  call rax
-000460:  mov r12, qword [r15]
-000467:  mov r10d, dword [r15 + 0x10]
-00046e:  test r10d, r10d
-000471:  jnz $+0x920
-000477:  mov rax, qword [rsp + 0x30]
-00047f:  mov r10, 0x4
-000489:  or rax, r10
-00048c:  mov qword [rsp + 0x30], rax
-000494:  jmp $+0x851
-000499:  mov qword [r15], r12
-0004a0:  mov rdi, r15
-0004a3:  lea rsi, qword [r14 + 0x30]
-0004aa:  mov rax, 0x<imm>
-0004b4:  call rax
-0004b6:  mov r12, qword [r15]
-0004bd:  mov r10d, dword [r15 + 0x10]
-0004c4:  test r10d, r10d
-0004c7:  jnz $+0x8ca
-0004cd:  mov rax, qword [rsp + 0x30]
-0004d5:  mov r10, 0x8
-0004df:  or rax, r10
-0004e2:  mov qword [rsp + 0x30], rax
-0004ea:  jmp $+0x7fb
-0004ef:  mov qword [r15], r12
-0004f6:  mov rdi, r15
-0004f9:  lea rsi, qword [r14 + 0x18]
-000500:  mov rax, 0x<imm>
-00050a:  call rax
-00050c:  mov r12, qword [r15]
-000513:  mov r10d, dword [r15 + 0x10]
-00051a:  test r10d, r10d
-00051d:  jnz $+0x874
-000523:  mov rax, qword [rsp + 0x30]
-00052b:  mov r10, 0x10
-000535:  or rax, r10
-000538:  mov qword [rsp + 0x30], rax
-000540:  jmp $+0x7a5
-000545:  mov qword [r15], r12
-00054c:  mov rdi, r15
-00054f:  lea rsi, qword [r14 + 0x42]
-000556:  mov rax, 0x<imm>
-000560:  call rax
-000562:  mov r12, qword [r15]
-000569:  mov r10d, dword [r15 + 0x10]
-000570:  test r10d, r10d
-000573:  jnz $+0x81e
-000579:  mov rax, qword [rsp + 0x30]
-000581:  mov r10, 0x20
-00058b:  or rax, r10
-00058e:  mov qword [rsp + 0x30], rax
-000596:  jmp $+0x74f
-00059b:  mov qword [r15], r12
-0005a2:  mov rdi, r15
-0005a5:  lea rsi, qword [r14 + 0x3e]
-0005ac:  mov rax, 0x<imm>
-0005b6:  call rax
-0005b8:  mov r12, qword [r15]
-0005bf:  mov r10d, dword [r15 + 0x10]
-0005c6:  test r10d, r10d
-0005c9:  jnz $+0x7c8
-0005cf:  mov rax, qword [rsp + 0x30]
-0005d7:  mov r10, 0x40
-0005e1:  or rax, r10
-0005e4:  mov qword [rsp + 0x30], rax
-0005ec:  jmp $+0x6f9
-0005f1:  mov qword [r15], r12
-0005f8:  mov rdi, r15
-0005fb:  lea rsi, qword [r14 + 0x34]
-000602:  mov rax, 0x<imm>
-00060c:  call rax
-00060e:  mov r12, qword [r15]
-000615:  mov r10d, dword [r15 + 0x10]
-00061c:  test r10d, r10d
-00061f:  jnz $+0x772
-000625:  mov rax, qword [rsp + 0x30]
-00062d:  mov r10, 0x80
-000637:  or rax, r10
-00063a:  mov qword [rsp + 0x30], rax
-000642:  jmp $+0x6a3
-000647:  mov qword [r15], r12
-00064e:  mov rdi, r15
-000651:  lea rsi, qword [r14 + 0x20]
-000658:  mov rax, 0x<imm>
-000662:  call rax
-000664:  mov r12, qword [r15]
-00066b:  mov r10d, dword [r15 + 0x10]
-000672:  test r10d, r10d
-000675:  jnz $+0x71c
-00067b:  mov rax, qword [rsp + 0x30]
-000683:  mov r10, 0x100
-00068d:  or rax, r10
-000690:  mov qword [rsp + 0x30], rax
-000698:  jmp $+0x64d
-00069d:  mov qword [r15], r12
-0006a4:  mov rdi, r15
-0006a7:  lea rsi, qword [r14 + 0x38]
-0006ae:  mov rax, 0x<imm>
-0006b8:  call rax
-0006ba:  mov r12, qword [r15]
-0006c1:  mov r10d, dword [r15 + 0x10]
-0006c8:  test r10d, r10d
-0006cb:  jnz $+0x6c6
-0006d1:  mov rax, qword [rsp + 0x30]
-0006d9:  mov r10, 0x200
-0006e3:  or rax, r10
-0006e6:  mov qword [rsp + 0x30], rax
-0006ee:  jmp $+0x5f7
-0006f3:  mov qword [rsp + 0x50], rbx
-0006fb:  cmp r12, r13
-0006fe:  jnb $+0x25
-000704:  movzx eax, byte [r12]
-000709:  cmp al, 0x20
-00070b:  jz $+0x10
-000711:  cmp al, 0x9
-000713:  jb $+0x10
-000719:  cmp al, 0xd
-00071b:  ja $+0x8
-000721:  inc r12
-000724:  jmp $-0x2e
-000729:  cmp r12, r13
-00072c:  jnb $+0x4fb
-000732:  xor r8d, r8d
-000735:  movzx eax, byte [r12]
-00073a:  cmp al, 0x2d
-00073c:  jnz $+0x17
-000742:  mov r8d, 0x1
-000748:  inc r12
-00074b:  cmp r12, r13
-00074e:  jnb $+0x4d9
-000754:  movzx eax, byte [r12]
-000759:  xor ebx, ebx
-00075b:  xor ecx, ecx
-00075d:  xor r9d, r9d
-000760:  mov qword [rsp + 0x38], 0x0
-00076c:  mov byte [rsp + 0x48], 0x0
-000774:  cmp al, 0x30
-000776:  jnz $+0x1e
-00077c:  or byte [rsp + 0x48], 0x2
-000784:  inc r12
-000787:  cmp r12, r13
-00078a:  jnb $+0xa
-000790:  movzx eax, byte [r12]
-000795:  jmp $-0x26
-00079a:  movzx r10d, al
-00079e:  sub r10d, 0x30
-0007a2:  cmp r10d, 0x9
-0007a9:  ja $+0x65
-0007af:  or byte [rsp + 0x48], 0x2
-0007b7:  cmp ecx, 0x13
-0007bd:  jnb $+0x1f
-0007c3:  imul rbx, rbx, 0xa
-0007c7:  add rbx, r10
-0007ca:  inc ecx
-0007cc:  inc r12
-0007cf:  cmp r12, r13
-0007d2:  jnb $+0x3c
-0007d8:  movzx eax, byte [r12]
-0007dd:  jmp $-0x48
-0007e2:  add qword [rsp + 0x38], 0x1
-0007ee:  inc r12
-0007f1:  cmp r12, r13
-0007f4:  jnb $+0x1a
-0007fa:  movzx eax, byte [r12]
-0007ff:  movzx r10d, al
-000803:  sub r10d, 0x30
-000807:  cmp r10d, 0x9
-00080e:  jna $-0x32
-000814:  cmp r12, r13
-000817:  jnb $+0xc3
-00081d:  cmp al, 0x2e
-00081f:  jnz $+0xbb
-000825:  or byte [rsp + 0x48], 0x1
-00082d:  inc r12
-000830:  cmp r12, r13
-000833:  jnb $+0xa7
-000839:  movzx eax, byte [r12]
-00083e:  test ecx, ecx
-000840:  jnz $+0x29
-000846:  cmp al, 0x30
-000848:  jnz $+0x21
-00084e:  or byte [rsp + 0x48], 0x2
-000856:  inc r9d
-000859:  inc r12
-00085c:  cmp r12, r13
-00085f:  jnb $+0xa
-000865:  movzx eax, byte [r12]
-00086a:  jmp $-0x29
-00086f:  movzx r10d, al
-000873:  sub r10d, 0x30
-000877:  cmp r10d, 0x9
-00087e:  ja $+0x5c
-000884:  or byte [rsp + 0x48], 0x2
-00088c:  cmp ecx, 0x13
-000892:  jnb $+0x22
-000898:  imul rbx, rbx, 0xa
-00089c:  add rbx, r10
-00089f:  inc ecx
-0008a1:  inc r9d
-0008a4:  inc r12
-0008a7:  cmp r12, r13
-0008aa:  jnb $+0x30
-0008b0:  movzx eax, byte [r12]
-0008b5:  jmp $-0x4b
-0008ba:  inc r12
-0008bd:  cmp r12, r13
-0008c0:  jnb $+0x1a
-0008c6:  movzx eax, byte [r12]
-0008cb:  movzx r10d, al
-0008cf:  sub r10d, 0x30
-0008d3:  cmp r10d, 0x9
-0008da:  jna $-0x26
-0008e0:  test byte [rsp + 0x48], 0x2
-0008e8:  jz $+0x32f
-0008ee:  mov qword [rsp + 0x40], 0x0
-0008fa:  cmp r12, r13
-0008fd:  jnb $+0xd3
-000903:  cmp al, 0x65
-000905:  jz $+0x8
-00090b:  cmp al, 0x45
-00090d:  jnz $+0xc3
-000913:  inc r12
-000916:  cmp r12, r13
-000919:  jnb $+0x2fe
-00091f:  movzx eax, byte [r12]
-000924:  xor r11d, r11d
-000927:  cmp al, 0x2d
-000929:  jnz $+0x1c
-00092f:  mov r11d, 0x1
-000935:  inc r12
-000938:  cmp r12, r13
-00093b:  jnb $+0x2dc
-000941:  movzx eax, byte [r12]
-000946:  jmp $+0x2e
-00094b:  cmp al, 0x2b
-00094d:  jnz $+0x26
-000953:  inc r12
-000956:  cmp r12, r13
-000959:  jnb $+0x2be
-00095f:  movzx eax, byte [r12]
-000964:  movzx r10d, al
-000968:  sub r10d, 0x30
-00096c:  cmp r10d, 0x9
-000973:  ja $+0x2a4
-000979:  movzx r10d, al
-00097d:  sub r10d, 0x30
-000981:  cmp r10d, 0x9
-000988:  ja $+0x37
-00098e:  imul rax, qword [rsp + 0x40], 0xa
-000997:  add rax, r10
-00099a:  mov r10d, 0x270f
-0009a0:  cmp rax, r10
-0009a3:  cmova rax, r10
-0009a7:  mov qword [rsp + 0x40], rax
-0009af:  inc r12
-0009b2:  cmp r12, r13
-0009b5:  jnb $+0xa
-0009bb:  movzx eax, byte [r12]
-0009c0:  jmp $-0x4c
-0009c5:  test r11d, r11d
-0009c8:  jz $+0x8
-0009ce:  neg qword [rsp + 0x40]
-0009d6:  mov rax, qword [rsp + 0x40]
-0009de:  add rax, qword [rsp + 0x38]
-0009e6:  movsxd r10, r9d
-0009e9:  sub rax, r10
-0009ec:  mov qword [rsp + 0x38], rax
-0009f4:  test rbx, rbx
-0009f7:  jz $+0x43
-0009fd:  test byte [rsp + 0x48], 0x1
-000a05:  jnz $+0x3c
-000a0b:  cmp qword [rsp + 0x40], 0x0
-000a17:  jnz $+0x2a
-000a1d:  mov r10, 0x1
-000a24:  shl r10, 0x35
-000a28:  cmp rbx, r10
-000a2b:  jnb $+0x16
-000a31:  cvtsi2sd xmm0, rbx
-000a36:  movq rax, xmm0
-000a3b:  jmp $+0x1b4
-000a40:  xor eax, eax
-000a42:  jmp $+0x1ad
-000a47:  movsxd rax, dword [rsp + 0x38]
-000a4f:  cmp eax, 0x15b
-000a54:  jg $+0x189
-000a5a:  cmp eax, -0x15c
-000a5f:  jl $+0x18d
-000a65:  imul r10d, eax, 0x1a935
-000a6c:  sar r10d, 0xf
-000a70:  movsxd r10, r10d
-000a73:  mov dword [rsp + 0x40], r10d
-000a7b:  lzcnt r11, rbx
-000a80:  mov ecx, r11d
-000a83:  shl rbx, cl
-000a86:  mov eax, r11d
-000a89:  sub eax, 0xb
-000a8c:  sub eax, r10d
-000a8f:  cmp eax, 0x432
-000a94:  jle $+0x5
-000a9a:  mov eax, 0x432
-000a9f:  mov dword [rsp + 0x58], eax
-000aa6:  mov ecx, r11d
-000aa9:  sub ecx, eax
-000aab:  sub ecx, dword [rsp + 0x40]
-000ab2:  sub ecx, 0x3
-000ab5:  movsxd rax, dword [rsp + 0x38]
-000abd:  add eax, 0x15c
-000ac2:  shl rax, 0x4
-000ac6:  mov r10, 0x<imm>
-000ad0:  add r10, rax
-000ad3:  mov rax, qword [r10]
-000ad6:  mov r11, qword [r10 + 0x8]
-000ada:  mov qword [rsp + 0x48], r11
-000ae2:  mov r10, rax
-000ae5:  mov rax, rbx
-000ae8:  mul r10
-000aeb:  mov r11, rax
-000aee:  mov rax, 0x1
-000af5:  shl rax, cl
-000af8:  dec rax
-000afb:  test rdx, rax
-000afe:  jz $+0xb
-000b04:  mov r9d, 0x1
-000b0a:  jmp $+0x35
-000b0f:  mov r10, rdx
-000b12:  mov rax, rbx
-000b15:  mul qword [rsp + 0x48]
-000b1d:  mov rax, rdx
-000b20:  mov rdx, r11
-000b23:  sub rdx, rax
-000b26:  cmp rdx, 0x1
-000b2d:  seta r9b
-000b31:  movzx r9d, r9b
-000b35:  cmp r11, rax
-000b38:  jnb $+0x3
-000b3e:  dec r10
-000b41:  mov rdx, r10
-000b44:  mov rax, rdx
-000b47:  shr rax, cl
-000b4a:  xor r10d, r10d
-000b4d:  cmp ecx, 0x40
-000b53:  cmovnb rax, r10
-000b57:  or rax, r9
-000b5a:  mov r10, 0x<imm>
-000b64:  cmp rax, r10
-000b67:  jb $+0x18
-000b6d:  mov r10, rax
-000b70:  shr r10, 0x1
-000b74:  and eax, 0x1
-000b77:  or rax, r10
-000b7a:  sub dword [rsp + 0x58], 0x1
-000b85:  mov r10, rax
-000b88:  shr r10, 0x2
-000b8c:  and r10d, 0x1
-000b90:  inc rax
-000b93:  add rax, r10
-000b96:  shr rax, 0x2
-000b9a:  bt rax, 0x34
-000b9f:  jnb $+0x4f
-000ba5:  mov r10d, 0x433
-000bab:  sub r10d, dword [rsp + 0x58]
-000bb3:  cmp r10d, 0x7ff
-000bba:  jnb $+0x14
-000bc0:  btr rax, 0x34
-000bc5:  mov r11d, r10d
-000bc8:  shl r11, 0x34
-000bcc:  or rax, r11
-000bcf:  jmp $+0x20
-000bd4:  mov rax, 0x<imm>
-000bde:  jmp $+0x11
-000be3:  mov rax, 0x<imm>
-000bed:  jmp $+0x2
-000bf2:  xor eax, eax
-000bf4:  test r8d, r8d
-000bf7:  jz $+0xd
-000bfd:  mov r10, -0x8000000000000000
-000c07:  or rax, r10
-000c0a:  mov qword [r14 + 0x28], rax
-000c11:  mov qword [r15], r12
-000c18:  jmp $+0x20
-000c1d:  mov dword [r15 + 0x10], 0x9
-000c28:  jmp $+0x16a
-000c2d:  mov dword [r15 + 0x10], 0x1
-000c38:  jmp $+0x15a
-000c3d:  mov rbx, qword [rsp + 0x50]
-000c45:  mov rax, qword [rsp + 0x30]
-000c4d:  mov r10, 0x400
-000c57:  or rax, r10
-000c5a:  mov qword [rsp + 0x30], rax
-000c62:  jmp $+0x83
-000c67:  mov qword [r15], r12
-000c6e:  mov rdi, r15
-000c71:  lea rsi, qword [r14]
-000c78:  mov rax, 0x<imm>
-000c82:  call rax
-000c84:  mov r12, qword [r15]
-000c8b:  mov r10d, dword [r15 + 0x10]
-000c92:  test r10d, r10d
-000c95:  jnz $+0xfc
-000c9b:  mov rax, qword [rsp + 0x30]
-000ca3:  mov r10, 0x800
-000cad:  or rax, r10
-000cb0:  mov qword [rsp + 0x30], rax
-000cb8:  jmp $+0x2d
-000cbd:  mov qword [r15], r12
-000cc4:  mov rdi, r15
-000cc7:  mov rax, 0x<imm>
-000cd1:  call rax
-000cd3:  mov r12, qword [r15]
-000cda:  mov r10d, dword [r15 + 0x10]
-000ce1:  test r10d, r10d
-000ce4:  jnz $+0xad
-000cea:  mov qword [r15], r12
-000cf1:  mov rdi, r15
-000cf4:  lea rsi, qword [rsp + 0x48]
-000cfc:  mov rax, 0x<imm>
-000d06:  call rax
-000d08:  mov r12, qword [r15]
-000d0f:  mov r10d, dword [r15 + 0x10]
-000d16:  test r10d, r10d
-000d19:  jnz $+0x78
-000d1f:  movzx r10d, byte [rsp + 0x48]
-000d28:  cmp r10d, 0x1
-000d2f:  jz $+0xc
-000d35:  jmp $-0xc82
-000d3a:  add r12, 0x1
-000d41:  mov rax, qword [rsp + 0x30]
-000d49:  mov r10, 0xfff
-000d53:  and rax, r10
-000d56:  cmp rax, r10
-000d59:  jz $+0x10
-000d5f:  mov dword [r15 + 0x10], 0xa
-000d6a:  jmp $+0x28
-000d6f:  mov qword [r15], r12
-000d76:  mov r15, qword [rsp + 0x28]
-000d7b:  mov r14, qword [rsp + 0x20]
-000d80:  mov r13, qword [rsp + 0x18]
-000d85:  mov r12, qword [rsp + 0x10]
-000d8a:  mov rbp, qword [rsp]
-000d8e:  add rsp, 0x60
-000d95:  pop rbp
-000d96:  ret
-000d97:  mov r15, qword [rsp + 0x28]
-000d9c:  mov r14, qword [rsp + 0x20]
-000da1:  mov r13, qword [rsp + 0x18]
-000da6:  mov r12, qword [rsp + 0x10]
-000dab:  mov rbp, qword [rsp]
-000daf:  add rsp, 0x60
-000db6:  pop rbp
-000db7:  ret
+> push rbp
+  sub rsp, 0x60
+  mov qword [rsp], rbp
+  mov qword [rsp + 0x10], r12
+  mov qword [rsp + 0x18], r13
+  mov qword [rsp + 0x20], r14
+  mov qword [rsp + 0x28], r15
+  mov r14, rdi
+  mov r15, rsi
+  mov r12, qword [r15]
+  mov r13, qword [r15 + 0x8]
+  mov qword [rsp + 0x30], 0x0
+  cmp r12, r13
+  jge $+0x47
+  movzx r10d, byte [r12]
+  cmp r10b, 0x20
+  jz $+0x1e
+  cmp r10b, 0x9
+  jz $+0x14
+  cmp r10b, 0xa
+  jz $+0xa
+  cmp r10b, 0xd
+  jnz $+0x8
+  inc r12
+  jmp $-0x3e
+  cmp r10b, 0x7b
+  jnz $+0x8
+  inc r12
+  jmp $+0x10
+  mov dword [r15 + 0x10], 0x5
+  jmp $+0xd5d
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [rsp + 0x48]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0xd28
+  movzx r10d, byte [rsp + 0x48]
+  cmp r10d, 0x7d
+  jz $+0xcb5
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [rsp + 0x38]
+  lea rdx, qword [rsp + 0x40]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0xcd5
+  cmp r12, r13
+  jge $+0x47
+  movzx r10d, byte [r12]
+  cmp r10b, 0x20
+  jz $+0x1e
+  cmp r10b, 0x9
+  jz $+0x14
+  cmp r10b, 0xa
+  jz $+0xa
+  cmp r10b, 0xd
+  jnz $+0x8
+  inc r12
+  jmp $-0x3e
+  cmp r10b, 0x3a
+  jnz $+0x8
+  inc r12
+  jmp $+0x10
+  mov dword [r15 + 0x10], 0x6
+  jmp $+0xc75
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x6
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x241
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x4
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x263
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x285
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x2a7
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x2c9
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x4
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x2eb
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x30d
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x32f
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x351
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x373
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x5
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x395
+  mov rdi, qword [rsp + 0x38]
+  mov rsi, qword [rsp + 0x40]
+  mov rdx, 0x<imm>
+  mov ecx, 0x8
+  mov rax, 0x<imm>
+  call rax
+  test rax, rax
+  jnz $+0x8d5
+  jmp $+0x926
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x40]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x9cc
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x1
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x8fd
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x41]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x976
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x2
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x8a7
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x3c]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x920
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x4
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x851
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x30]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x8ca
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x8
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x7fb
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x18]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x874
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x10
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x7a5
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x42]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x81e
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x20
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x74f
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x3e]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x7c8
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x40
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x6f9
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x34]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x772
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x80
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x6a3
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x20]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x71c
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x100
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x64d
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14 + 0x38]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x6c6
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x200
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x5f7
+  mov qword [rsp + 0x50], rbx
+  cmp r12, r13
+  jnb $+0x25
+  movzx eax, byte [r12]
+  cmp al, 0x20
+  jz $+0x10
+  cmp al, 0x9
+  jb $+0x10
+  cmp al, 0xd
+  ja $+0x8
+  inc r12
+  jmp $-0x2e
+  cmp r12, r13
+  jnb $+0x4fb
+  xor r8d, r8d
+  movzx eax, byte [r12]
+  cmp al, 0x2d
+  jnz $+0x17
+  mov r8d, 0x1
+  inc r12
+  cmp r12, r13
+  jnb $+0x4d9
+  movzx eax, byte [r12]
+  xor ebx, ebx
+  xor ecx, ecx
+  xor r9d, r9d
+  mov qword [rsp + 0x38], 0x0
+  mov byte [rsp + 0x48], 0x0
+  cmp al, 0x30
+  jnz $+0x1e
+  or byte [rsp + 0x48], 0x2
+  inc r12
+  cmp r12, r13
+  jnb $+0xa
+  movzx eax, byte [r12]
+  jmp $-0x26
+  movzx r10d, al
+  sub r10d, 0x30
+  cmp r10d, 0x9
+  ja $+0x65
+  or byte [rsp + 0x48], 0x2
+  cmp ecx, 0x13
+  jnb $+0x1f
+  imul rbx, rbx, 0xa
+  add rbx, r10
+  inc ecx
+  inc r12
+  cmp r12, r13
+  jnb $+0x3c
+  movzx eax, byte [r12]
+  jmp $-0x48
+  add qword [rsp + 0x38], 0x1
+  inc r12
+  cmp r12, r13
+  jnb $+0x1a
+  movzx eax, byte [r12]
+  movzx r10d, al
+  sub r10d, 0x30
+  cmp r10d, 0x9
+  jna $-0x32
+  cmp r12, r13
+  jnb $+0xc3
+  cmp al, 0x2e
+  jnz $+0xbb
+  or byte [rsp + 0x48], 0x1
+  inc r12
+  cmp r12, r13
+  jnb $+0xa7
+  movzx eax, byte [r12]
+  test ecx, ecx
+  jnz $+0x29
+  cmp al, 0x30
+  jnz $+0x21
+  or byte [rsp + 0x48], 0x2
+  inc r9d
+  inc r12
+  cmp r12, r13
+  jnb $+0xa
+  movzx eax, byte [r12]
+  jmp $-0x29
+  movzx r10d, al
+  sub r10d, 0x30
+  cmp r10d, 0x9
+  ja $+0x5c
+  or byte [rsp + 0x48], 0x2
+  cmp ecx, 0x13
+  jnb $+0x22
+  imul rbx, rbx, 0xa
+  add rbx, r10
+  inc ecx
+  inc r9d
+  inc r12
+  cmp r12, r13
+  jnb $+0x30
+  movzx eax, byte [r12]
+  jmp $-0x4b
+  inc r12
+  cmp r12, r13
+  jnb $+0x1a
+  movzx eax, byte [r12]
+  movzx r10d, al
+  sub r10d, 0x30
+  cmp r10d, 0x9
+  jna $-0x26
+  test byte [rsp + 0x48], 0x2
+  jz $+0x32f
+  mov qword [rsp + 0x40], 0x0
+  cmp r12, r13
+  jnb $+0xd3
+  cmp al, 0x65
+  jz $+0x8
+  cmp al, 0x45
+  jnz $+0xc3
+  inc r12
+  cmp r12, r13
+  jnb $+0x2fe
+  movzx eax, byte [r12]
+  xor r11d, r11d
+  cmp al, 0x2d
+  jnz $+0x1c
+  mov r11d, 0x1
+  inc r12
+  cmp r12, r13
+  jnb $+0x2dc
+  movzx eax, byte [r12]
+  jmp $+0x2e
+  cmp al, 0x2b
+  jnz $+0x26
+  inc r12
+  cmp r12, r13
+  jnb $+0x2be
+  movzx eax, byte [r12]
+  movzx r10d, al
+  sub r10d, 0x30
+  cmp r10d, 0x9
+  ja $+0x2a4
+  movzx r10d, al
+  sub r10d, 0x30
+  cmp r10d, 0x9
+  ja $+0x37
+  imul rax, qword [rsp + 0x40], 0xa
+  add rax, r10
+  mov r10d, 0x270f
+  cmp rax, r10
+  cmova rax, r10
+  mov qword [rsp + 0x40], rax
+  inc r12
+  cmp r12, r13
+  jnb $+0xa
+  movzx eax, byte [r12]
+  jmp $-0x4c
+  test r11d, r11d
+  jz $+0x8
+  neg qword [rsp + 0x40]
+  mov rax, qword [rsp + 0x40]
+  add rax, qword [rsp + 0x38]
+  movsxd r10, r9d
+  sub rax, r10
+  mov qword [rsp + 0x38], rax
+  test rbx, rbx
+  jz $+0x43
+  test byte [rsp + 0x48], 0x1
+  jnz $+0x3c
+  cmp qword [rsp + 0x40], 0x0
+  jnz $+0x2a
+  mov r10, 0x1
+  shl r10, 0x35
+  cmp rbx, r10
+  jnb $+0x16
+  cvtsi2sd xmm0, rbx
+  movq rax, xmm0
+  jmp $+0x1b4
+  xor eax, eax
+  jmp $+0x1ad
+  movsxd rax, dword [rsp + 0x38]
+  cmp eax, 0x15b
+  jg $+0x189
+  cmp eax, -0x15c
+  jl $+0x18d
+  imul r10d, eax, 0x1a935
+  sar r10d, 0xf
+  movsxd r10, r10d
+  mov dword [rsp + 0x40], r10d
+  lzcnt r11, rbx
+  mov ecx, r11d
+  shl rbx, cl
+  mov eax, r11d
+  sub eax, 0xb
+  sub eax, r10d
+  cmp eax, 0x432
+  jle $+0x5
+  mov eax, 0x432
+  mov dword [rsp + 0x58], eax
+  mov ecx, r11d
+  sub ecx, eax
+  sub ecx, dword [rsp + 0x40]
+  sub ecx, 0x3
+  movsxd rax, dword [rsp + 0x38]
+  add eax, 0x15c
+  shl rax, 0x4
+  mov r10, 0x<imm>
+  add r10, rax
+  mov rax, qword [r10]
+  mov r11, qword [r10 + 0x8]
+  mov qword [rsp + 0x48], r11
+  mov r10, rax
+  mov rax, rbx
+  mul r10
+  mov r11, rax
+  mov rax, 0x1
+  shl rax, cl
+  dec rax
+  test rdx, rax
+  jz $+0xb
+  mov r9d, 0x1
+  jmp $+0x35
+  mov r10, rdx
+  mov rax, rbx
+  mul qword [rsp + 0x48]
+  mov rax, rdx
+  mov rdx, r11
+  sub rdx, rax
+  cmp rdx, 0x1
+  seta r9b
+  movzx r9d, r9b
+  cmp r11, rax
+  jnb $+0x3
+  dec r10
+  mov rdx, r10
+  mov rax, rdx
+  shr rax, cl
+  xor r10d, r10d
+  cmp ecx, 0x40
+  cmovnb rax, r10
+  or rax, r9
+  mov r10, 0x<imm>
+  cmp rax, r10
+  jb $+0x18
+  mov r10, rax
+  shr r10, 0x1
+  and eax, 0x1
+  or rax, r10
+  sub dword [rsp + 0x58], 0x1
+  mov r10, rax
+  shr r10, 0x2
+  and r10d, 0x1
+  inc rax
+  add rax, r10
+  shr rax, 0x2
+  bt rax, 0x34
+  jnb $+0x4f
+  mov r10d, 0x433
+  sub r10d, dword [rsp + 0x58]
+  cmp r10d, 0x7ff
+  jnb $+0x14
+  btr rax, 0x34
+  mov r11d, r10d
+  shl r11, 0x34
+  or rax, r11
+  jmp $+0x20
+  mov rax, 0x<imm>
+  jmp $+0x11
+  mov rax, 0x<imm>
+  jmp $+0x2
+  xor eax, eax
+  test r8d, r8d
+  jz $+0xd
+  mov r10, -0x8000000000000000
+  or rax, r10
+  mov qword [r14 + 0x28], rax
+  mov qword [r15], r12
+  jmp $+0x20
+  mov dword [r15 + 0x10], 0x9
+  jmp $+0x16a
+  mov dword [r15 + 0x10], 0x1
+  jmp $+0x15a
+  mov rbx, qword [rsp + 0x50]
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x400
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x83
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [r14]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0xfc
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0x800
+  or rax, r10
+  mov qword [rsp + 0x30], rax
+  jmp $+0x2d
+  mov qword [r15], r12
+  mov rdi, r15
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0xad
+  mov qword [r15], r12
+  mov rdi, r15
+  lea rsi, qword [rsp + 0x48]
+  mov rax, 0x<imm>
+  call rax
+  mov r12, qword [r15]
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
+  jnz $+0x78
+  movzx r10d, byte [rsp + 0x48]
+  cmp r10d, 0x1
+  jz $+0xc
+  jmp $-0xcb5
+  add r12, 0x1
+  mov rax, qword [rsp + 0x30]
+  mov r10, 0xfff
+  and rax, r10
+  cmp rax, r10
+  jz $+0x10
+  mov dword [r15 + 0x10], 0xa
+  jmp $+0x28
+  mov qword [r15], r12
+  mov r15, qword [rsp + 0x28]
+  mov r14, qword [rsp + 0x20]
+  mov r13, qword [rsp + 0x18]
+  mov r12, qword [rsp + 0x10]
+  mov rbp, qword [rsp]
+  add rsp, 0x60
+  pop rbp
+  ret
+  mov r15, qword [rsp + 0x28]
+  mov r14, qword [rsp + 0x20]
+  mov r13, qword [rsp + 0x18]
+  mov r12, qword [rsp + 0x10]
+  mov rbp, qword [rsp]
+  add rsp, 0x60
+  pop rbp
+  ret

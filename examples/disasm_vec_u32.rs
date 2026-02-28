@@ -1,6 +1,10 @@
 use facet::Facet;
 use std::fmt::Write;
-use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
+use yaxpeax_arch::Decoder;
+#[cfg(target_arch = "x86_64")]
+use yaxpeax_arch::{LengthedInstruction, U8Reader};
+#[cfg(target_arch = "aarch64")]
+use yaxpeax_arch::U8Reader;
 
 #[derive(Facet, Debug, PartialEq)]
 struct Nums {
@@ -40,7 +44,7 @@ fn main() {
 unsafe fn disasm_with_callees(fn_ptr: *const u8, max_bytes: usize, depth: u32) -> String {
     let mut out = String::new();
     let mut visited: Vec<u64> = Vec::new();
-    disasm_recursive(fn_ptr, max_bytes, depth, &mut visited, &mut out);
+    unsafe { disasm_recursive(fn_ptr, max_bytes, depth, &mut visited, &mut out) };
     out
 }
 

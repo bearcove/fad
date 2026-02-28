@@ -1,6 +1,9 @@
 image_name := "fad-test-x86_64"
 docker_platform := "linux/amd64"
 
+list:
+    just --list
+
 # Build the x86_64 Docker test image
 docker-build:
     docker build --platform {{docker_platform}} -t {{image_name}} .
@@ -35,6 +38,14 @@ snapshots-all: snapshots-native snapshots-x86_64
 # Run benchmarks natively
 bench:
     cargo bench
+
+# Run all benchmarks and generate bench_report/index.html
+bench-report:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo bench --bench deser_json 2>/dev/null > /tmp/bench_out.txt
+    cargo bench --bench deser_postcard 2>/dev/null >> /tmp/bench_out.txt
+    cargo run --example bench_report < /tmp/bench_out.txt
 
 # Check + clippy
 check:

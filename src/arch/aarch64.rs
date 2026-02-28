@@ -724,6 +724,60 @@ impl EmitCtx {
         );
     }
 
+    // r[impl deser.json.struct]
+    // r[impl deser.json.map]
+    /// Inline: skip JSON whitespace (space/tab/LF/CR) then consume the expected byte.
+    /// Sets `error_code` and branches to the current error_exit if EOF or wrong byte.
+    ///
+    /// Register contract: x19 = cached input_ptr, x20 = cached input_end, x22 = ctx.
+    /// Scratch: w9 (adjusted byte), w10 (raw byte), x8 (WS bitmask — clobbered).
+    ///
+    /// WS check: map byte→bit via `b - 9`. SP(0x20)→23, HT(0x09)→0, LF(0x0a)→1,
+    /// CR(0x0d)→4. Bitmask 0x0080_0013 has those bits set. If bit `(b-9)` is 1 → WS.
+    pub fn emit_expect_byte_after_ws(&mut self, expected: u8, error_code: ErrorCode) {
+        let error_exit = self.error_exit;
+        let err_code = error_code as u32;
+        let expected = expected as u32;
+
+        let ws_loop  = self.ops.new_dynamic_label();
+        let non_ws   = self.ops.new_dynamic_label();
+        let done     = self.ops.new_dynamic_label();
+        let err_lbl  = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops ; .arch aarch64
+            // ── whitespace-skip loop ────────────────────────────────────
+            ; =>ws_loop
+            ; cmp  x19, x20
+            ; b.hs =>err_lbl          // EOF → error
+            ; ldrb w10, [x19]         // raw byte → w10
+            ; sub  w9, w10, #9        // adjusted: HT→0, LF→1, CR→4, SP→23
+            ; cmp  w9, #23
+            ; b.hi =>non_ws           // adjusted > 23 → definitely not WS
+            // within range [0,23]: test bitmask bit at position w9
+            ; mov  x8, #0x0013        // bits 0,1,4 = HT,LF,CR
+            ; movk x8, #0x0080, lsl #16 // bit 23 = SP  → mask = 0x0080_0013
+            ; lsr  x8, x8, x9         // x9 = w9 zero-extended; shift by adjusted value
+            ; tbz  x8, #0, =>non_ws   // bit 0 clear → not WS
+            ; add  x19, x19, #1       // it's WS → advance
+            ; b    =>ws_loop
+
+            // ── byte check ─────────────────────────────────────────────
+            ; =>non_ws
+            ; cmp  w10, #expected
+            ; b.ne =>err_lbl
+            ; add  x19, x19, #1       // consume expected byte
+            ; b    =>done
+
+            // ── error ───────────────────────────────────────────────────
+            ; =>err_lbl
+            ; mov  w9, #err_code
+            ; str  w9, [x22, #CTX_ERROR_CODE]
+            ; b    =>error_exit
+
+            ; =>done
+        );
+    }
+
     // ── Option support ────────────────────────────────────────────────
 
     /// Save the current `out` pointer (x21) and redirect it to a stack scratch area.

@@ -730,6 +730,58 @@ impl EmitCtx {
         );
     }
 
+    // r[impl deser.json.struct]
+    // r[impl deser.json.map]
+    /// Inline: skip JSON whitespace (space/tab/LF/CR) then consume the expected byte.
+    /// Sets `error_code` and branches to the current error_exit if EOF or wrong byte.
+    ///
+    /// Register contract: r12 = cached input_ptr, r13 = cached input_end, r15 = ctx.
+    /// Scratch: r10 (raw byte), r11 (loop temp — clobbered).
+    pub fn emit_expect_byte_after_ws(&mut self, expected: u8, error_code: ErrorCode) {
+        let error_exit = self.error_exit;
+        let err_code = error_code as i32;
+        let expected = expected as i8;
+
+        let ws_loop = self.ops.new_dynamic_label();
+        let ws_next = self.ops.new_dynamic_label();
+        let non_ws  = self.ops.new_dynamic_label();
+        let done    = self.ops.new_dynamic_label();
+        let err_lbl = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops ; .arch x64
+            // ── whitespace-skip loop ────────────────────────────────────
+            ; =>ws_loop
+            ; cmp  r12, r13
+            ; jge  =>err_lbl               // EOF → error
+            ; movzx r10d, BYTE [r12]       // raw byte → r10
+            ; cmp  r10b, 0x20 as i8        // space?
+            ; je   =>ws_next
+            ; cmp  r10b, 0x09 as i8        // HT?
+            ; je   =>ws_next
+            ; cmp  r10b, 0x0a as i8        // LF?
+            ; je   =>ws_next
+            ; cmp  r10b, 0x0d as i8        // CR?
+            ; jne  =>non_ws                // not WS → done skipping
+            ; =>ws_next
+            ; inc  r12
+            ; jmp  =>ws_loop
+
+            // ── byte check ─────────────────────────────────────────────
+            ; =>non_ws
+            ; cmp  r10b, expected
+            ; jne  =>err_lbl
+            ; inc  r12                     // consume expected byte
+            ; jmp  =>done
+
+            // ── error ───────────────────────────────────────────────────
+            ; =>err_lbl
+            ; mov  DWORD [r15 + CTX_ERROR_CODE as i32], err_code
+            ; jmp  =>error_exit
+
+            ; =>done
+        );
+    }
+
     // ── Option support ────────────────────────────────────────────────
 
     /// Save the current `out` pointer (r14) and redirect it to a stack scratch area.
@@ -1378,7 +1430,7 @@ impl EmitCtx {
         count_slot: u32,
     ) {
         let fn_val = from_pair_slice_fn as i64;
-        let trampoline = crate::intrinsics::fad_map_build as i64;
+        let trampoline = crate::intrinsics::fad_map_build as *const () as i64;
 
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -1402,7 +1454,7 @@ impl EmitCtx {
     /// Same trampoline pattern as `emit_call_map_from_pairs`.
     pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
         let fn_val = from_pair_slice_fn as i64;
-        let trampoline = crate::intrinsics::fad_map_build as i64;
+        let trampoline = crate::intrinsics::fad_map_build as *const () as i64;
 
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -2705,7 +2757,7 @@ impl EmitCtx {
             }
             if remaining >= 2 {
                 let val = i16::from_le_bytes(bytes[offset as usize..offset as usize + 2].try_into().unwrap());
-                dynasm!(self.ops ; .arch x64 ; mov WORD [r12 + offset as i32], val as i32);
+                dynasm!(self.ops ; .arch x64 ; mov WORD [r12 + offset as i32], val);
                 offset += 2;
                 remaining -= 2;
             }
