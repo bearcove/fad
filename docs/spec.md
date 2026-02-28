@@ -172,7 +172,106 @@ JSON integers are parsed from decimal text representation and range-checked
 against the target integer type at runtime. Out-of-range values are an error.
 
 r[deser.json.scalar.float]
-JSON numbers with fractional or exponent parts are parsed into f32 or f64.
+JSON numbers are parsed into f64 (or f32 via f64 with a narrowing cast).
+The f64 parser is emitted as inline machine code — no call to a Rust intrinsic
+or standard library function. The emitted code covers the entire pipeline:
+whitespace skip, sign detection, digit extraction, decimal-to-float conversion,
+IEEE 754 packing, and store.
+
+#### Digit extraction
+
+r[deser.json.scalar.float.ws]
+Leading whitespace (space, tab, newline, carriage return) is skipped before
+the number.
+
+r[deser.json.scalar.float.sign]
+An optional leading `-` sets the sign bit. Bare `+` is not accepted (per JSON
+spec).
+
+r[deser.json.scalar.float.digits]
+The emitted code extracts decimal digits byte-at-a-time from the input,
+accumulating a mantissa `d` (u64), a digit count `nd`, and a fractional
+digit count `frac_digits`. Leading zeros are skipped without incrementing `nd`.
+
+r[deser.json.scalar.float.overflow-digits]
+When the digit count exceeds 19 (the maximum number of decimal digits that
+fit in a u64), additional digits are counted but not accumulated into the
+mantissa. The count of dropped digits is tracked and added to the exponent.
+
+r[deser.json.scalar.float.dot]
+A decimal point `.` separates the integer and fractional parts. Digits after
+the dot increment `frac_digits`. At least one digit must appear somewhere
+in the number (before or after the dot).
+
+r[deser.json.scalar.float.exponent]
+An optional `e` or `E` introduces an exponent with optional sign (`+` or `-`)
+and one or more decimal digits. The exponent is clamped to ±9999 to prevent
+overflow in intermediate calculations.
+
+r[deser.json.scalar.float.validation]
+If no digits were consumed (e.g., bare `.`, bare `e`, bare `-`), the
+deserializer reports `InvalidJsonNumber`.
+
+#### Conversion
+
+r[deser.json.scalar.float.zero]
+If the mantissa `d` is zero, the result is ±0.0 (preserving the sign bit).
+
+r[deser.json.scalar.float.exact-int]
+If the number has no fractional part, no exponent, and the mantissa fits in
+2^53, the result is produced by direct integer-to-float conversion (UCVTF on
+aarch64, CVTSI2SD on x86_64). This avoids the full uscale pipeline for simple
+integer literals that target f64 fields.
+
+r[deser.json.scalar.float.uscale]
+Non-trivial numbers are converted using the uscale algorithm (unrounded
+scaling). The combined power-of-ten exponent `p` is computed as
+`explicit_exponent - frac_digits + dropped_digits`. The algorithm performs:
+1. Left-justify the mantissa: `x = d << (64 - clz(d))`.
+2. Compute `log2(10^p)` via the integer approximation `(p * 108853) >> 15`.
+3. Look up precomputed 128-bit power-of-five values `(pm_hi, pm_lo)` from a
+   static table indexed by `p + 348`.
+4. Compute the unrounded significand via one or two 64×64→128 widening
+   multiplies, a shift, and sticky-bit collection.
+
+r[deser.json.scalar.float.uscale.table]
+The power-of-five table covers exponents from -348 to +347 (696 entries, each
+16 bytes). The table base address is baked into the emitted code as an
+immediate at JIT-compile time.
+
+r[deser.json.scalar.float.uscale.mul128]
+The widening multiply uses native instructions: `MUL`+`UMULH` on aarch64,
+`MUL` (implicit `RDX:RAX`) on x86_64. A second multiply against `pm_lo` is
+performed only when the sticky bit from the first multiply is ambiguous
+(high bits of the result are all zeros under the shift mask).
+
+r[deser.json.scalar.float.uscale.clz]
+Leading-zero count uses the native `CLZ` instruction on aarch64 and `LZCNT`
+on x86_64.
+
+#### Packing
+
+r[deser.json.scalar.float.pack]
+The unrounded significand is converted to IEEE 754 binary64 via round-to-
+nearest-even: `rounded = (u + 1 + ((u >> 2) & 1)) >> 2`. The biased exponent
+is computed and combined with the significand to form the final 64-bit
+representation. The sign bit is OR'd in last.
+
+r[deser.json.scalar.float.pack.subnormal]
+Subnormal results (biased exponent would be ≤ 0) are handled by keeping the
+unrounded significand without an implicit leading bit.
+
+r[deser.json.scalar.float.pack.overflow]
+If `p > 347`, the result is ±infinity. If `p < -348`, the result is ±0.0.
+If the biased exponent after rounding reaches 2047, the result is ±infinity.
+These are not errors — they are valid IEEE 754 values.
+
+r[deser.json.scalar.float.correctness]
+The JIT f64 parser produces bit-identical results to Rust's
+`str::parse::<f64>()` for all valid JSON number inputs. This is verified by
+round-trip testing against a corpus of real-world coordinates (canada.json,
+~111k floats) and edge cases (subnormals, max/min finite, large exponents,
+19+ digit mantissas).
 
 r[deser.json.scalar.bool]
 JSON `true` and `false` literals are parsed into Rust `bool`. Any other
