@@ -26,9 +26,9 @@ pub fn compile_deser(shape: &'static facet::Shape, format: &dyn format::Format) 
 ///
 /// # Safety
 /// The compiled deserializer must have been compiled for the same shape as `T`.
-pub fn deserialize<T: for<'a> facet::Facet<'a>>(
+pub fn deserialize<'input, T: facet::Facet<'input>>(
     deser: &CompiledDeser,
-    input: &[u8],
+    input: &'input [u8],
 ) -> Result<T, DeserError> {
     let mut ctx = DeserContext::new(input);
 
@@ -67,6 +67,8 @@ impl std::error::Error for DeserError {}
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
     use facet::Facet;
 
@@ -147,6 +149,76 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, context::ErrorCode::MissingRequiredField);
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct BorrowedFriend<'a> {
+        age: u32,
+        name: &'a str,
+    }
+
+    #[derive(Facet, Debug, PartialEq)]
+    struct CowFriend<'a> {
+        age: u32,
+        name: Cow<'a, str>,
+    }
+
+    #[test]
+    fn postcard_borrowed_str_zero_copy() {
+        let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
+        let deser = compile_deser(BorrowedFriend::SHAPE, &postcard::FadPostcard);
+        let result: BorrowedFriend<'_> = deserialize(&deser, &input).unwrap();
+        assert_eq!(result.age, 42);
+        assert_eq!(result.name, "Alice");
+        assert_eq!(result.name.as_ptr(), unsafe { input.as_ptr().add(2) });
+    }
+
+    #[test]
+    fn postcard_cow_str_borrowed_zero_copy() {
+        let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
+        let deser = compile_deser(CowFriend::SHAPE, &postcard::FadPostcard);
+        let result: CowFriend<'_> = deserialize(&deser, &input).unwrap();
+        assert_eq!(result.age, 42);
+        assert!(matches!(result.name, Cow::Borrowed("Alice")));
+    }
+
+    #[test]
+    fn json_borrowed_str_zero_copy_fast_path() {
+        let input = br#"{"age":42,"name":"Alice"}"#;
+        let name_start = input.windows(5).position(|w| w == b"Alice").unwrap();
+        let deser = compile_deser(BorrowedFriend::SHAPE, &json::FadJson);
+        let result: BorrowedFriend<'_> = deserialize(&deser, input).unwrap();
+        assert_eq!(result.age, 42);
+        assert_eq!(result.name, "Alice");
+        assert_eq!(result.name.as_ptr(), unsafe {
+            input.as_ptr().add(name_start)
+        });
+    }
+
+    #[test]
+    fn json_borrowed_str_escape_is_error() {
+        let input = br#"{"age":42,"name":"A\nB"}"#;
+        let deser = compile_deser(BorrowedFriend::SHAPE, &json::FadJson);
+        let err = deserialize::<BorrowedFriend<'_>>(&deser, input).unwrap_err();
+        assert_eq!(err.code, context::ErrorCode::InvalidEscapeSequence);
+    }
+
+    #[test]
+    fn json_cow_str_fast_path_borrowed() {
+        let input = br#"{"age":42,"name":"Alice"}"#;
+        let deser = compile_deser(CowFriend::SHAPE, &json::FadJson);
+        let result: CowFriend<'_> = deserialize(&deser, input).unwrap();
+        assert_eq!(result.age, 42);
+        assert!(matches!(result.name, Cow::Borrowed("Alice")));
+    }
+
+    #[test]
+    fn json_cow_str_escape_slow_path_owned() {
+        let input = br#"{"age":42,"name":"A\nB"}"#;
+        let deser = compile_deser(CowFriend::SHAPE, &json::FadJson);
+        let result: CowFriend<'_> = deserialize(&deser, input).unwrap();
+        assert_eq!(result.age, 42);
+        assert!(matches!(result.name, Cow::Owned(ref s) if s == "A\nB"));
     }
 
     // --- Milestone 4: All scalar types ---
@@ -456,8 +528,10 @@ mod tests {
                 expected.to_bits(),
                 "input={:?}: got {} ({:#018x}), expected {} ({:#018x})",
                 std::str::from_utf8(input).unwrap(),
-                result.x, result.x.to_bits(),
-                expected, expected.to_bits(),
+                result.x,
+                result.x.to_bits(),
+                expected,
+                expected.to_bits(),
             );
         }
     }
@@ -474,11 +548,7 @@ mod tests {
 
         let compressed = include_bytes!("../fixtures/canada.json.br");
         let mut json_bytes = Vec::new();
-        brotli::BrotliDecompress(
-            &mut std::io::Cursor::new(compressed),
-            &mut json_bytes,
-        )
-        .unwrap();
+        brotli::BrotliDecompress(&mut std::io::Cursor::new(compressed), &mut json_bytes).unwrap();
 
         let deser = compile_deser(Coord::SHAPE, &json::FadJson);
 
@@ -499,8 +569,7 @@ mod tests {
                 if s.contains(&b'.') || s.contains(&b'e') || s.contains(&b'E') {
                     total += 1;
                     let std_val: f64 = std::str::from_utf8(s).unwrap().parse().unwrap();
-                    let json_input =
-                        format!(r#"{{"v":{}}}"#, std::str::from_utf8(s).unwrap());
+                    let json_input = format!(r#"{{"v":{}}}"#, std::str::from_utf8(s).unwrap());
                     let result: Coord = deserialize(&deser, json_input.as_bytes()).unwrap();
                     if std_val.to_bits() != result.v.to_bits() {
                         if mismatches < 10 {
@@ -623,7 +692,8 @@ mod tests {
     // r[verify deser.nested-struct.offset]
     #[test]
     fn json_nested_struct() {
-        let input = br#"{"name": "Alice", "age": 30, "address": {"city": "Portland", "zip": 97201}}"#;
+        let input =
+            br#"{"name": "Alice", "age": 30, "address": {"city": "Portland", "zip": 97201}}"#;
         let deser = compile_deser(Person::SHAPE, &json::FadJson);
         let result: Person = deserialize(&deser, input).unwrap();
 
@@ -643,7 +713,8 @@ mod tests {
     // r[verify deser.nested-struct]
     #[test]
     fn json_nested_struct_reversed_keys() {
-        let input = br#"{"address": {"zip": 97201, "city": "Portland"}, "age": 30, "name": "Alice"}"#;
+        let input =
+            br#"{"address": {"zip": 97201, "city": "Portland"}, "age": 30, "name": "Alice"}"#;
         let deser = compile_deser(Person::SHAPE, &json::FadJson);
         let result: Person = deserialize(&deser, input).unwrap();
 
@@ -825,8 +896,7 @@ mod tests {
                         }
                     }
                     Err(e) => {
-                        let word =
-                            u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
+                        let word = u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
                         let addr = base_addr + offset as u64;
                         writeln!(&mut out, "{addr:12x}:{marker}  <{e}> (0x{word:08x})").unwrap();
                     }
@@ -900,7 +970,10 @@ mod tests {
     #[test]
     fn disasm_postcard_deep_nested() {
         let deser = compile_deser(Outer::SHAPE, &postcard::FadPostcard);
-        eprintln!("=== fad postcard deep_nested (Outer) ===\n{}", disasm_jit(&deser));
+        eprintln!(
+            "=== fad postcard deep_nested (Outer) ===\n{}",
+            disasm_jit(&deser)
+        );
     }
 
     #[test]
@@ -924,13 +997,21 @@ mod tests {
 
         #[derive(serde::Deserialize, Debug)]
         #[allow(dead_code)]
-        struct InnerSerde { x: u32 }
+        struct InnerSerde {
+            x: u32,
+        }
         #[derive(serde::Deserialize, Debug)]
         #[allow(dead_code)]
-        struct MiddleSerde { inner: InnerSerde, y: u32 }
+        struct MiddleSerde {
+            inner: InnerSerde,
+            y: u32,
+        }
         #[derive(serde::Deserialize, Debug)]
         #[allow(dead_code)]
-        struct OuterSerde { middle: MiddleSerde, z: u32 }
+        struct OuterSerde {
+            middle: MiddleSerde,
+            z: u32,
+        }
 
         let fn_ptr = serde_deser as *const u8;
         let asm = unsafe { disasm_native(fn_ptr, 2048) };
@@ -958,7 +1039,10 @@ mod tests {
         enum AnimalSerde {
             Cat,
             #[allow(dead_code)]
-            Dog { name: String, good_boy: bool },
+            Dog {
+                name: String,
+                good_boy: bool,
+            },
             #[allow(dead_code)]
             Parrot(String),
         }
@@ -980,7 +1064,10 @@ mod tests {
         enum AnimalSerde {
             #[allow(dead_code)]
             Cat,
-            Dog { name: String, good_boy: bool },
+            Dog {
+                name: String,
+                good_boy: bool,
+            },
             #[allow(dead_code)]
             Parrot(String),
         }
@@ -988,10 +1075,17 @@ mod tests {
         let encoded = ::postcard::to_allocvec(&AnimalSerde::Dog {
             name: "Rex".into(),
             good_boy: true,
-        }).unwrap();
+        })
+        .unwrap();
         let deser = compile_deser(Animal::SHAPE, &postcard::FadPostcard);
         let result: Animal = deserialize(&deser, &encoded).unwrap();
-        assert_eq!(result, Animal::Dog { name: "Rex".into(), good_boy: true });
+        assert_eq!(
+            result,
+            Animal::Dog {
+                name: "Rex".into(),
+                good_boy: true
+            }
+        );
     }
 
     // r[verify deser.postcard.enum]
@@ -1005,7 +1099,10 @@ mod tests {
             #[allow(dead_code)]
             Cat,
             #[allow(dead_code)]
-            Dog { name: String, good_boy: bool },
+            Dog {
+                name: String,
+                good_boy: bool,
+            },
             Parrot(String),
         }
 
@@ -1042,7 +1139,10 @@ mod tests {
         enum AnimalSerde {
             #[allow(dead_code)]
             Cat,
-            Dog { name: String, good_boy: bool },
+            Dog {
+                name: String,
+                good_boy: bool,
+            },
             #[allow(dead_code)]
             Parrot(String),
         }
@@ -1055,14 +1155,24 @@ mod tests {
 
         let encoded = ::postcard::to_allocvec(&ZooSerde {
             name: "City Zoo".into(),
-            star: AnimalSerde::Dog { name: "Rex".into(), good_boy: true },
-        }).unwrap();
+            star: AnimalSerde::Dog {
+                name: "Rex".into(),
+                good_boy: true,
+            },
+        })
+        .unwrap();
         let deser = compile_deser(Zoo::SHAPE, &postcard::FadPostcard);
         let result: Zoo = deserialize(&deser, &encoded).unwrap();
-        assert_eq!(result, Zoo {
-            name: "City Zoo".into(),
-            star: Animal::Dog { name: "Rex".into(), good_boy: true },
-        });
+        assert_eq!(
+            result,
+            Zoo {
+                name: "City Zoo".into(),
+                star: Animal::Dog {
+                    name: "Rex".into(),
+                    good_boy: true
+                },
+            }
+        );
     }
 
     // r[verify deser.json.enum.external]
@@ -1082,7 +1192,13 @@ mod tests {
         let input = br#"{"Dog": {"name": "Rex", "good_boy": true}}"#;
         let deser = compile_deser(Animal::SHAPE, &json::FadJson);
         let result: Animal = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Animal::Dog { name: "Rex".into(), good_boy: true });
+        assert_eq!(
+            result,
+            Animal::Dog {
+                name: "Rex".into(),
+                good_boy: true
+            }
+        );
     }
 
     // r[verify deser.json.enum.external]
@@ -1127,10 +1243,16 @@ mod tests {
         let input = br#"{"name": "City Zoo", "star": {"Dog": {"name": "Rex", "good_boy": true}}}"#;
         let deser = compile_deser(Zoo::SHAPE, &json::FadJson);
         let result: Zoo = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Zoo {
-            name: "City Zoo".into(),
-            star: Animal::Dog { name: "Rex".into(), good_boy: true },
-        });
+        assert_eq!(
+            result,
+            Zoo {
+                name: "City Zoo".into(),
+                star: Animal::Dog {
+                    name: "Rex".into(),
+                    good_boy: true
+                },
+            }
+        );
     }
 
     // r[verify deser.json.enum.external.struct-variant]
@@ -1139,7 +1261,13 @@ mod tests {
         let input = br#"{"Dog": {"good_boy": true, "name": "Rex"}}"#;
         let deser = compile_deser(Animal::SHAPE, &json::FadJson);
         let result: Animal = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Animal::Dog { name: "Rex".into(), good_boy: true });
+        assert_eq!(
+            result,
+            Animal::Dog {
+                name: "Rex".into(),
+                good_boy: true
+            }
+        );
     }
 
     #[test]
@@ -1834,11 +1962,18 @@ mod tests {
             name: Option<String>,
         }
 
-        let source = WithOptStrSerde { name: Some("Alice".into()) };
+        let source = WithOptStrSerde {
+            name: Some("Alice".into()),
+        };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_deser(WithOptStr::SHAPE, &postcard::FadPostcard);
         let result: WithOptStr = deserialize(&deser, &encoded).unwrap();
-        assert_eq!(result, WithOptStr { name: Some("Alice".into()) });
+        assert_eq!(
+            result,
+            WithOptStr {
+                name: Some("Alice".into())
+            }
+        );
     }
 
     // r[verify deser.postcard.option]
@@ -1885,7 +2020,10 @@ mod tests {
         }
 
         let source = WithOptAddrSerde {
-            addr: Some(AddressSerde { city: "Portland".into(), zip: 97201 }),
+            addr: Some(AddressSerde {
+                city: "Portland".into(),
+                zip: 97201,
+            }),
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_deser(WithOptAddr::SHAPE, &postcard::FadPostcard);
@@ -1893,7 +2031,10 @@ mod tests {
         assert_eq!(
             result,
             WithOptAddr {
-                addr: Some(Address { city: "Portland".into(), zip: 97201 }),
+                addr: Some(Address {
+                    city: "Portland".into(),
+                    zip: 97201
+                }),
             }
         );
     }
@@ -2002,7 +2143,12 @@ mod tests {
         let input = br#"{"name": "Alice"}"#;
         let deser = compile_deser(WithOptStr::SHAPE, &json::FadJson);
         let result: WithOptStr = deserialize(&deser, input).unwrap();
-        assert_eq!(result, WithOptStr { name: Some("Alice".into()) });
+        assert_eq!(
+            result,
+            WithOptStr {
+                name: Some("Alice".into())
+            }
+        );
     }
 
     // r[verify deser.json.option]
@@ -2033,7 +2179,10 @@ mod tests {
         assert_eq!(
             result,
             WithOptAddr {
-                addr: Some(Address { city: "Portland".into(), zip: 97201 }),
+                addr: Some(Address {
+                    city: "Portland".into(),
+                    zip: 97201
+                }),
             }
         );
     }
@@ -2111,11 +2260,18 @@ mod tests {
             vals: Vec<u32>,
         }
 
-        let source = NumsSerde { vals: vec![1, 2, 3] };
+        let source = NumsSerde {
+            vals: vec![1, 2, 3],
+        };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_deser(Nums::SHAPE, &postcard::FadPostcard);
         let result: Nums = deserialize(&deser, &encoded).unwrap();
-        assert_eq!(result, Nums { vals: vec![1, 2, 3] });
+        assert_eq!(
+            result,
+            Nums {
+                vals: vec![1, 2, 3]
+            }
+        );
     }
 
     // r[verify deser.postcard.seq]
@@ -2186,8 +2342,14 @@ mod tests {
 
         let source = AddressListSerde {
             addrs: vec![
-                AddrSerde { city: "Portland".into(), zip: 97201 },
-                AddrSerde { city: "Seattle".into(), zip: 98101 },
+                AddrSerde {
+                    city: "Portland".into(),
+                    zip: 97201,
+                },
+                AddrSerde {
+                    city: "Seattle".into(),
+                    zip: 98101,
+                },
             ],
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
@@ -2197,8 +2359,14 @@ mod tests {
             result,
             AddressList {
                 addrs: vec![
-                    Address { city: "Portland".into(), zip: 97201 },
-                    Address { city: "Seattle".into(), zip: 98101 },
+                    Address {
+                        city: "Portland".into(),
+                        zip: 97201
+                    },
+                    Address {
+                        city: "Seattle".into(),
+                        zip: 98101
+                    },
                 ],
             }
         );
@@ -2243,7 +2411,12 @@ mod tests {
         let input = br#"{"vals": [1, 2, 3]}"#;
         let deser = compile_deser(Nums::SHAPE, &json::FadJson);
         let result: Nums = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Nums { vals: vec![1, 2, 3] });
+        assert_eq!(
+            result,
+            Nums {
+                vals: vec![1, 2, 3]
+            }
+        );
     }
 
     // r[verify deser.json.seq]
@@ -2294,8 +2467,14 @@ mod tests {
             result,
             AddressList {
                 addrs: vec![
-                    Address { city: "Portland".into(), zip: 97201 },
-                    Address { city: "Seattle".into(), zip: 98101 },
+                    Address {
+                        city: "Portland".into(),
+                        zip: 97201
+                    },
+                    Address {
+                        city: "Seattle".into(),
+                        zip: 98101
+                    },
                 ],
             }
         );
@@ -2313,7 +2492,12 @@ mod tests {
         let input = br#"{"vals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}"#;
         let deser = compile_deser(Nums::SHAPE, &json::FadJson);
         let result: Nums = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Nums { vals: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10] });
+        assert_eq!(
+            result,
+            Nums {
+                vals: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            }
+        );
     }
 
     // ── JSON string escape sequence tests ────────────────────────────────
@@ -2393,7 +2577,13 @@ mod tests {
         let input = br#"{"age": 42, "na\u006De": "Alice"}"#;
         let deser = compile_deser(Friend::SHAPE, &json::FadJson);
         let result: Friend = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Friend { age: 42, name: "Alice".into() });
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
     }
 
     #[test]
@@ -2428,7 +2618,13 @@ mod tests {
         let input = br#"{"age": 42, "extra": "test\uD83D\uDE00end", "name": "Alice"}"#;
         let deser = compile_deser(Friend::SHAPE, &json::FadJson);
         let result: Friend = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Friend { age: 42, name: "Alice".into() });
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
     }
 
     #[test]
@@ -2437,7 +2633,13 @@ mod tests {
         let input = br#"{"age": 42, "extra": "test\n\t\\end", "name": "Alice"}"#;
         let deser = compile_deser(Friend::SHAPE, &json::FadJson);
         let result: Friend = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Friend { age: 42, name: "Alice".into() });
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
     }
 
     // --- Milestone 8: Map deserialization ---
@@ -2460,7 +2662,9 @@ mod tests {
         let mut scores = HashMap::new();
         scores.insert("alice".to_string(), 42u32);
         scores.insert("bob".to_string(), 7u32);
-        let source = ConfigSerde { scores: scores.clone() };
+        let source = ConfigSerde {
+            scores: scores.clone(),
+        };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_deser(Config::SHAPE, &postcard::FadPostcard);
         let result: Config = deserialize(&deser, &encoded).unwrap();
@@ -2482,11 +2686,18 @@ mod tests {
             scores: HashMap<String, u32>,
         }
 
-        let source = ConfigSerde { scores: HashMap::new() };
+        let source = ConfigSerde {
+            scores: HashMap::new(),
+        };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_deser(Config::SHAPE, &postcard::FadPostcard);
         let result: Config = deserialize(&deser, &encoded).unwrap();
-        assert_eq!(result, Config { scores: HashMap::new() });
+        assert_eq!(
+            result,
+            Config {
+                scores: HashMap::new()
+            }
+        );
     }
 
     // r[verify deser.postcard.map]
@@ -2532,7 +2743,9 @@ mod tests {
         let mut scores = BTreeMap::new();
         scores.insert("alice".to_string(), 42u32);
         scores.insert("bob".to_string(), 7u32);
-        let source = ConfigSerde { scores: scores.clone() };
+        let source = ConfigSerde {
+            scores: scores.clone(),
+        };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_deser(Config::SHAPE, &postcard::FadPostcard);
         let result: Config = deserialize(&deser, &encoded).unwrap();
@@ -2571,7 +2784,12 @@ mod tests {
         let input = br#"{"scores": {}}"#;
         let deser = compile_deser(Config::SHAPE, &json::FadJson);
         let result: Config = deserialize(&deser, input).unwrap();
-        assert_eq!(result, Config { scores: HashMap::new() });
+        assert_eq!(
+            result,
+            Config {
+                scores: HashMap::new()
+            }
+        );
     }
 
     // r[verify deser.json.map]

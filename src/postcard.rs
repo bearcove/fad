@@ -1,7 +1,7 @@
 use dynasmrt::DynamicLabel;
 use facet::{MapDef, ScalarType};
 
-use crate::arch::{EmitCtx, BASE_FRAME};
+use crate::arch::{BASE_FRAME, EmitCtx};
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo};
 use crate::intrinsics;
 use crate::malum::VecOffsets;
@@ -50,24 +50,27 @@ impl Format for FadPostcard {
             ScalarType::F64 => ectx.emit_inline_read_f64(offset),
 
             // Tier 2: varint fast path + intrinsic slow path
-            ScalarType::U16 => ectx.emit_inline_varint_fast_path(
-                offset, 2, false, intrinsics::fad_read_u16 as _,
-            ),
+            ScalarType::U16 => {
+                ectx.emit_inline_varint_fast_path(offset, 2, false, intrinsics::fad_read_u16 as _)
+            }
             ScalarType::U32 => ectx.emit_inline_varint_fast_path(
-                offset, 4, false, intrinsics::fad_read_varint_u32 as _,
+                offset,
+                4,
+                false,
+                intrinsics::fad_read_varint_u32 as _,
             ),
-            ScalarType::U64 => ectx.emit_inline_varint_fast_path(
-                offset, 8, false, intrinsics::fad_read_u64 as _,
-            ),
-            ScalarType::I16 => ectx.emit_inline_varint_fast_path(
-                offset, 2, true, intrinsics::fad_read_i16 as _,
-            ),
-            ScalarType::I32 => ectx.emit_inline_varint_fast_path(
-                offset, 4, true, intrinsics::fad_read_i32 as _,
-            ),
-            ScalarType::I64 => ectx.emit_inline_varint_fast_path(
-                offset, 8, true, intrinsics::fad_read_i64 as _,
-            ),
+            ScalarType::U64 => {
+                ectx.emit_inline_varint_fast_path(offset, 8, false, intrinsics::fad_read_u64 as _)
+            }
+            ScalarType::I16 => {
+                ectx.emit_inline_varint_fast_path(offset, 2, true, intrinsics::fad_read_i16 as _)
+            }
+            ScalarType::I32 => {
+                ectx.emit_inline_varint_fast_path(offset, 4, true, intrinsics::fad_read_i32 as _)
+            }
+            ScalarType::I64 => {
+                ectx.emit_inline_varint_fast_path(offset, 8, true, intrinsics::fad_read_i64 as _)
+            }
             ScalarType::U128 => ectx.emit_call_intrinsic(intrinsics::fad_read_u128 as _, offset),
             ScalarType::I128 => ectx.emit_call_intrinsic(intrinsics::fad_read_i128 as _, offset),
             ScalarType::USize => ectx.emit_call_intrinsic(intrinsics::fad_read_usize as _, offset),
@@ -77,13 +80,36 @@ impl Format for FadPostcard {
         }
     }
 
-    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize, string_offsets: &crate::malum::StringOffsets) {
-        ectx.emit_inline_postcard_string_malum(
-            offset as u32,
-            string_offsets,
-            intrinsics::fad_read_varint_u32 as *const u8,
-            intrinsics::fad_string_validate_alloc_copy as *const u8,
-        );
+    fn emit_read_string(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        scalar_type: ScalarType,
+        string_offsets: &crate::malum::StringOffsets,
+    ) {
+        match scalar_type {
+            ScalarType::String => {
+                ectx.emit_inline_postcard_string_malum(
+                    offset as u32,
+                    string_offsets,
+                    intrinsics::fad_read_varint_u32 as *const u8,
+                    intrinsics::fad_string_validate_alloc_copy as *const u8,
+                );
+            }
+            ScalarType::Str => {
+                ectx.emit_call_intrinsic(
+                    intrinsics::fad_read_postcard_str as *const u8,
+                    offset as u32,
+                );
+            }
+            ScalarType::CowStr => {
+                ectx.emit_call_intrinsic(
+                    intrinsics::fad_read_postcard_cow_str as *const u8,
+                    offset as u32,
+                );
+            }
+            _ => panic!("unsupported postcard string scalar: {:?}", scalar_type),
+        }
     }
 
     // r[impl deser.postcard.option]
@@ -168,8 +194,8 @@ impl Format for FadPostcard {
         let saved_out_slot = BASE_FRAME + 8;
         let buf_slot = BASE_FRAME + 16;
         let count_slot = BASE_FRAME + 24;
-        let save_x23_slot = BASE_FRAME + 32;  // save/restore callee-saved x23 (cursor)
-        let save_x24_slot = BASE_FRAME + 40;  // save/restore callee-saved x24 (end)
+        let save_x23_slot = BASE_FRAME + 32; // save/restore callee-saved x23 (cursor)
+        let save_x24_slot = BASE_FRAME + 40; // save/restore callee-saved x24 (end)
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
@@ -210,18 +236,24 @@ impl Format for FadPostcard {
 
         // Check if we can use the tight varint loop (writes directly to cursor
         // register, no mov to out, slow path out-of-line).
-        let varint_info = elem_shape.scalar_type().and_then(|st| {
-            match st {
-                ScalarType::U16 => Some((2, false, intrinsics::fad_read_u16 as *const u8)),
-                ScalarType::U32 => Some((4, false, intrinsics::fad_read_varint_u32 as *const u8)),
-                ScalarType::U64 => Some((8, false, intrinsics::fad_read_u64 as *const u8)),
-                ScalarType::I16 => Some((2, true, intrinsics::fad_read_i16 as *const u8)),
-                ScalarType::I32 => Some((4, true, intrinsics::fad_read_i32 as *const u8)),
-                ScalarType::I64 => Some((8, true, intrinsics::fad_read_i64 as *const u8)),
-                ScalarType::USize => Some((core::mem::size_of::<usize>() as u32, false, intrinsics::fad_read_usize as *const u8)),
-                ScalarType::ISize => Some((core::mem::size_of::<isize>() as u32, true, intrinsics::fad_read_isize as *const u8)),
-                _ => None,
-            }
+        let varint_info = elem_shape.scalar_type().and_then(|st| match st {
+            ScalarType::U16 => Some((2, false, intrinsics::fad_read_u16 as *const u8)),
+            ScalarType::U32 => Some((4, false, intrinsics::fad_read_varint_u32 as *const u8)),
+            ScalarType::U64 => Some((8, false, intrinsics::fad_read_u64 as *const u8)),
+            ScalarType::I16 => Some((2, true, intrinsics::fad_read_i16 as *const u8)),
+            ScalarType::I32 => Some((4, true, intrinsics::fad_read_i32 as *const u8)),
+            ScalarType::I64 => Some((8, true, intrinsics::fad_read_i64 as *const u8)),
+            ScalarType::USize => Some((
+                core::mem::size_of::<usize>() as u32,
+                false,
+                intrinsics::fad_read_usize as *const u8,
+            )),
+            ScalarType::ISize => Some((
+                core::mem::size_of::<isize>() as u32,
+                true,
+                intrinsics::fad_read_isize as *const u8,
+            )),
+            _ => None,
         });
 
         if let Some((store_width, zigzag, intrinsic_fn_ptr)) = varint_info {
@@ -249,11 +281,7 @@ impl Format for FadPostcard {
 
             ectx.error_exit = saved_error_exit;
 
-            ectx.emit_vec_loop_advance_no_error_check(
-                save_x24_slot,
-                elem_size,
-                loop_label,
-            );
+            ectx.emit_vec_loop_advance_no_error_check(save_x24_slot, elem_size, loop_label);
         }
 
         // === Write Vec to output (reached after loop completes) ===
@@ -305,17 +333,28 @@ impl Format for FadPostcard {
         emit_key: &mut dyn FnMut(&mut EmitCtx),
         emit_value: &mut dyn FnMut(&mut EmitCtx),
     ) {
-        let from_pair_slice_fn = map_def.vtable.from_pair_slice
-            .expect("MapVTable must have from_pair_slice for JIT deserialization") as *const u8;
+        let from_pair_slice_fn = map_def
+            .vtable
+            .from_pair_slice
+            .expect("MapVTable must have from_pair_slice for JIT deserialization")
+            as *const u8;
 
         let pair_stride = map_def.vtable.pair_stride as u32;
         let value_offset = map_def.vtable.value_offset_in_pair as u32;
 
         // Compute pair alignment: max of key and value alignment.
-        let k_align = map_def.k.layout.sized_layout()
-            .expect("Map key must be Sized").align() as u32;
-        let v_align = map_def.v.layout.sized_layout()
-            .expect("Map value must be Sized").align() as u32;
+        let k_align = map_def
+            .k
+            .layout
+            .sized_layout()
+            .expect("Map key must be Sized")
+            .align() as u32;
+        let v_align = map_def
+            .v
+            .layout
+            .sized_layout()
+            .expect("Map value must be Sized")
+            .align() as u32;
         let pair_align = k_align.max(v_align);
 
         // Stack slot offsets (relative to sp). Same layout as postcard Vec.
@@ -379,11 +418,7 @@ impl Format for FadPostcard {
         ectx.error_exit = saved_error_exit;
 
         // Advance cursor by pair_stride; loop back if more pairs remain
-        ectx.emit_vec_loop_advance_no_error_check(
-            save_x24_slot,
-            pair_stride,
-            loop_label,
-        );
+        ectx.emit_vec_loop_advance_no_error_check(save_x24_slot, pair_stride, loop_label);
 
         // === Loop done: build the final map from the pairs buffer ===
         ectx.bind_label(loop_done_label);

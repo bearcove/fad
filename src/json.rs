@@ -1,7 +1,7 @@
 use dynasmrt::DynamicLabel;
 use facet::{MapDef, ScalarType, Type, UserType};
 
-use crate::arch::{EmitCtx, BASE_FRAME};
+use crate::arch::{BASE_FRAME, EmitCtx};
 use crate::context::ErrorCode;
 use crate::format::{FieldEmitInfo, Format, VariantEmitInfo, VariantKind};
 use crate::intrinsics;
@@ -180,9 +180,7 @@ impl Format for FadJson {
         // === None path ===
         ectx.bind_label(none_label);
         // Consume the "null" literal
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_skip_value as *const u8,
-        );
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
         ectx.emit_call_option_init_none(
             crate::intrinsics::fad_option_init_none as *const u8,
             init_none_fn,
@@ -228,10 +226,10 @@ impl Format for FadJson {
         let elem_align = elem_layout.align() as u32;
 
         // Stack slot offsets (relative to sp)
-        let saved_out_slot = BASE_FRAME + 32;  // sp+80
-        let buf_slot = BASE_FRAME + 40;        // sp+88
-        let len_slot = BASE_FRAME + 48;        // sp+96
-        let cap_slot = BASE_FRAME + 56;        // sp+104
+        let saved_out_slot = BASE_FRAME + 32; // sp+80
+        let buf_slot = BASE_FRAME + 40; // sp+88
+        let len_slot = BASE_FRAME + 48; // sp+96
+        let cap_slot = BASE_FRAME + 56; // sp+104
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
@@ -356,21 +354,35 @@ impl Format for FadJson {
     ) {
         // JSON map keys must be strings — JSON object keys are always quoted strings.
         assert!(
-            matches!(k_shape.scalar_type(), Some(ScalarType::String)),
-            "JSON map deserialization only supports String keys, got: {}",
+            matches!(
+                k_shape.scalar_type(),
+                Some(ScalarType::String | ScalarType::Str | ScalarType::CowStr)
+            ),
+            "JSON map deserialization only supports string-like keys, got: {}",
             k_shape.type_identifier,
         );
 
-        let from_pair_slice_fn = map_def.vtable.from_pair_slice
-            .expect("MapVTable must have from_pair_slice for JIT deserialization") as *const u8;
+        let from_pair_slice_fn = map_def
+            .vtable
+            .from_pair_slice
+            .expect("MapVTable must have from_pair_slice for JIT deserialization")
+            as *const u8;
 
         let pair_stride = map_def.vtable.pair_stride as u32;
         let value_offset = map_def.vtable.value_offset_in_pair as u32;
 
-        let k_align = map_def.k.layout.sized_layout()
-            .expect("Map key must be Sized").align() as u32;
-        let v_align = map_def.v.layout.sized_layout()
-            .expect("Map value must be Sized").align() as u32;
+        let k_align = map_def
+            .k
+            .layout
+            .sized_layout()
+            .expect("Map key must be Sized")
+            .align() as u32;
+        let v_align = map_def
+            .v
+            .layout
+            .sized_layout()
+            .expect("Map value must be Sized")
+            .align() as u32;
         let pair_align = k_align.max(v_align);
 
         // Stack slot offsets — same layout as JSON Vec (after JSON struct base slots).
@@ -428,9 +440,7 @@ impl Format for FadJson {
         ectx.emit_check_error_branch(error_cleanup);
 
         // Expect ':' separating key from value
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_colon as *const u8,
-        );
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_colon as *const u8);
         ectx.emit_check_error_branch(error_cleanup);
 
         // Advance out to value position: out = pair_base + value_offset
@@ -528,12 +538,20 @@ impl Format for FadJson {
         ectx.emit_call_intrinsic(fn_ptr, offset as u32);
     }
 
-    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize, _string_offsets: &crate::malum::StringOffsets) {
-        // JSON string malum deferred — escape handling complexity makes it less impactful.
-        ectx.emit_call_intrinsic(
-            json_intrinsics::fad_json_read_string_value as *const u8,
-            offset as u32,
-        );
+    fn emit_read_string(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        scalar_type: ScalarType,
+        _string_offsets: &crate::malum::StringOffsets,
+    ) {
+        let fn_ptr = match scalar_type {
+            ScalarType::String => json_intrinsics::fad_json_read_string_value as *const u8,
+            ScalarType::Str => json_intrinsics::fad_json_read_str_value as *const u8,
+            ScalarType::CowStr => json_intrinsics::fad_json_read_cow_str_value as *const u8,
+            _ => panic!("unsupported JSON string scalar: {:?}", scalar_type),
+        };
+        ectx.emit_call_intrinsic(fn_ptr, offset as u32);
     }
 
     // r[impl deser.json.enum.external]
@@ -660,9 +678,7 @@ impl Format for FadJson {
 
         // After variant body: expect closing '}'
         ectx.bind_label(expect_end_label);
-        ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_object_end as *const u8,
-        );
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_object_end as *const u8);
 
         ectx.bind_label(done_label);
     }
@@ -963,8 +979,10 @@ impl Format for FadJson {
                             object_variants.push(i);
                         }
                         _ => match inner_shape.scalar_type() {
-                            Some(ScalarType::String) => string_variants.push(i),
                             Some(ScalarType::Char) => string_variants.push(i),
+                            Some(ScalarType::String | ScalarType::Str | ScalarType::CowStr) => {
+                                string_variants.push(i)
+                            }
                             Some(ScalarType::Bool) => bool_variants.push(i),
                             Some(
                                 ScalarType::U8
@@ -1064,10 +1082,8 @@ impl Format for FadJson {
             if object_variants.len() == 1 {
                 emit_variant_body(ectx, &variants[object_variants[0]]);
             } else {
-                let solver_variants: Vec<(usize, &VariantEmitInfo)> = object_variants
-                    .iter()
-                    .map(|&i| (i, &variants[i]))
-                    .collect();
+                let solver_variants: Vec<(usize, &VariantEmitInfo)> =
+                    object_variants.iter().map(|&i| (i, &variants[i])).collect();
                 let solver = LoweredSolver::build(&solver_variants);
                 self.emit_object_solver(ectx, &solver, variants, done_label, emit_variant_body);
             }
@@ -1438,11 +1454,7 @@ impl FadJson {
 
     /// Emit a value-type peek: read the value's first byte and AND the matching
     /// type mask into CANDIDATES.
-    fn emit_value_type_peek(
-        &self,
-        ectx: &mut EmitCtx,
-        vt_masks: &[(JsonValueType, u64)],
-    ) {
+    fn emit_value_type_peek(&self, ectx: &mut EmitCtx, vt_masks: &[(JsonValueType, u64)]) {
         let after_vt = ectx.new_label();
 
         // Peek at the value's first byte

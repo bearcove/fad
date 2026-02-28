@@ -130,7 +130,13 @@ pub trait Format {
     ///
     /// `string_offsets` provides the discovered `(ptr, len, cap)` field offsets
     /// within String's memory layout, enabling direct writes.
-    fn emit_read_string(&self, ectx: &mut EmitCtx, offset: usize, string_offsets: &StringOffsets);
+    fn emit_read_string(
+        &self,
+        ectx: &mut EmitCtx,
+        offset: usize,
+        scalar_type: ScalarType,
+        string_offsets: &StringOffsets,
+    );
 
     /// Emit code to deserialize an enum value.
     ///

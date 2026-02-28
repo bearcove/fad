@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use facet::{MapFromPairSliceFn, PtrUninit};
 
 use crate::context::{DeserContext, ErrorCode};
@@ -306,12 +308,19 @@ pub unsafe extern "C" fn fad_read_f64(ctx: *mut DeserContext, out: *mut f64) {
 /// Read a postcard length-prefixed string from the input, write to `*out`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *mut String) {
-    let mut len: u32 = 0;
-    unsafe { fad_read_varint_u32(ctx, &mut len) };
-
     let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { read_postcard_string_borrowed(ctx) } {
+        Some(s) => s,
+        None => return,
+    };
+    unsafe { out.write(s.to_owned()) };
+}
+
+unsafe fn read_postcard_string_borrowed<'a>(ctx: &'a mut DeserContext) -> Option<&'a str> {
+    let mut len: u32 = 0;
+    unsafe { fad_read_varint_u32(ctx as *mut _, &mut len) };
     if ctx.error.code != 0 {
-        return;
+        return None;
     }
 
     let len = len as usize;
@@ -319,7 +328,7 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
     let remaining = unsafe { ctx.input_end.offset_from(ctx.input_ptr) as usize };
     if remaining < len {
         ctx.error.code = ErrorCode::UnexpectedEof as u32;
-        return;
+        return None;
     }
 
     let bytes = unsafe { core::slice::from_raw_parts(ctx.input_ptr, len) };
@@ -327,12 +336,45 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
         Ok(s) => s,
         Err(_) => {
             ctx.error.code = ErrorCode::InvalidUtf8 as u32;
-            return;
+            return None;
         }
     };
 
-    unsafe { out.write(s.to_owned()) };
     ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
+    Some(s)
+}
+
+/// Read a postcard string and write it as a borrowed `&str`.
+///
+/// This is always zero-copy: postcard strings are length-prefixed UTF-8 and
+/// require no unescaping.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_postcard_str(ctx: *mut DeserContext, out: *mut &str) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { read_postcard_string_borrowed(ctx) } {
+        Some(s) => s,
+        None => return,
+    };
+    let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+    unsafe { out.write(s_static) };
+}
+
+/// Read a postcard string and write it as `Cow<str>`.
+///
+/// Postcard strings are always borrowable (no escape sequences), so this always
+/// produces `Cow::Borrowed`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_postcard_cow_str(
+    ctx: *mut DeserContext,
+    out: *mut Cow<'static, str>,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { read_postcard_string_borrowed(ctx) } {
+        Some(s) => s,
+        None => return,
+    };
+    let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+    unsafe { out.write(Cow::Borrowed(s_static)) };
 }
 
 #[unsafe(no_mangle)]
@@ -384,10 +426,7 @@ pub unsafe extern "C" fn fad_read_char(ctx: *mut DeserContext, out: *mut char) {
 /// Wraps the facet OptionVTable's init_none, which takes wide pointer types
 /// (PtrUninit), into a thin `extern "C"` interface callable from JIT code.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fad_option_init_none(
-    init_none_fn: facet::OptionInitNoneFn,
-    out: *mut u8,
-) {
+pub unsafe extern "C" fn fad_option_init_none(init_none_fn: facet::OptionInitNoneFn, out: *mut u8) {
     let ptr_uninit = facet::PtrUninit::new_sized(out);
     unsafe { (init_none_fn)(ptr_uninit) };
 }
@@ -566,9 +605,8 @@ pub unsafe extern "C" fn fad_vec_grow(
     // Free old buffer.
     let old_size = old_cap * elem_size;
     if old_size > 0 {
-        let old_layout = unsafe {
-            std::alloc::Layout::from_size_align_unchecked(old_size, elem_align)
-        };
+        let old_layout =
+            unsafe { std::alloc::Layout::from_size_align_unchecked(old_size, elem_align) };
         unsafe { std::alloc::dealloc(old_buf, old_layout) };
     }
 
@@ -589,9 +627,7 @@ pub unsafe extern "C" fn fad_vec_free(
 ) {
     let size = cap * elem_size;
     if size > 0 && !buf.is_null() {
-        let layout = unsafe {
-            std::alloc::Layout::from_size_align_unchecked(size, elem_align)
-        };
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(size, elem_align) };
         unsafe { std::alloc::dealloc(buf, layout) };
     }
 }
