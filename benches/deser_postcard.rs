@@ -120,6 +120,30 @@ enum AnimalFacet {
     Parrot(String),
 }
 
+// ── Shared types: vec of scalars ──────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct ScalarVecSerde {
+    values: Vec<u32>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct ScalarVecFacet {
+    values: Vec<u32>,
+}
+
+// ── Shared types: vec of structs ──────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct StructVecSerde {
+    friends: Vec<FriendSerde>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct StructVecFacet {
+    friends: Vec<FriendFacet>,
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
@@ -179,6 +203,31 @@ static ENUM_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
     .unwrap()
 });
 
+static VEC_SCALAR_SMALL_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    postcard::to_allocvec(&ScalarVecSerde {
+        values: vec![1, 2, 3],
+    })
+    .unwrap()
+});
+
+static VEC_SCALAR_MEDIUM_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    postcard::to_allocvec(&ScalarVecSerde {
+        values: (0..100).collect(),
+    })
+    .unwrap()
+});
+
+static VEC_STRUCT_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    postcard::to_allocvec(&StructVecSerde {
+        friends: vec![
+            FriendSerde { age: 25, name: "Alice".into() },
+            FriendSerde { age: 30, name: "Bob".into() },
+            FriendSerde { age: 35, name: "Charlie".into() },
+        ],
+    })
+    .unwrap()
+});
+
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
 static FAD_FLAT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
@@ -199,6 +248,14 @@ static FAD_FLATTEN: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
 
 static FAD_ENUM: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(AnimalFacet::SHAPE, &fad::postcard::FadPostcard)
+});
+
+static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(ScalarVecFacet::SHAPE, &fad::postcard::FadPostcard)
+});
+
+static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(StructVecFacet::SHAPE, &fad::postcard::FadPostcard)
 });
 
 static FACET_JIT_FLAT: LazyLock<
@@ -354,6 +411,75 @@ mod enum_struct_variant {
         let deser = &*FAD_ENUM;
         bencher.bench(|| {
             black_box(fad::deserialize::<AnimalFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: Vec<u32> (3 elements) ─────────────────────────────────────
+
+mod vec_scalar_small {
+    use super::*;
+
+    #[divan::bench]
+    fn postcard_serde(bencher: Bencher) {
+        let data = &*VEC_SCALAR_SMALL_ENCODED;
+        bencher.bench(|| {
+            black_box(postcard::from_bytes::<ScalarVecSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*VEC_SCALAR_SMALL_ENCODED;
+        let deser = &*FAD_VEC_SCALAR;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<ScalarVecFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
+
+mod vec_scalar_medium {
+    use super::*;
+
+    #[divan::bench]
+    fn postcard_serde(bencher: Bencher) {
+        let data = &*VEC_SCALAR_MEDIUM_ENCODED;
+        bencher.bench(|| {
+            black_box(postcard::from_bytes::<ScalarVecSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*VEC_SCALAR_MEDIUM_ENCODED;
+        let deser = &*FAD_VEC_SCALAR;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<ScalarVecFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
+
+mod vec_struct {
+    use super::*;
+
+    #[divan::bench]
+    fn postcard_serde(bencher: Bencher) {
+        let data = &*VEC_STRUCT_ENCODED;
+        bencher.bench(|| {
+            black_box(postcard::from_bytes::<StructVecSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*VEC_STRUCT_ENCODED;
+        let deser = &*FAD_VEC_STRUCT;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<StructVecFacet>(deser, black_box(data)).unwrap())
         });
     }
 }

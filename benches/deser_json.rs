@@ -274,6 +274,30 @@ enum ApiResponseFacet {
     },
 }
 
+// ── Shared types: vec of scalars ──────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct ScalarVecSerde {
+    values: Vec<u32>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct ScalarVecFacet {
+    values: Vec<u32>,
+}
+
+// ── Shared types: vec of structs ──────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct StructVecSerde {
+    friends: Vec<FriendSerde>,
+}
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct StructVecFacet {
+    friends: Vec<FriendFacet>,
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_JSON: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
@@ -300,6 +324,17 @@ static UNTAGGED_VALUE_TYPE_JSON: &[u8] = br#"{"value": 42}"#;
 
 static UNTAGGED_NESTED_KEY_JSON: &[u8] =
     br#"{"status": 200, "data": {"items": 5}}"#;
+
+static VEC_SCALAR_SMALL_JSON: &[u8] = br#"{"values": [1, 2, 3]}"#;
+
+static VEC_SCALAR_MEDIUM_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    serde_json::to_vec(&ScalarVecSerde {
+        values: (0..100).collect(),
+    })
+    .unwrap()
+});
+
+static VEC_STRUCT_JSON: &[u8] = br#"{"friends": [{"age": 25, "name": "Alice"}, {"age": 30, "name": "Bob"}, {"age": 35, "name": "Charlie"}]}"#;
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
@@ -345,6 +380,14 @@ static FAD_UNTAGGED_VALUE_TYPE: LazyLock<fad::compiler::CompiledDeser> = LazyLoc
 
 static FAD_UNTAGGED_NESTED_KEY: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(ApiResponseFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(ScalarVecFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(StructVecFacet::SHAPE, &fad::json::FadJson)
 });
 
 static FACET_JSON_JIT_FLAT: LazyLock<
@@ -651,6 +694,79 @@ mod enum_untagged_nested_key {
             black_box(
                 fad::deserialize::<ApiResponseFacet>(deser, black_box(UNTAGGED_NESTED_KEY_JSON))
                     .unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: Vec<u32> (3 elements) ─────────────────────────────────────
+
+mod vec_scalar_small {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<ScalarVecSerde>(black_box(VEC_SCALAR_SMALL_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_VEC_SCALAR;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<ScalarVecFacet>(deser, black_box(VEC_SCALAR_SMALL_JSON)).unwrap(),
+            )
+        });
+    }
+}
+
+// ── Benchmarks: Vec<u32> (100 elements) ───────────────────────────────────
+
+mod vec_scalar_medium {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        let data = &*VEC_SCALAR_MEDIUM_JSON;
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<ScalarVecSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let data = &*VEC_SCALAR_MEDIUM_JSON;
+        let deser = &*FAD_VEC_SCALAR;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<ScalarVecFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: Vec<Friend> (3 structs) ───────────────────────────────────
+
+mod vec_struct {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json(bencher: Bencher) {
+        bencher.bench(|| {
+            black_box(
+                serde_json::from_slice::<StructVecSerde>(black_box(VEC_STRUCT_JSON)).unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    fn fad(bencher: Bencher) {
+        let deser = &*FAD_VEC_STRUCT;
+        bencher.bench(|| {
+            black_box(
+                fad::deserialize::<StructVecFacet>(deser, black_box(VEC_STRUCT_JSON)).unwrap(),
             )
         });
     }
