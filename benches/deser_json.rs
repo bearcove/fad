@@ -298,6 +298,18 @@ struct StructVecFacet {
     friends: Vec<FriendFacet>,
 }
 
+// ── Shared types: string-heavy payload ────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct StringBagSerde {
+    values: Vec<String>,
+}
+
+#[derive(Facet, Debug, PartialEq)]
+struct StringBagFacet {
+    values: Vec<String>,
+}
+
 // ── Encoded test data ───────────────────────────────────────────────────────
 
 static FLAT_JSON: &[u8] = br#"{"age": 42, "name": "Alice"}"#;
@@ -335,6 +347,17 @@ static VEC_SCALAR_MEDIUM_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
 });
 
 static VEC_STRUCT_JSON: &[u8] = br#"{"friends": [{"age": 25, "name": "Alice"}, {"age": 30, "name": "Bob"}, {"age": 35, "name": "Charlie"}]}"#;
+
+static STRING_HEAVY_JSON_BYTES: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let values = (0..4096)
+        .map(|i| format!("user-{i:04}-alpha-beta-gamma-delta-epsilon-zeta-theta-lambda"))
+        .collect();
+    serde_json::to_vec(&StringBagSerde { values }).unwrap()
+});
+
+static STRING_HEAVY_JSON_TEXT: LazyLock<String> = LazyLock::new(|| {
+    String::from_utf8(STRING_HEAVY_JSON_BYTES.clone()).unwrap()
+});
 
 // ── Cached compiled deserializers ───────────────────────────────────────────
 
@@ -388,6 +411,10 @@ static FAD_VEC_SCALAR: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(||
 
 static FAD_VEC_STRUCT: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
     fad::compile_deser(StructVecFacet::SHAPE, &fad::json::FadJson)
+});
+
+static FAD_STRING_HEAVY: LazyLock<fad::compiler::CompiledDeser> = LazyLock::new(|| {
+    fad::compile_deser(StringBagFacet::SHAPE, &fad::json::FadJson)
 });
 
 static FACET_JSON_JIT_FLAT: LazyLock<
@@ -802,6 +829,39 @@ mod string_escapes {
         let deser = &*FAD_ESCAPE;
         bencher.bench(|| {
             black_box(fad::deserialize::<FriendFacet>(deser, black_box(ESCAPE_JSON)).unwrap())
+        });
+    }
+}
+
+// ── Benchmarks: string-heavy payload (trusted UTF-8 path) ────────────────
+
+#[divan::bench_group(sample_size = 1000, sample_count = 1000)]
+mod string_heavy_utf8_trust {
+    use super::*;
+
+    #[divan::bench]
+    fn serde_json_from_slice(bencher: Bencher) {
+        let data = &*STRING_HEAVY_JSON_BYTES;
+        bencher.bench(|| {
+            black_box(serde_json::from_slice::<StringBagSerde>(black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad_from_bytes(bencher: Bencher) {
+        let data = &*STRING_HEAVY_JSON_BYTES;
+        let deser = &*FAD_STRING_HEAVY;
+        bencher.bench(|| {
+            black_box(fad::deserialize::<StringBagFacet>(deser, black_box(data)).unwrap())
+        });
+    }
+
+    #[divan::bench]
+    fn fad_from_str(bencher: Bencher) {
+        let data = &*STRING_HEAVY_JSON_TEXT;
+        let deser = &*FAD_STRING_HEAVY;
+        bencher.bench(|| {
+            black_box(fad::from_str::<StringBagFacet>(deser, black_box(data)).unwrap())
         });
     }
 }
