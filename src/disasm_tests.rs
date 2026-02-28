@@ -3,6 +3,8 @@
 use crate::compiler::CompiledDeser;
 use facet::Facet;
 use std::fmt::Write;
+#[cfg(target_arch = "x86_64")]
+use yaxpeax_arch::LengthedInstruction;
 use yaxpeax_arch::{Decoder, U8Reader};
 
 #[derive(Facet)]
