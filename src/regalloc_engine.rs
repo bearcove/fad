@@ -251,8 +251,8 @@ fn machine_env() -> MachineEnv {
     for n in 0..=8 {
         non_pref_int_regs.push(preg_int(n));
     }
-    non_pref_int_regs.push(preg_int(10));
-    non_pref_int_regs.push(preg_int(16));
+    // x10/x16 are used as fixed backend temporaries during lowering.
+    // Keep them out of allocatable sets to avoid silent clobbers.
     non_pref_int_regs.push(preg_int(17));
 
     let non_preferred_int = set_from_regs(&non_pref_int_regs);
