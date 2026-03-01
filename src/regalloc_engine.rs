@@ -19,6 +19,7 @@ pub struct AllocatedFunction {
     pub num_spillslots: usize,
     pub edits: Vec<(regalloc2::ProgPoint, Edit)>,
     pub inst_allocs: Vec<Vec<Allocation>>,
+    pub inst_linear_op_indices: Vec<Option<usize>>,
 }
 
 /// Materialized allocation result for a full RA-MIR program.
@@ -77,6 +78,7 @@ enum BlockTermKind {
 struct WorkBlock {
     raw_insts: Vec<crate::regalloc_mir::RaInst>,
     term_kind: BlockTermKind,
+    term_linear_op_index: Option<usize>,
     term_uses: Vec<crate::ir::VReg>,
     succs: Vec<usize>,
     preds: Vec<usize>,
@@ -88,6 +90,7 @@ struct WorkBlock {
 struct AdapterFunction {
     blocks: Vec<AdapterBlock>,
     insts: Vec<AdapterInst>,
+    inst_linear_op_indices: Vec<Option<usize>>,
     num_vregs: usize,
     empty_vregs: Vec<VReg>,
 }
@@ -335,6 +338,7 @@ fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
             WorkBlock {
                 raw_insts: b.insts.clone(),
                 term_kind,
+                term_linear_op_index: b.term_linear_op_index,
                 term_uses: lower_term_uses(&b.term),
                 succs: b.succs.iter().map(|s| s.to.0 as usize).collect(),
                 preds: b.preds.iter().map(|p| p.0 as usize).collect(),
@@ -357,6 +361,7 @@ fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
             let edge_block = WorkBlock {
                 raw_insts: Vec::new(),
                 term_kind: BlockTermKind::BranchLike,
+                term_linear_op_index: None,
                 term_uses: Vec::new(),
                 succs: vec![to],
                 preds: vec![from],
@@ -385,6 +390,7 @@ impl AdapterFunction {
     fn from_ra(func: &RaFunction, num_vregs: usize) -> Self {
         let mut blocks = split_critical_edges(func);
         let mut adapter_insts = Vec::<AdapterInst>::new();
+        let mut inst_linear_op_indices = Vec::<Option<usize>>::new();
         let mut adapter_blocks = Vec::<AdapterBlock>::new();
 
         for b in &mut blocks {
@@ -411,6 +417,7 @@ impl AdapterFunction {
                     is_branch: false,
                     is_ret: false,
                 });
+                inst_linear_op_indices.push(Some(inst.linear_op_index));
             }
 
             let term_operands = b
@@ -428,6 +435,7 @@ impl AdapterFunction {
                 is_branch,
                 is_ret,
             });
+            inst_linear_op_indices.push(b.term_linear_op_index);
 
             let end = Inst::new(adapter_insts.len());
             adapter_blocks.push(AdapterBlock {
@@ -446,6 +454,7 @@ impl AdapterFunction {
         Self {
             blocks: adapter_blocks,
             insts: adapter_insts,
+            inst_linear_op_indices,
             num_vregs,
             empty_vregs: Vec::new(),
         }
@@ -535,6 +544,7 @@ fn materialize_output(
         num_spillslots: out.num_spillslots,
         edits: out.edits.clone(),
         inst_allocs,
+        inst_linear_op_indices: adapter.inst_linear_op_indices.clone(),
     }
 }
 

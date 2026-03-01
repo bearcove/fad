@@ -49,6 +49,7 @@ pub struct RaClobbers {
 
 #[derive(Debug, Clone)]
 pub struct RaInst {
+    pub linear_op_index: usize,
     pub op: LinearOp,
     pub operands: Vec<RaOperand>,
     pub clobbers: RaClobbers,
@@ -126,6 +127,7 @@ pub struct RaBlock {
     pub label: Option<LabelId>,
     pub params: Vec<VReg>,
     pub insts: Vec<RaInst>,
+    pub term_linear_op_index: Option<usize>,
     pub term: RaTerminator,
     pub preds: Vec<BlockId>,
     pub succs: Vec<RaEdge>,
@@ -254,6 +256,7 @@ fn lower_function(
                 label: None,
                 params: Vec::new(),
                 insts: Vec::new(),
+                term_linear_op_index: None,
                 term: RaTerminator::Return,
                 preds: Vec::new(),
                 succs: Vec::new(),
@@ -310,21 +313,25 @@ fn lower_function(
 
         let mut insts = Vec::new();
         let mut term: Option<TempTerm> = None;
+        let mut term_linear_op_index = None;
         while cursor < end {
             let op = ops[cursor].clone();
             match op {
                 LinearOp::Branch(target) => {
                     term = Some(TempTerm::Branch(target));
+                    term_linear_op_index = Some(cursor);
                     cursor += 1;
                     break;
                 }
                 LinearOp::BranchIf { cond, target } => {
                     term = Some(TempTerm::BranchIf { cond, target });
+                    term_linear_op_index = Some(cursor);
                     cursor += 1;
                     break;
                 }
                 LinearOp::BranchIfZero { cond, target } => {
                     term = Some(TempTerm::BranchIfZero { cond, target });
+                    term_linear_op_index = Some(cursor);
                     cursor += 1;
                     break;
                 }
@@ -338,11 +345,13 @@ fn lower_function(
                         labels,
                         default,
                     });
+                    term_linear_op_index = Some(cursor);
                     cursor += 1;
                     break;
                 }
                 LinearOp::ErrorExit { code } => {
                     term = Some(TempTerm::ErrorExit(code));
+                    term_linear_op_index = Some(cursor);
                     cursor += 1;
                     break;
                 }
@@ -350,7 +359,7 @@ fn lower_function(
                     panic!("unexpected structural op in function body: {:?}", op);
                 }
                 other => {
-                    insts.push(lower_inst(other));
+                    insts.push(lower_inst(cursor, other));
                     cursor += 1;
                 }
             }
@@ -373,6 +382,7 @@ fn lower_function(
             label,
             params: Vec::new(),
             insts,
+            term_linear_op_index,
             term: RaTerminator::Return,
             preds: Vec::new(),
             succs: Vec::new(),
@@ -538,7 +548,7 @@ fn push_def(out: &mut Vec<RaOperand>, v: VReg, fixed: Option<FixedReg>) {
     });
 }
 
-fn lower_inst(op: LinearOp) -> RaInst {
+fn lower_inst(linear_op_index: usize, op: LinearOp) -> RaInst {
     let mut operands = Vec::new();
     let mut clobbers = RaClobbers::default();
 
@@ -571,7 +581,8 @@ fn lower_inst(op: LinearOp) -> RaInst {
         }
         LinearOp::CallIntrinsic { args, dst, .. } => {
             for (i, &arg) in args.iter().enumerate() {
-                push_use(&mut operands, arg, Some(FixedReg::AbiArg(i as u8)));
+                // x0 is reserved for ctx in intrinsic calls; data args start at x1.
+                push_use(&mut operands, arg, Some(FixedReg::AbiArg((i + 1) as u8)));
             }
             if let Some(dst) = dst {
                 push_def(&mut operands, *dst, Some(FixedReg::AbiRet(0)));
@@ -593,7 +604,8 @@ fn lower_inst(op: LinearOp) -> RaInst {
         }
         LinearOp::CallLambda { args, results, .. } => {
             for (i, &arg) in args.iter().enumerate() {
-                push_use(&mut operands, arg, Some(FixedReg::AbiArg(i as u8)));
+                // x0/x1 are reserved for out_ptr + ctx in lambda calls; data args start at x2.
+                push_use(&mut operands, arg, Some(FixedReg::AbiArg((i + 2) as u8)));
             }
             for (i, &r) in results.iter().enumerate() {
                 push_def(&mut operands, r, Some(FixedReg::AbiRet(i as u8)));
@@ -623,6 +635,7 @@ fn lower_inst(op: LinearOp) -> RaInst {
     }
 
     RaInst {
+        linear_op_index,
         op,
         operands,
         clobbers,

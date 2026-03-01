@@ -1969,16 +1969,13 @@ pub fn compile_linear_ir_decoder(
     // r[impl ir.regalloc.ra-mir]
     // Build allocator-oriented CFG IR before machine emission.
     let ra_mir = crate::regalloc_mir::lower_linear_ir(ir);
-
     // r[impl ir.regalloc.engine]
-    // Optional: run regalloc2 over RA-MIR for integration validation.
-    if std::env::var_os("FAD_REGALLOC2_VALIDATE").is_some() {
-        let _alloc = crate::regalloc_engine::allocate_program(&ra_mir)
-            .unwrap_or_else(|err| panic!("regalloc2 allocation failed: {err}"));
-    }
+    // Run regalloc2 over RA-MIR and thread allocation artifacts into emission.
+    let regalloc_alloc = crate::regalloc_engine::allocate_program(&ra_mir)
+        .unwrap_or_else(|err| panic!("regalloc2 allocation failed: {err}"));
 
     let crate::ir_backend::LinearBackendResult { buf, entry } =
-        crate::ir_backend::compile_linear_ir(ir);
+        crate::ir_backend::compile_linear_ir_with_alloc(ir, &regalloc_alloc);
     let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
         unsafe { core::mem::transmute(buf.ptr(entry)) };
 
