@@ -423,12 +423,13 @@ fn main() {
 
     // ── Options (both formats, deser only — encoder doesn't support Option yet) ──
 
-    bench!(v, option_none, OptionScalar, OptionScalar { value: None });
+    bench!(v, option_none, OptionScalar, OptionScalar { value: None }, +ir);
     bench!(
         v,
         option_scalar,
         OptionScalar,
-        OptionScalar { value: Some(42) }
+        OptionScalar { value: Some(42) },
+        +ir
     );
     bench!(
         v,
@@ -436,7 +437,8 @@ fn main() {
         OptionStr,
         OptionStr {
             value: Some("hello world".into())
-        }
+        },
+        +ir
     );
     bench!(
         v,
@@ -447,7 +449,8 @@ fn main() {
                 age: 25,
                 name: "Alice".into()
             }),
-        }
+        },
+        +ir
     );
 
     // ── Collections (both formats, deser only — encoder doesn't support Vec yet) ─
@@ -458,7 +461,8 @@ fn main() {
         ScalarVec,
         ScalarVec {
             values: vec![1, 2, 3],
-        }
+        },
+        +ir
     );
 
     bench!(
@@ -467,7 +471,8 @@ fn main() {
         ScalarVec,
         ScalarVec {
             values: (0..100).collect(),
-        }
+        },
+        +ir
     );
 
     bench!(
@@ -476,7 +481,8 @@ fn main() {
         ScalarVec,
         ScalarVec {
             values: (0..10_000).collect(),
-        }
+        },
+        +ir
     );
 
     bench!(
@@ -499,6 +505,8 @@ fn main() {
                 },
             ],
         }
+        ,
+        +ir
     );
 
     bench!(
@@ -516,7 +524,8 @@ fn main() {
                 "grace".into(),
                 "henry".into(),
             ],
-        }
+        },
+        +ir
     );
 
     bench!(
@@ -584,7 +593,8 @@ fn main() {
             values: (0..1024)
                 .map(|i| format!("user-{i:04}-alpha-beta-gamma-delta-epsilon-zeta-theta-lambda"))
                 .collect(),
-        }
+        },
+        +ir
     );
 
     // ── String escaping (JSON only — values contain chars serde will escape) ─

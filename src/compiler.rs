@@ -1646,11 +1646,12 @@ fn lower_shape_via_ir<F: IrDecoder + ?Sized>(
     }
 
     if let Def::List(list_def) = &shape.def {
-        let _ = (rb, list_def, base_offset);
-        panic!(
-            "IR path does not support Vec/List lowering yet: {}",
-            shape.type_identifier
-        );
+        let vec_offsets = crate::malum::discover_vec_offsets(list_def, shape);
+
+        decoder.lower_vec(rb, base_offset, list_def.t, &vec_offsets, &mut |inner_rb| {
+            lower_shape_via_ir(decoder, inner_rb, list_def.t, 0);
+        });
+        return;
     }
 
     if let Def::Map(map_def) = &shape.def {

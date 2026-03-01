@@ -467,6 +467,7 @@ pub trait IrDecoder {
         _builder: &mut RegionBuilder<'_>,
         _offset: usize,
         _elem_shape: &'static facet::Shape,
+        _vec_offsets: &crate::malum::VecOffsets,
         _lower_elem: &mut dyn FnMut(&mut RegionBuilder<'_>),
     ) {
         panic!("vec lowering not yet implemented for this format");

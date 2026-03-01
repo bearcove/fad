@@ -789,6 +789,7 @@ impl IrDecoder for FadPostcard {
         builder: &mut RegionBuilder<'_>,
         offset: usize,
         elem_shape: &'static facet::Shape,
+        vec_offsets: &crate::malum::VecOffsets,
         lower_elem: &mut dyn FnMut(&mut RegionBuilder<'_>),
     ) {
         let offset = offset as u32;
@@ -798,65 +799,76 @@ impl IrDecoder for FadPostcard {
             .expect("Vec element must be Sized");
         let elem_size = elem_layout.size() as u64;
         let elem_align = elem_layout.align() as u64;
+        let usize_width = if core::mem::size_of::<usize>() == 8 {
+            crate::ir::Width::W8
+        } else {
+            crate::ir::Width::W4
+        };
 
         // Read element count (varint).
         let count = builder
             .call_intrinsic(ifn(intrinsics::fad_read_varint_u32 as _), &[], 0, true)
             .expect("varint read should produce a result");
 
-        // Allocate buffer: fad_vec_alloc(ctx, count, elem_size, elem_align) → buf ptr.
-        let size_arg = builder.const_val(elem_size);
-        let align_arg = builder.const_val(elem_align);
-        let buf = builder
-            .call_intrinsic(
-                ifn(intrinsics::fad_vec_alloc as _),
-                &[count, size_arg, align_arg],
-                0,
-                true,
-            )
-            .expect("vec_alloc should produce a result");
+        // Branch on count: 0 => empty Vec, nonzero => allocate and fill.
+        builder.gamma(count, &[], 2, |branch_idx, rb| {
+            match branch_idx {
+                0 => {
+                    // Empty Vec: ptr = dangling(elem_align), len=0, cap=0.
+                    let ptr = rb.const_val(elem_align);
+                    let zero = rb.const_val(0);
+                    rb.write_to_field(ptr, offset + vec_offsets.ptr_offset, usize_width);
+                    rb.write_to_field(zero, offset + vec_offsets.len_offset, usize_width);
+                    rb.write_to_field(zero, offset + vec_offsets.cap_offset, usize_width);
+                    rb.set_results(&[]);
+                }
+                1 => {
+                    // Allocate buffer: fad_vec_alloc(ctx, count, elem_size, elem_align) → buf ptr.
+                    let size_arg = rb.const_val(elem_size);
+                    let align_arg = rb.const_val(elem_align);
+                    let buf = rb
+                        .call_intrinsic(
+                            ifn(intrinsics::fad_vec_alloc as _),
+                            &[count, size_arg, align_arg],
+                            0,
+                            true,
+                        )
+                        .expect("vec_alloc should produce a result");
 
-        // Loop: theta over count elements.
-        // Loop vars: [counter, buf_cursor]
-        // counter starts at count, decrements each iteration, exit when 0.
-        let zero = builder.const_val(0);
-        let results = builder.theta(&[count, buf], |rb| {
-            let args = rb.region_args(2);
-            let counter = args[0];
-            let _buf_cursor = args[1];
+                    // Redirect out pointer to the element cursor while lowering elements.
+                    let saved_out = rb.save_out_ptr();
+                    rb.set_out_ptr(buf);
 
-            // Deserialize one element at current position.
-            lower_elem(rb);
+                    // Loop: theta over count elements.
+                    // Loop vars: [counter, cursor]
+                    let _results = rb.theta(&[count, buf], |inner_rb| {
+                        let args = inner_rb.region_args(2);
+                        let counter = args[0];
+                        let cursor = args[1];
 
-            // Decrement counter.
-            let one = rb.const_val(1);
-            let new_counter = rb.binop(crate::ir::IrOp::Sub, counter, one);
+                        inner_rb.set_out_ptr(cursor);
+                        lower_elem(inner_rb);
 
-            // Advance buf cursor by elem_size.
-            let stride = rb.const_val(elem_size);
-            let new_cursor = rb.binop(crate::ir::IrOp::Add, _buf_cursor, stride);
+                        let one = inner_rb.const_val(1);
+                        let new_counter = inner_rb.binop(crate::ir::IrOp::Sub, counter, one);
 
-            // Predicate: new_counter != 0 → continue.
-            // (theta predicate: 0 = exit, nonzero = continue)
-            rb.set_results(&[new_counter, new_counter, new_cursor]);
+                        let stride = inner_rb.const_val(elem_size);
+                        let new_cursor = inner_rb.binop(crate::ir::IrOp::Add, cursor, stride);
+
+                        // Predicate: new_counter != 0 → continue.
+                        inner_rb.set_results(&[new_counter, new_counter, new_cursor]);
+                    });
+
+                    // Restore outer out pointer and write Vec fields.
+                    rb.set_out_ptr(saved_out);
+                    rb.write_to_field(buf, offset + vec_offsets.ptr_offset, usize_width);
+                    rb.write_to_field(count, offset + vec_offsets.len_offset, usize_width);
+                    rb.write_to_field(count, offset + vec_offsets.cap_offset, usize_width);
+                    rb.set_results(&[]);
+                }
+                _ => unreachable!(),
+            }
         });
-
-        // Write Vec fields: ptr, len, cap at out + offset.
-        // The final buf pointer and count are in results.
-        // We need to write (buf, count, count) into the Vec's (ptr, len, cap).
-        // This will be handled by a write intrinsic or direct field writes.
-        // For now, use call_intrinsic to write the Vec fields.
-        let _final_counter = &results[0]; // should be 0
-        let _final_cursor = &results[1]; // buf + count * elem_size
-
-        // Write ptr/len/cap. In the dynasm path this is emit_vec_store which
-        // writes 3 fields. In IR, we use write_to_field for each.
-        // buf → ptr field, count → len field, count → cap field.
-        // Vec layout offsets are discovered at compile time (malum), but for
-        // the IR we just model this as an intrinsic call that handles it.
-        // TODO: this needs the vec_offsets info, which requires plumbing changes.
-        // For now, skip the store — the test just verifies the IR structure.
-        let _ = (buf, count, offset, zero, results);
     }
 }
 
@@ -1231,26 +1243,36 @@ mod ir_tests {
         let mut builder = IrBuilder::new(test_shape());
         {
             let mut rb = builder.root_region();
-            FadPostcard.lower_vec(&mut rb, 0, <u8 as facet::Facet>::SHAPE, &mut |rb| {
-                FadPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
-            });
+            let list_shape = <Vec<u8> as facet::Facet>::SHAPE;
+            let list_def = match &list_shape.def {
+                facet::Def::List(def) => def,
+                other => panic!("expected List def, got {other:?}"),
+            };
+            let vec_offsets = crate::malum::discover_vec_offsets(list_def, list_shape);
+            FadPostcard.lower_vec(
+                &mut rb,
+                0,
+                <u8 as facet::Facet>::SHAPE,
+                &vec_offsets,
+                &mut |rb| {
+                    FadPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
+                },
+            );
             rb.set_results(&[]);
         }
         let func = builder.finish();
 
-        let body = func.root_body();
-        let nodes = &func.regions[body].nodes;
-
-        // Find the theta node — it should be the last structured node.
-        let has_theta = nodes
+        // Theta now lives in the non-empty gamma branch body.
+        let has_theta = func
+            .nodes
             .iter()
-            .any(|&nid| matches!(&func.nodes[nid].kind, NodeKind::Theta { .. }));
+            .any(|(_, n)| matches!(&n.kind, NodeKind::Theta { .. }));
         assert!(has_theta, "vec lowering should produce a theta node");
 
-        // Find the varint read (first CallIntrinsic with has_result=true).
-        let has_count_read = nodes.iter().any(|&nid| {
+        // Find the varint read (CallIntrinsic with has_result=true).
+        let has_count_read = func.nodes.iter().any(|(_, n)| {
             matches!(
-                &func.nodes[nid].kind,
+                &n.kind,
                 NodeKind::Simple(IrOp::CallIntrinsic {
                     func: f,
                     has_result: true,
@@ -1261,9 +1283,9 @@ mod ir_tests {
         assert!(has_count_read, "vec should read count via varint");
 
         // Find the alloc call.
-        let has_alloc = nodes.iter().any(|&nid| {
+        let has_alloc = func.nodes.iter().any(|(_, n)| {
             matches!(
-                &func.nodes[nid].kind,
+                &n.kind,
                 NodeKind::Simple(IrOp::CallIntrinsic {
                     func: f,
                     has_result: true,
@@ -1274,11 +1296,12 @@ mod ir_tests {
         assert!(has_alloc, "vec should call fad_vec_alloc");
 
         // Verify theta body has the element read.
-        let theta_node = nodes
+        let theta_node = func
+            .nodes
             .iter()
-            .find(|&&nid| matches!(&func.nodes[nid].kind, NodeKind::Theta { .. }))
+            .find_map(|(nid, n)| matches!(&n.kind, NodeKind::Theta { .. }).then_some(nid))
             .unwrap();
-        if let NodeKind::Theta { body: theta_body } = &func.nodes[*theta_node].kind {
+        if let NodeKind::Theta { body: theta_body } = &func.nodes[theta_node].kind {
             let theta_nodes = &func.regions[*theta_body].nodes;
             // Should have: CallIntrinsic (read u8) + Const(1) + Sub + Const(elem_size) + Add.
             assert!(

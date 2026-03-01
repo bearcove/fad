@@ -2340,6 +2340,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn postcard_vec_u32_via_ir() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct NumsSerde {
+            vals: Vec<u32>,
+        }
+
+        let source = NumsSerde {
+            vals: vec![1, 2, 3],
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_decoder_via_ir(Nums::SHAPE, &postcard::FadPostcard);
+        let result: Nums = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            Nums {
+                vals: vec![1, 2, 3]
+            }
+        );
+    }
+
     // r[verify deser.postcard.seq]
     #[test]
     fn postcard_vec_empty() {
@@ -2378,6 +2404,32 @@ mod tests {
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
         let deser = compile_decoder(Names::SHAPE, &postcard::FadPostcard);
+        let result: Names = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            Names {
+                items: vec!["hello".into(), "world".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn postcard_vec_string_via_ir() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Names {
+            items: Vec<String>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct NamesSerde {
+            items: Vec<String>,
+        }
+
+        let source = NamesSerde {
+            items: vec!["hello".into(), "world".into()],
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_decoder_via_ir(Names::SHAPE, &postcard::FadPostcard);
         let result: Names = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
