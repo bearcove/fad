@@ -22,12 +22,12 @@ fn main() {
     // Build a symbol table: intrinsic address → name.
     let syms = build_symbol_table();
 
-    let deser = fad::compile_decoder(MapStructFacet::SHAPE, &fad::json::FadJson);
+    let deser = kajit::compile_decoder(MapStructFacet::SHAPE, &kajit::json::KajitJson);
     let code = deser.code();
     let base = code.as_ptr() as u64;
     let entry = deser.entry_offset();
 
-    println!("=== fad JSON HashMap<String, FriendFacet> ===");
+    println!("=== kajit JSON HashMap<String, FriendFacet> ===");
     println!(
         "code buffer: {} bytes ({:#x}), entry: {entry:#x}",
         code.len(),
@@ -49,14 +49,14 @@ fn main() {
 }
 
 fn build_symbol_table() -> HashMap<u64, &'static str> {
-    use fad::intrinsics::{fad_map_build, fad_vec_alloc, fad_vec_free, fad_vec_grow};
-    use fad::json_intrinsics::{
-        fad_json_comma_or_end_array, fad_json_comma_or_end_object, fad_json_expect_colon,
-        fad_json_expect_object_start, fad_json_key_equals, fad_json_peek_after_ws,
-        fad_json_read_bool, fad_json_read_f32, fad_json_read_f64, fad_json_read_i8,
-        fad_json_read_i16, fad_json_read_i32, fad_json_read_i64, fad_json_read_key,
-        fad_json_read_string_value, fad_json_read_u8, fad_json_read_u16, fad_json_read_u32,
-        fad_json_read_u64, fad_json_skip_value,
+    use kajit::intrinsics::{kajit_map_build, kajit_vec_alloc, kajit_vec_free, kajit_vec_grow};
+    use kajit::json_intrinsics::{
+        kajit_json_comma_or_end_array, kajit_json_comma_or_end_object, kajit_json_expect_colon,
+        kajit_json_expect_object_start, kajit_json_key_equals, kajit_json_peek_after_ws,
+        kajit_json_read_bool, kajit_json_read_f32, kajit_json_read_f64, kajit_json_read_i8,
+        kajit_json_read_i16, kajit_json_read_i32, kajit_json_read_i64, kajit_json_read_key,
+        kajit_json_read_string_value, kajit_json_read_u8, kajit_json_read_u16, kajit_json_read_u32,
+        kajit_json_read_u64, kajit_json_skip_value,
     };
 
     let mut m = HashMap::new();
@@ -65,30 +65,30 @@ fn build_symbol_table() -> HashMap<u64, &'static str> {
             m.insert($fn as *const () as u64, stringify!($fn));
         };
     }
-    sym!(fad_json_expect_object_start);
-    sym!(fad_json_peek_after_ws);
-    sym!(fad_json_read_key);
-    sym!(fad_json_expect_colon);
-    sym!(fad_json_key_equals);
-    sym!(fad_json_skip_value);
-    sym!(fad_json_comma_or_end_object);
-    sym!(fad_json_comma_or_end_array);
-    sym!(fad_json_read_u8);
-    sym!(fad_json_read_u16);
-    sym!(fad_json_read_u32);
-    sym!(fad_json_read_u64);
-    sym!(fad_json_read_i8);
-    sym!(fad_json_read_i16);
-    sym!(fad_json_read_i32);
-    sym!(fad_json_read_i64);
-    sym!(fad_json_read_f32);
-    sym!(fad_json_read_f64);
-    sym!(fad_json_read_bool);
-    sym!(fad_json_read_string_value);
-    sym!(fad_vec_alloc);
-    sym!(fad_vec_grow);
-    sym!(fad_vec_free);
-    sym!(fad_map_build);
+    sym!(kajit_json_expect_object_start);
+    sym!(kajit_json_peek_after_ws);
+    sym!(kajit_json_read_key);
+    sym!(kajit_json_expect_colon);
+    sym!(kajit_json_key_equals);
+    sym!(kajit_json_skip_value);
+    sym!(kajit_json_comma_or_end_object);
+    sym!(kajit_json_comma_or_end_array);
+    sym!(kajit_json_read_u8);
+    sym!(kajit_json_read_u16);
+    sym!(kajit_json_read_u32);
+    sym!(kajit_json_read_u64);
+    sym!(kajit_json_read_i8);
+    sym!(kajit_json_read_i16);
+    sym!(kajit_json_read_i32);
+    sym!(kajit_json_read_i64);
+    sym!(kajit_json_read_f32);
+    sym!(kajit_json_read_f64);
+    sym!(kajit_json_read_bool);
+    sym!(kajit_json_read_string_value);
+    sym!(kajit_vec_alloc);
+    sym!(kajit_vec_grow);
+    sym!(kajit_vec_free);
+    sym!(kajit_map_build);
     m
 }
 

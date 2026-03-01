@@ -1595,7 +1595,7 @@ mod tests {
             let mut rb = builder.root_region();
             rb.bounds_check(1);
             rb.call_intrinsic(
-                IntrinsicFn(intrinsics::fad_read_bool as *const () as usize),
+                IntrinsicFn(intrinsics::kajit_read_bool as *const () as usize),
                 &[],
                 0,
                 false,

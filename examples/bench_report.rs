@@ -204,12 +204,15 @@ fn collect_vec_scalar_signals(sections: &[Section]) -> Vec<VecScalarSignalsRow> 
 
     // r[impl ir.regalloc.regressions]
     let legacy =
-        fad::compile_decoder_legacy(VecScalarSignalShape::SHAPE, &fad::postcard::FadPostcard);
-    let ir = fad::compile_decoder_via_ir(VecScalarSignalShape::SHAPE, &fad::postcard::FadPostcard);
+        kajit::compile_decoder_legacy(VecScalarSignalShape::SHAPE, &kajit::postcard::KajitPostcard);
+    let ir =
+        kajit::compile_decoder_via_ir(VecScalarSignalShape::SHAPE, &kajit::postcard::KajitPostcard);
 
     let legacy_signals = analyze_codegen_signals(legacy.code(), None);
-    let ir_edits =
-        fad::regalloc_edit_count_via_ir(VecScalarSignalShape::SHAPE, &fad::postcard::FadPostcard);
+    let ir_edits = kajit::regalloc_edit_count_via_ir(
+        VecScalarSignalShape::SHAPE,
+        &kajit::postcard::KajitPostcard,
+    );
     let ir_signals = analyze_codegen_signals(ir.code(), Some(ir_edits));
 
     present
@@ -542,8 +545,8 @@ fn display_name(name: &str) -> String {
         .unwrap_or(name);
     match normalize_impl_name(base) {
         "serde" => "serde".to_string(),
-        "fad_dynasm" => "fad_dynasm".to_string(),
-        "fad_ir" => "fad_ir".to_string(),
+        "kajit_dynasm" => "kajit_dynasm".to_string(),
+        "kajit_ir" => "kajit_ir".to_string(),
         other => other.to_string(),
     }
 }
@@ -558,30 +561,30 @@ struct PairDef {
 
 const PAIRS: [PairDef; 3] = [
     PairDef {
-        id: "serde-vs-fad-dynasm",
+        id: "serde-vs-kajit-dynasm",
         left: "serde",
-        right: "fad_dynasm",
-        label: "serde vs fad_dynasm",
+        right: "kajit_dynasm",
+        label: "serde vs kajit_dynasm",
     },
     PairDef {
-        id: "serde-vs-fad-ir",
+        id: "serde-vs-kajit-ir",
         left: "serde",
-        right: "fad_ir",
-        label: "serde vs fad_ir",
+        right: "kajit_ir",
+        label: "serde vs kajit_ir",
     },
     PairDef {
-        id: "fad-ir-vs-fad-dynasm",
-        left: "fad_ir",
-        right: "fad_dynasm",
-        label: "fad_ir vs fad_dynasm",
+        id: "kajit-ir-vs-kajit-dynasm",
+        left: "kajit_ir",
+        right: "kajit_dynasm",
+        label: "kajit_ir vs kajit_dynasm",
     },
 ];
 
 fn normalize_impl_name(name: &str) -> &str {
     match name {
         "postcard_serde" | "serde_json" => "serde",
-        "legacy" | "fad_legacy" => "fad_dynasm",
-        "ir" => "fad_ir",
+        "legacy" | "kajit_legacy" => "kajit_dynasm",
+        "ir" => "kajit_ir",
         other => other,
     }
 }
@@ -1198,7 +1201,7 @@ footer a:hover{text-decoration:underline}
     write!(h, "{} · ", esc(&meta.datetime)).unwrap();
     write!(
         h,
-        r#"<a href="https://github.com/bearcove/fad/commit/{}" style="color:var(--dim);text-decoration:none">{}</a>"#,
+        r#"<a href="https://github.com/bearcove/kajit/commit/{}" style="color:var(--dim);text-decoration:none">{}</a>"#,
         esc(&meta.commit_full),
         esc(&meta.commit_short)
     )

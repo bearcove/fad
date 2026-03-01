@@ -155,7 +155,7 @@ enum ConfigEnum {
     Redis { host: String, db: u32 },
 }
 
-// ── Flatten (JSON: serde+fad, postcard: fad only) ───────────────────────────
+// ── Flatten (JSON: serde+kajit, postcard: kajit only) ───────────────────────────
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
 struct Metadata {
@@ -348,8 +348,8 @@ fn main() {
             })
             .unwrap()
         });
-        static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder(PostcardAnimal::SHAPE, &fad::postcard::FadPostcard)
+        static DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder(PostcardAnimal::SHAPE, &kajit::postcard::KajitPostcard)
         });
 
         v.push(harness::Bench {
@@ -362,18 +362,20 @@ fn main() {
             }),
         });
         v.push(harness::Bench {
-            name: "postcard_enum/fad_dynasm_deser".into(),
+            name: "postcard_enum/kajit_dynasm_deser".into(),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
                 runner.run(|| {
-                    black_box(fad::deserialize::<PostcardAnimal>(deser, black_box(data)).unwrap());
+                    black_box(
+                        kajit::deserialize::<PostcardAnimal>(deser, black_box(data)).unwrap(),
+                    );
                 });
             }),
         });
     }
 
-    // ── Flatten (JSON: full, postcard: fad-only) ────────────────────────────
+    // ── Flatten (JSON: full, postcard: kajit-only) ────────────────────────────
 
     bench!(
         v,
@@ -389,7 +391,7 @@ fn main() {
         json_only
     );
 
-    // Postcard flatten: serde can't do it, but fad can.
+    // Postcard flatten: serde can't do it, but kajit can.
     {
         static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
             ::postcard::to_allocvec(&DocumentFlat {
@@ -399,16 +401,17 @@ fn main() {
             })
             .unwrap()
         });
-        static DECODER: LazyLock<fad::compiler::CompiledDecoder> =
-            LazyLock::new(|| fad::compile_decoder(Document::SHAPE, &fad::postcard::FadPostcard));
+        static DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder(Document::SHAPE, &kajit::postcard::KajitPostcard)
+        });
 
         v.push(harness::Bench {
-            name: "postcard_flatten/fad_dynasm_deser".into(),
+            name: "postcard_flatten/kajit_dynasm_deser".into(),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
                 runner.run(|| {
-                    black_box(fad::deserialize::<Document>(deser, black_box(data)).unwrap());
+                    black_box(kajit::deserialize::<Document>(deser, black_box(data)).unwrap());
                 });
             }),
         });

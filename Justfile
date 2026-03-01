@@ -1,4 +1,4 @@
-image_name := "fad-test-x86_64"
+image_name := "kajit-test-x86_64"
 docker_platform := "linux/amd64"
 
 list:

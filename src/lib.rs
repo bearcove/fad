@@ -46,16 +46,16 @@ static DECODER_BACKEND: OnceLock<DecoderBackend> = OnceLock::new();
 
 /// Returns the default backend used by [`compile_decoder`].
 ///
-/// Read once from `FAD_DECODER_BACKEND` (`legacy` or `ir`), then cached.
+/// Read once from `KAJIT_DECODER_BACKEND` (`legacy` or `ir`), then cached.
 /// When unset, defaults to `legacy`.
 pub fn decoder_backend() -> DecoderBackend {
-    *DECODER_BACKEND.get_or_init(|| match std::env::var("FAD_DECODER_BACKEND") {
+    *DECODER_BACKEND.get_or_init(|| match std::env::var("KAJIT_DECODER_BACKEND") {
         Ok(value) => DecoderBackend::parse_env(&value).unwrap_or_else(|| {
-            panic!("invalid FAD_DECODER_BACKEND={value:?}; expected \"legacy\" or \"ir\"")
+            panic!("invalid KAJIT_DECODER_BACKEND={value:?}; expected \"legacy\" or \"ir\"")
         }),
         Err(std::env::VarError::NotPresent) => DecoderBackend::Legacy,
         Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("FAD_DECODER_BACKEND must be valid UTF-8")
+            panic!("KAJIT_DECODER_BACKEND must be valid UTF-8")
         }
     })
 }
@@ -229,7 +229,7 @@ mod tests {
         // age=42 → postcard varint 0x2A (42 < 128, so single byte)
         // name="Alice" → varint(5)=0x05 + b"Alice"
         let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
-        let deser = compile_decoder(Friend::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Friend::SHAPE, &postcard::KajitPostcard);
         let result: Friend = deserialize(&deser, &input).unwrap();
         assert_eq!(
             result,
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn postcard_flat_struct_via_ir() {
         let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
-        let deser = compile_decoder_via_ir(Friend::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder_via_ir(Friend::SHAPE, &postcard::KajitPostcard);
         let result: Friend = deserialize(&deser, &input).unwrap();
         assert_eq!(
             result,
@@ -267,7 +267,7 @@ mod tests {
             y: u32,
         }
 
-        let func = crate::compiler::build_decoder_ir(Outer::SHAPE, &postcard::FadPostcard);
+        let func = crate::compiler::build_decoder_ir(Outer::SHAPE, &postcard::KajitPostcard);
         assert!(
             func.lambdas.len() >= 2,
             "expected at least root + nested lambda"
@@ -312,7 +312,7 @@ mod tests {
             y: 99,
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder_via_ir(Outer::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder_via_ir(Outer::SHAPE, &postcard::KajitPostcard);
         let result: Outer = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -326,8 +326,8 @@ mod tests {
     #[test]
     fn postcard_legacy_and_ir_match() {
         let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
-        let legacy = compile_decoder_legacy(Friend::SHAPE, &postcard::FadPostcard);
-        let via_ir = compile_decoder_via_ir(Friend::SHAPE, &postcard::FadPostcard);
+        let legacy = compile_decoder_legacy(Friend::SHAPE, &postcard::KajitPostcard);
+        let via_ir = compile_decoder_via_ir(Friend::SHAPE, &postcard::KajitPostcard);
 
         let a: Friend = deserialize(&legacy, &input).unwrap();
         let b: Friend = deserialize(&via_ir, &input).unwrap();
@@ -340,11 +340,14 @@ mod tests {
 
         let legacy = compile_decoder_with_backend(
             Friend::SHAPE,
-            &postcard::FadPostcard,
+            &postcard::KajitPostcard,
             DecoderBackend::Legacy,
         );
-        let via_ir =
-            compile_decoder_with_backend(Friend::SHAPE, &postcard::FadPostcard, DecoderBackend::Ir);
+        let via_ir = compile_decoder_with_backend(
+            Friend::SHAPE,
+            &postcard::KajitPostcard,
+            DecoderBackend::Ir,
+        );
 
         let a: Friend = deserialize(&legacy, &input).unwrap();
         let b: Friend = deserialize(&via_ir, &input).unwrap();
@@ -354,14 +357,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "IR backend requested")]
     fn compile_decoder_with_backend_ir_panics_for_non_ir_format() {
-        let _ = compile_decoder_with_backend(Friend::SHAPE, &json::FadJson, DecoderBackend::Ir);
+        let _ = compile_decoder_with_backend(Friend::SHAPE, &json::KajitJson, DecoderBackend::Ir);
     }
 
     #[test]
     fn postcard_from_str_entrypoint() {
         let bytes = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
         let input = core::str::from_utf8(&bytes).unwrap();
-        let deser = compile_decoder(Friend::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Friend::SHAPE, &postcard::KajitPostcard);
         let result: Friend = from_str(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -376,7 +379,7 @@ mod tests {
     #[test]
     fn json_flat_struct() {
         let input = br#"{"age": 42, "name": "Alice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -390,7 +393,7 @@ mod tests {
     #[test]
     fn json_from_str_entrypoint() {
         let input = r#"{"age": 42, "name": "Alice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = from_str(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -405,7 +408,7 @@ mod tests {
     #[test]
     fn json_reversed_key_order() {
         let input = br#"{"name": "Alice", "age": 42}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -420,7 +423,7 @@ mod tests {
     #[test]
     fn json_unknown_keys_skipped() {
         let input = br#"{"age": 42, "extra": true, "name": "Alice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -435,7 +438,7 @@ mod tests {
     #[test]
     fn json_empty_object_missing_fields() {
         let input = b"{}";
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result = deserialize::<Friend>(&deser, input);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -457,7 +460,7 @@ mod tests {
     #[test]
     fn postcard_borrowed_str_zero_copy() {
         let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
-        let deser = compile_decoder(BorrowedFriend::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(BorrowedFriend::SHAPE, &postcard::KajitPostcard);
         let result: BorrowedFriend<'_> = deserialize(&deser, &input).unwrap();
         assert_eq!(result.age, 42);
         assert_eq!(result.name, "Alice");
@@ -467,7 +470,7 @@ mod tests {
     #[test]
     fn postcard_cow_str_borrowed_zero_copy() {
         let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
-        let deser = compile_decoder(CowFriend::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(CowFriend::SHAPE, &postcard::KajitPostcard);
         let result: CowFriend<'_> = deserialize(&deser, &input).unwrap();
         assert_eq!(result.age, 42);
         assert!(matches!(result.name, Cow::Borrowed("Alice")));
@@ -477,7 +480,7 @@ mod tests {
     fn json_borrowed_str_zero_copy_fast_path() {
         let input = br#"{"age":42,"name":"Alice"}"#;
         let name_start = input.windows(5).position(|w| w == b"Alice").unwrap();
-        let deser = compile_decoder(BorrowedFriend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(BorrowedFriend::SHAPE, &json::KajitJson);
         let result: BorrowedFriend<'_> = deserialize(&deser, input).unwrap();
         assert_eq!(result.age, 42);
         assert_eq!(result.name, "Alice");
@@ -489,7 +492,7 @@ mod tests {
     #[test]
     fn json_borrowed_str_escape_is_error() {
         let input = br#"{"age":42,"name":"A\nB"}"#;
-        let deser = compile_decoder(BorrowedFriend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(BorrowedFriend::SHAPE, &json::KajitJson);
         let err = deserialize::<BorrowedFriend<'_>>(&deser, input).unwrap_err();
         assert_eq!(err.code, context::ErrorCode::InvalidEscapeSequence);
     }
@@ -497,7 +500,7 @@ mod tests {
     #[test]
     fn json_cow_str_fast_path_borrowed() {
         let input = br#"{"age":42,"name":"Alice"}"#;
-        let deser = compile_decoder(CowFriend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(CowFriend::SHAPE, &json::KajitJson);
         let result: CowFriend<'_> = deserialize(&deser, input).unwrap();
         assert_eq!(result.age, 42);
         assert!(matches!(result.name, Cow::Borrowed("Alice")));
@@ -506,7 +509,7 @@ mod tests {
     #[test]
     fn json_cow_str_escape_slow_path_owned() {
         let input = br#"{"age":42,"name":"A\nB"}"#;
-        let deser = compile_decoder(CowFriend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(CowFriend::SHAPE, &json::KajitJson);
         let result: CowFriend<'_> = deserialize(&deser, input).unwrap();
         assert_eq!(result.age, 42);
         assert!(matches!(result.name, Cow::Owned(ref s) if s == "A\nB"));
@@ -584,7 +587,7 @@ mod tests {
         };
 
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(AllScalars::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(AllScalars::SHAPE, &postcard::KajitPostcard);
         let result: AllScalars = deserialize(&deser, &encoded).unwrap();
 
         assert_eq!(result.a_bool, true);
@@ -631,7 +634,7 @@ mod tests {
             "a_name": "hello"
         }"#;
 
-        let deser = compile_decoder(AllScalars::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AllScalars::SHAPE, &json::KajitJson);
         let result: AllScalars = deserialize(&deser, input).unwrap();
 
         assert_eq!(result.a_bool, true);
@@ -663,7 +666,7 @@ mod tests {
         }
 
         let input = br#"{"a": true, "b": false}"#;
-        let deser = compile_decoder(Bools::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Bools::SHAPE, &json::KajitJson);
         let result: Bools = deserialize(&deser, input).unwrap();
         assert_eq!(result.a, true);
         assert_eq!(result.b, false);
@@ -680,7 +683,7 @@ mod tests {
 
         // postcard: true=1, false=0
         let input = [1u8, 0u8];
-        let deser = compile_decoder(Bools::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Bools::SHAPE, &postcard::KajitPostcard);
         let result: Bools = deserialize(&deser, &input).unwrap();
         assert_eq!(result.a, true);
         assert_eq!(result.b, false);
@@ -708,7 +711,7 @@ mod tests {
             "i32_min": -2147483648
         }"#;
 
-        let deser = compile_decoder(Boundaries::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Boundaries::SHAPE, &json::KajitJson);
         let result: Boundaries = deserialize(&deser, input).unwrap();
         assert_eq!(result.u8_max, 255);
         assert_eq!(result.u16_max, 65535);
@@ -727,7 +730,7 @@ mod tests {
         }
 
         let input = br#"{"val": 256}"#;
-        let deser = compile_decoder(Tiny::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Tiny::SHAPE, &json::KajitJson);
         let result = deserialize::<Tiny>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::NumberOutOfRange);
@@ -743,7 +746,7 @@ mod tests {
         }
 
         let input = br#"{"a": 1.5e2, "b": -3.14}"#;
-        let deser = compile_decoder(Floats::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Floats::SHAPE, &json::KajitJson);
         let result: Floats = deserialize(&deser, input).unwrap();
         assert_eq!(result.a, 150.0);
         assert_eq!(result.b, -3.14);
@@ -811,7 +814,7 @@ mod tests {
             (br#"{"x":	1.0}"#, 1.0), // tab
         ];
 
-        let deser = compile_decoder(F::SHAPE, &json::FadJson);
+        let deser = compile_decoder(F::SHAPE, &json::KajitJson);
         for (input, expected) in cases {
             let result: F = deserialize(&deser, input).unwrap();
             assert_eq!(
@@ -841,7 +844,7 @@ mod tests {
         let mut json_bytes = Vec::new();
         brotli::BrotliDecompress(&mut std::io::Cursor::new(compressed), &mut json_bytes).unwrap();
 
-        let deser = compile_decoder(Coord::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Coord::SHAPE, &json::KajitJson);
 
         let mut mismatches = 0;
         let mut total = 0;
@@ -910,7 +913,7 @@ mod tests {
         };
 
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Boundaries::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Boundaries::SHAPE, &postcard::KajitPostcard);
         let result: Boundaries = deserialize(&deser, &encoded).unwrap();
 
         assert_eq!(result.u8_max, 255);
@@ -963,7 +966,7 @@ mod tests {
         };
 
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Person::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Person::SHAPE, &postcard::KajitPostcard);
         let result: Person = deserialize(&deser, &encoded).unwrap();
 
         assert_eq!(
@@ -985,7 +988,7 @@ mod tests {
     fn json_nested_struct() {
         let input =
             br#"{"name": "Alice", "age": 30, "address": {"city": "Portland", "zip": 97201}}"#;
-        let deser = compile_decoder(Person::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Person::SHAPE, &json::KajitJson);
         let result: Person = deserialize(&deser, input).unwrap();
 
         assert_eq!(
@@ -1006,7 +1009,7 @@ mod tests {
     fn json_nested_struct_reversed_keys() {
         let input =
             br#"{"address": {"zip": 97201, "city": "Portland"}, "age": 30, "name": "Alice"}"#;
-        let deser = compile_decoder(Person::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Person::SHAPE, &json::KajitJson);
         let result: Person = deserialize(&deser, input).unwrap();
 
         assert_eq!(
@@ -1068,7 +1071,7 @@ mod tests {
         };
 
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Outer::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Outer::SHAPE, &postcard::KajitPostcard);
         let result: Outer = deserialize(&deser, &encoded).unwrap();
 
         assert_eq!(
@@ -1087,7 +1090,7 @@ mod tests {
     #[test]
     fn json_deeply_nested() {
         let input = br#"{"middle": {"inner": {"x": 1}, "y": 2}, "z": 3}"#;
-        let deser = compile_decoder(Outer::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Outer::SHAPE, &json::KajitJson);
         let result: Outer = deserialize(&deser, input).unwrap();
 
         assert_eq!(
@@ -1136,7 +1139,7 @@ mod tests {
         };
 
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(TwoAddresses::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(TwoAddresses::SHAPE, &postcard::KajitPostcard);
         let result: TwoAddresses = deserialize(&deser, &encoded).unwrap();
 
         assert_eq!(
@@ -1184,7 +1187,7 @@ mod tests {
         }
 
         let encoded = ::postcard::to_allocvec(&AnimalSerde::Cat).unwrap();
-        let deser = compile_decoder(Animal::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Animal::SHAPE, &postcard::KajitPostcard);
         let result: Animal = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, Animal::Cat);
     }
@@ -1213,7 +1216,7 @@ mod tests {
             good_boy: true,
         })
         .unwrap();
-        let deser = compile_decoder(Animal::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Animal::SHAPE, &postcard::KajitPostcard);
         let result: Animal = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -1243,7 +1246,7 @@ mod tests {
         }
 
         let encoded = ::postcard::to_allocvec(&AnimalSerde::Parrot("Polly".into())).unwrap();
-        let deser = compile_decoder(Animal::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Animal::SHAPE, &postcard::KajitPostcard);
         let result: Animal = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, Animal::Parrot("Polly".into()));
     }
@@ -1253,7 +1256,7 @@ mod tests {
     fn postcard_enum_unknown_discriminant() {
         // Discriminant 99 doesn't exist
         let input = [99u8];
-        let deser = compile_decoder(Animal::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Animal::SHAPE, &postcard::KajitPostcard);
         let result = deserialize::<Animal>(&deser, &input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
@@ -1297,7 +1300,7 @@ mod tests {
             },
         })
         .unwrap();
-        let deser = compile_decoder(Zoo::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Zoo::SHAPE, &postcard::KajitPostcard);
         let result: Zoo = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -1316,7 +1319,7 @@ mod tests {
     #[test]
     fn json_enum_unit_as_string() {
         let input = br#""Cat""#;
-        let deser = compile_decoder(Animal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Animal::SHAPE, &json::KajitJson);
         let result: Animal = deserialize(&deser, input).unwrap();
         assert_eq!(result, Animal::Cat);
     }
@@ -1326,7 +1329,7 @@ mod tests {
     #[test]
     fn json_enum_struct_variant() {
         let input = br#"{"Dog": {"name": "Rex", "good_boy": true}}"#;
-        let deser = compile_decoder(Animal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Animal::SHAPE, &json::KajitJson);
         let result: Animal = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1342,7 +1345,7 @@ mod tests {
     #[test]
     fn json_enum_tuple_variant() {
         let input = br#"{"Parrot": "Polly"}"#;
-        let deser = compile_decoder(Animal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Animal::SHAPE, &json::KajitJson);
         let result: Animal = deserialize(&deser, input).unwrap();
         assert_eq!(result, Animal::Parrot("Polly".into()));
     }
@@ -1352,7 +1355,7 @@ mod tests {
     fn json_enum_unit_in_object() {
         // Unit variant inside object form: { "Cat": null }
         let input = br#"{"Cat": null}"#;
-        let deser = compile_decoder(Animal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Animal::SHAPE, &json::KajitJson);
         let result: Animal = deserialize(&deser, input).unwrap();
         assert_eq!(result, Animal::Cat);
     }
@@ -1361,7 +1364,7 @@ mod tests {
     #[test]
     fn json_enum_unknown_variant() {
         let input = br#""Snake""#;
-        let deser = compile_decoder(Animal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Animal::SHAPE, &json::KajitJson);
         let result = deserialize::<Animal>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
@@ -1377,7 +1380,7 @@ mod tests {
         }
 
         let input = br#"{"name": "City Zoo", "star": {"Dog": {"name": "Rex", "good_boy": true}}}"#;
-        let deser = compile_decoder(Zoo::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Zoo::SHAPE, &json::KajitJson);
         let result: Zoo = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1395,7 +1398,7 @@ mod tests {
     #[test]
     fn json_enum_struct_variant_reversed_keys() {
         let input = br#"{"Dog": {"good_boy": true, "name": "Rex"}}"#;
-        let deser = compile_decoder(Animal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Animal::SHAPE, &json::KajitJson);
         let result: Animal = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1427,7 +1430,7 @@ mod tests {
     #[test]
     fn json_flatten_basic() {
         let input = br#"{"title": "Hello", "version": 1, "author": "Amos"}"#;
-        let deser = compile_decoder(Document::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Document::SHAPE, &json::KajitJson);
         let result: Document = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1445,7 +1448,7 @@ mod tests {
     #[test]
     fn json_flatten_reversed_keys() {
         let input = br#"{"author": "Amos", "version": 1, "title": "Hello"}"#;
-        let deser = compile_decoder(Document::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Document::SHAPE, &json::KajitJson);
         let result: Document = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1470,7 +1473,7 @@ mod tests {
         // version=1 → varint 0x01
         // author="A" → varint(1)=0x01 + b"A"
         let input = [0x02, b'H', b'i', 0x01, 0x01, b'A'];
-        let deser = compile_decoder(Document::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Document::SHAPE, &postcard::KajitPostcard);
         let result: Document = deserialize(&deser, &input).unwrap();
         assert_eq!(
             result,
@@ -1500,7 +1503,7 @@ mod tests {
             inner: Collider,
         }
 
-        compile_decoder(HasCollision::SHAPE, &json::FadJson);
+        compile_decoder(HasCollision::SHAPE, &json::KajitJson);
     }
 
     // --- Milestone 7: Adjacently tagged enums ---
@@ -1519,7 +1522,7 @@ mod tests {
     #[test]
     fn json_adjacent_unit_no_content() {
         let input = br#"{"type": "Cat"}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result: AdjAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(result, AdjAnimal::Cat);
     }
@@ -1529,7 +1532,7 @@ mod tests {
     #[test]
     fn json_adjacent_unit_with_null_content() {
         let input = br#"{"type": "Cat", "data": null}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result: AdjAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(result, AdjAnimal::Cat);
     }
@@ -1538,7 +1541,7 @@ mod tests {
     #[test]
     fn json_adjacent_struct_variant() {
         let input = br#"{"type": "Dog", "data": {"name": "Rex", "good_boy": true}}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result: AdjAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1553,7 +1556,7 @@ mod tests {
     #[test]
     fn json_adjacent_struct_variant_reversed_fields() {
         let input = br#"{"type": "Dog", "data": {"good_boy": true, "name": "Rex"}}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result: AdjAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1569,7 +1572,7 @@ mod tests {
     #[test]
     fn json_adjacent_tuple_variant() {
         let input = br#"{"type": "Parrot", "data": "Polly"}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result: AdjAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(result, AdjAnimal::Parrot("Polly".into()));
     }
@@ -1578,7 +1581,7 @@ mod tests {
     #[test]
     fn json_adjacent_unknown_variant() {
         let input = br#"{"type": "Snake", "data": null}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result = deserialize::<AdjAnimal>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
@@ -1588,7 +1591,7 @@ mod tests {
     #[test]
     fn json_adjacent_wrong_first_key() {
         let input = br#"{"data": null, "type": "Cat"}"#;
-        let deser = compile_decoder(AdjAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AdjAnimal::SHAPE, &json::KajitJson);
         let result = deserialize::<AdjAnimal>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::ExpectedTagKey);
@@ -1609,7 +1612,7 @@ mod tests {
     #[test]
     fn json_internal_unit_variant() {
         let input = br#"{"type": "Cat"}"#;
-        let deser = compile_decoder(IntAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(IntAnimal::SHAPE, &json::KajitJson);
         let result: IntAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(result, IntAnimal::Cat);
     }
@@ -1618,7 +1621,7 @@ mod tests {
     #[test]
     fn json_internal_struct_variant() {
         let input = br#"{"type": "Dog", "name": "Rex", "good_boy": true}"#;
-        let deser = compile_decoder(IntAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(IntAnimal::SHAPE, &json::KajitJson);
         let result: IntAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1633,7 +1636,7 @@ mod tests {
     #[test]
     fn json_internal_struct_variant_reversed_fields() {
         let input = br#"{"type": "Dog", "good_boy": true, "name": "Rex"}"#;
-        let deser = compile_decoder(IntAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(IntAnimal::SHAPE, &json::KajitJson);
         let result: IntAnimal = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1648,7 +1651,7 @@ mod tests {
     #[test]
     fn json_internal_unknown_variant() {
         let input = br#"{"type": "Snake"}"#;
-        let deser = compile_decoder(IntAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(IntAnimal::SHAPE, &json::KajitJson);
         let result = deserialize::<IntAnimal>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::UnknownVariant);
@@ -1658,7 +1661,7 @@ mod tests {
     #[test]
     fn json_internal_wrong_first_key() {
         let input = br#"{"name": "Rex", "type": "Dog", "good_boy": true}"#;
-        let deser = compile_decoder(IntAnimal::SHAPE, &json::FadJson);
+        let deser = compile_decoder(IntAnimal::SHAPE, &json::KajitJson);
         let result = deserialize::<IntAnimal>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::ExpectedTagKey);
@@ -1676,7 +1679,7 @@ mod tests {
             Wrapper(String),
         }
 
-        compile_decoder(BadInternal::SHAPE, &json::FadJson);
+        compile_decoder(BadInternal::SHAPE, &json::KajitJson);
     }
 
     // --- Milestone 8: Untagged enums ---
@@ -1695,7 +1698,7 @@ mod tests {
     #[test]
     fn json_untagged_unit() {
         let input = br#""Cat""#;
-        let deser = compile_decoder(Untagged::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Untagged::SHAPE, &json::KajitJson);
         let result: Untagged = deserialize(&deser, input).unwrap();
         assert_eq!(result, Untagged::Cat);
     }
@@ -1706,7 +1709,7 @@ mod tests {
     #[test]
     fn json_untagged_struct() {
         let input = br#"{"name": "Rex", "good_boy": true}"#;
-        let deser = compile_decoder(Untagged::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Untagged::SHAPE, &json::KajitJson);
         let result: Untagged = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1722,7 +1725,7 @@ mod tests {
     #[test]
     fn json_untagged_newtype_string() {
         let input = br#""Polly""#;
-        let deser = compile_decoder(Untagged::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Untagged::SHAPE, &json::KajitJson);
         let result: Untagged = deserialize(&deser, input).unwrap();
         assert_eq!(result, Untagged::Parrot("Polly".into()));
     }
@@ -1731,7 +1734,7 @@ mod tests {
     #[test]
     fn json_untagged_struct_reversed_keys() {
         let input = br#"{"good_boy": true, "name": "Rex"}"#;
-        let deser = compile_decoder(Untagged::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Untagged::SHAPE, &json::KajitJson);
         let result: Untagged = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1755,7 +1758,7 @@ mod tests {
     #[test]
     fn json_untagged_solver_database() {
         let input = br#"{"host": "localhost", "port": 5432}"#;
-        let deser = compile_decoder(Config::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Config::SHAPE, &json::KajitJson);
         let result: Config = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1770,7 +1773,7 @@ mod tests {
     #[test]
     fn json_untagged_solver_redis() {
         let input = br#"{"host": "localhost", "db": 0}"#;
-        let deser = compile_decoder(Config::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Config::SHAPE, &json::KajitJson);
         let result: Config = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1786,7 +1789,7 @@ mod tests {
     fn json_untagged_solver_key_order_independent() {
         // Key order doesn't matter — "db" narrows to Redis regardless of position
         let input = br#"{"db": 0, "host": "localhost"}"#;
-        let deser = compile_decoder(Config::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Config::SHAPE, &json::KajitJson);
         let result: Config = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -1809,12 +1812,12 @@ mod tests {
         }
 
         let input = br#"42"#;
-        let deser = compile_decoder(StringOrNum::SHAPE, &json::FadJson);
+        let deser = compile_decoder(StringOrNum::SHAPE, &json::KajitJson);
         let result: StringOrNum = deserialize(&deser, input).unwrap();
         assert_eq!(result, StringOrNum::Num(42));
 
         let input = br#""hello""#;
-        let deser = compile_decoder(StringOrNum::SHAPE, &json::FadJson);
+        let deser = compile_decoder(StringOrNum::SHAPE, &json::KajitJson);
         let result: StringOrNum = deserialize(&deser, input).unwrap();
         assert_eq!(result, StringOrNum::Text("hello".into()));
     }
@@ -1831,12 +1834,12 @@ mod tests {
         }
 
         let input = br#"true"#;
-        let deser = compile_decoder(StringOrBool::SHAPE, &json::FadJson);
+        let deser = compile_decoder(StringOrBool::SHAPE, &json::KajitJson);
         let result: StringOrBool = deserialize(&deser, input).unwrap();
         assert_eq!(result, StringOrBool::Flag(true));
 
         let input = br#""hello""#;
-        let deser = compile_decoder(StringOrBool::SHAPE, &json::FadJson);
+        let deser = compile_decoder(StringOrBool::SHAPE, &json::KajitJson);
         let result: StringOrBool = deserialize(&deser, input).unwrap();
         assert_eq!(result, StringOrBool::Text("hello".into()));
     }
@@ -1855,7 +1858,7 @@ mod tests {
             B(i64),
         }
 
-        compile_decoder(BadNum::SHAPE, &json::FadJson);
+        compile_decoder(BadNum::SHAPE, &json::KajitJson);
     }
 
     // r[verify deser.json.enum.untagged.value-type]
@@ -1869,7 +1872,7 @@ mod tests {
             StrField { value: String },
         }
 
-        let deser = compile_decoder(ValueTyped::SHAPE, &json::FadJson);
+        let deser = compile_decoder(ValueTyped::SHAPE, &json::KajitJson);
 
         let input = br#"{"value": 42}"#;
         let result: ValueTyped = deserialize(&deser, input).unwrap();
@@ -1896,7 +1899,7 @@ mod tests {
             Count { active: u32 },
         }
 
-        let deser = compile_decoder(BoolOrNum::SHAPE, &json::FadJson);
+        let deser = compile_decoder(BoolOrNum::SHAPE, &json::KajitJson);
 
         let input = br#"{"active": true}"#;
         let result: BoolOrNum = deserialize(&deser, input).unwrap();
@@ -1928,7 +1931,7 @@ mod tests {
             Error { status: u32, data: ErrorPayload },
         }
 
-        let deser = compile_decoder(ApiResponse::SHAPE, &json::FadJson);
+        let deser = compile_decoder(ApiResponse::SHAPE, &json::KajitJson);
 
         let input = br#"{"status": 200, "data": {"items": 5}}"#;
         let result: ApiResponse = deserialize(&deser, input).unwrap();
@@ -1974,7 +1977,7 @@ mod tests {
             Error { status: u32, data: ErrorPayload },
         }
 
-        let deser = compile_decoder(ApiResponse::SHAPE, &json::FadJson);
+        let deser = compile_decoder(ApiResponse::SHAPE, &json::KajitJson);
 
         // data before status — key order shouldn't matter
         let input = br#"{"data": {"items": 5}, "status": 200}"#;
@@ -2002,7 +2005,7 @@ mod tests {
             B { x: u32 },
         }
 
-        compile_decoder(TrulyAmbiguous::SHAPE, &json::FadJson);
+        compile_decoder(TrulyAmbiguous::SHAPE, &json::KajitJson);
     }
 
     // --- Option<T> support ---
@@ -2024,7 +2027,7 @@ mod tests {
 
         let source = WithOptU32Serde { value: Some(42) };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithOptU32::SHAPE, &postcard::KajitPostcard);
         let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, WithOptU32 { value: Some(42) });
     }
@@ -2046,7 +2049,7 @@ mod tests {
 
         let source = WithOptU32Serde { value: None };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithOptU32::SHAPE, &postcard::KajitPostcard);
         let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, WithOptU32 { value: None });
     }
@@ -2067,7 +2070,7 @@ mod tests {
 
         let source = WithOptU32Serde { value: Some(42) };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder_via_ir(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder_via_ir(WithOptU32::SHAPE, &postcard::KajitPostcard);
         let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, WithOptU32 { value: Some(42) });
     }
@@ -2088,7 +2091,7 @@ mod tests {
 
         let source = WithOptU32Serde { value: None };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder_via_ir(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder_via_ir(WithOptU32::SHAPE, &postcard::KajitPostcard);
         let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, WithOptU32 { value: None });
     }
@@ -2112,7 +2115,7 @@ mod tests {
             name: Some("Alice".into()),
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(WithOptStr::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithOptStr::SHAPE, &postcard::KajitPostcard);
         let result: WithOptStr = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2139,7 +2142,7 @@ mod tests {
 
         let source = WithOptStrSerde { name: None };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(WithOptStr::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithOptStr::SHAPE, &postcard::KajitPostcard);
         let result: WithOptStr = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, WithOptStr { name: None });
     }
@@ -2172,7 +2175,7 @@ mod tests {
             }),
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(WithOptAddr::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithOptAddr::SHAPE, &postcard::KajitPostcard);
         let result: WithOptAddr = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2208,7 +2211,7 @@ mod tests {
 
         let source = WithOptAddrSerde { addr: None };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(WithOptAddr::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithOptAddr::SHAPE, &postcard::KajitPostcard);
         let result: WithOptAddr = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, WithOptAddr { addr: None });
     }
@@ -2238,7 +2241,7 @@ mod tests {
             c: None,
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(MultiOpt::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(MultiOpt::SHAPE, &postcard::KajitPostcard);
         let result: MultiOpt = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2259,7 +2262,7 @@ mod tests {
         }
 
         let input = br#"{"value": 42}"#;
-        let deser = compile_decoder(WithOptU32::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithOptU32::SHAPE, &json::KajitJson);
         let result: WithOptU32 = deserialize(&deser, input).unwrap();
         assert_eq!(result, WithOptU32 { value: Some(42) });
     }
@@ -2273,7 +2276,7 @@ mod tests {
         }
 
         let input = br#"{"value": null}"#;
-        let deser = compile_decoder(WithOptU32::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithOptU32::SHAPE, &json::KajitJson);
         let result: WithOptU32 = deserialize(&deser, input).unwrap();
         assert_eq!(result, WithOptU32 { value: None });
     }
@@ -2287,7 +2290,7 @@ mod tests {
         }
 
         let input = br#"{"name": "Alice"}"#;
-        let deser = compile_decoder(WithOptStr::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithOptStr::SHAPE, &json::KajitJson);
         let result: WithOptStr = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2306,7 +2309,7 @@ mod tests {
         }
 
         let input = br#"{"name": null}"#;
-        let deser = compile_decoder(WithOptStr::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithOptStr::SHAPE, &json::KajitJson);
         let result: WithOptStr = deserialize(&deser, input).unwrap();
         assert_eq!(result, WithOptStr { name: None });
     }
@@ -2320,7 +2323,7 @@ mod tests {
         }
 
         let input = br#"{"addr": {"city": "Portland", "zip": 97201}}"#;
-        let deser = compile_decoder(WithOptAddr::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithOptAddr::SHAPE, &json::KajitJson);
         let result: WithOptAddr = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2342,7 +2345,7 @@ mod tests {
         }
 
         let input = br#"{"addr": null}"#;
-        let deser = compile_decoder(WithOptAddr::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithOptAddr::SHAPE, &json::KajitJson);
         let result: WithOptAddr = deserialize(&deser, input).unwrap();
         assert_eq!(result, WithOptAddr { addr: None });
     }
@@ -2358,7 +2361,7 @@ mod tests {
         }
 
         let input = br#"{"a": 7, "b": "hello", "c": null}"#;
-        let deser = compile_decoder(MultiOpt::SHAPE, &json::FadJson);
+        let deser = compile_decoder(MultiOpt::SHAPE, &json::KajitJson);
         let result: MultiOpt = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2381,7 +2384,7 @@ mod tests {
         }
 
         let input = br#"{"c": "world", "b": "hello", "a": null}"#;
-        let deser = compile_decoder(MultiOpt::SHAPE, &json::FadJson);
+        let deser = compile_decoder(MultiOpt::SHAPE, &json::KajitJson);
         let result: MultiOpt = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2410,7 +2413,7 @@ mod tests {
             vals: vec![1, 2, 3],
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Nums::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Nums::SHAPE, &postcard::KajitPostcard);
         let result: Nums = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2436,7 +2439,7 @@ mod tests {
             vals: vec![1, 2, 3],
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder_via_ir(Nums::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder_via_ir(Nums::SHAPE, &postcard::KajitPostcard);
         let result: Nums = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2459,8 +2462,8 @@ mod tests {
             vals: Vec<u32>,
         }
 
-        let legacy = compile_decoder_legacy(Nums::SHAPE, &postcard::FadPostcard);
-        let ir = compile_decoder_via_ir(Nums::SHAPE, &postcard::FadPostcard);
+        let legacy = compile_decoder_legacy(Nums::SHAPE, &postcard::KajitPostcard);
+        let ir = compile_decoder_via_ir(Nums::SHAPE, &postcard::KajitPostcard);
 
         for len in [100usize, 10_000usize] {
             let source = NumsSerde {
@@ -2496,7 +2499,7 @@ mod tests {
 
         let source = NumsSerde { vals: vec![] };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Nums::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Nums::SHAPE, &postcard::KajitPostcard);
         let result: Nums = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, Nums { vals: vec![] });
     }
@@ -2518,7 +2521,7 @@ mod tests {
             items: vec!["hello".into(), "world".into()],
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Names::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Names::SHAPE, &postcard::KajitPostcard);
         let result: Names = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2544,7 +2547,7 @@ mod tests {
             items: vec!["hello".into(), "world".into()],
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder_via_ir(Names::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder_via_ir(Names::SHAPE, &postcard::KajitPostcard);
         let result: Names = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2586,7 +2589,7 @@ mod tests {
             ],
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(AddressList::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(AddressList::SHAPE, &postcard::KajitPostcard);
         let result: AddressList = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2615,7 +2618,7 @@ mod tests {
         }
 
         let input = br#"{"home": {"city": "Portland", "zip": 97201}, "work": {"city": "Seattle", "zip": 98101}}"#;
-        let deser = compile_decoder(TwoAddresses::SHAPE, &json::FadJson);
+        let deser = compile_decoder(TwoAddresses::SHAPE, &json::KajitJson);
         let result: TwoAddresses = deserialize(&deser, input).unwrap();
 
         assert_eq!(
@@ -2642,7 +2645,7 @@ mod tests {
         }
 
         let input = br#"{"vals": [1, 2, 3]}"#;
-        let deser = compile_decoder(Nums::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Nums::SHAPE, &json::KajitJson);
         let result: Nums = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2661,7 +2664,7 @@ mod tests {
         }
 
         let input = br#"{"vals": []}"#;
-        let deser = compile_decoder(Nums::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Nums::SHAPE, &json::KajitJson);
         let result: Nums = deserialize(&deser, input).unwrap();
         assert_eq!(result, Nums { vals: vec![] });
     }
@@ -2675,7 +2678,7 @@ mod tests {
         }
 
         let input = br#"{"items": ["hello", "world"]}"#;
-        let deser = compile_decoder(Names::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Names::SHAPE, &json::KajitJson);
         let result: Names = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2694,7 +2697,7 @@ mod tests {
         }
 
         let input = br#"{"addrs": [{"city": "Portland", "zip": 97201}, {"city": "Seattle", "zip": 98101}]}"#;
-        let deser = compile_decoder(AddressList::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AddressList::SHAPE, &json::KajitJson);
         let result: AddressList = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2723,7 +2726,7 @@ mod tests {
         }
 
         let input = br#"{"vals": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}"#;
-        let deser = compile_decoder(Nums::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Nums::SHAPE, &json::KajitJson);
         let result: Nums = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2740,7 +2743,7 @@ mod tests {
     #[test]
     fn json_string_escape_newline() {
         let input = br#"{"age": 1, "name": "hello\nworld"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "hello\nworld");
     }
@@ -2748,7 +2751,7 @@ mod tests {
     #[test]
     fn json_string_escape_tab() {
         let input = br#"{"age": 1, "name": "hello\tworld"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "hello\tworld");
     }
@@ -2756,7 +2759,7 @@ mod tests {
     #[test]
     fn json_string_escape_backslash() {
         let input = br#"{"age": 1, "name": "hello\\world"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "hello\\world");
     }
@@ -2764,7 +2767,7 @@ mod tests {
     #[test]
     fn json_string_escape_quote() {
         let input = br#"{"age": 1, "name": "hello\"world"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "hello\"world");
     }
@@ -2772,7 +2775,7 @@ mod tests {
     #[test]
     fn json_string_escape_all_simple() {
         let input = br#"{"age": 1, "name": "a\"b\\c\/d\be\ff\ng\rh\ti"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "a\"b\\c/d\x08e\x0Cf\ng\rh\ti");
     }
@@ -2781,7 +2784,7 @@ mod tests {
     fn json_string_unicode_escape_bmp() {
         // \u0041 = 'A'
         let input = br#"{"age": 1, "name": "\u0041lice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "Alice");
     }
@@ -2790,7 +2793,7 @@ mod tests {
     fn json_string_unicode_escape_non_ascii() {
         // \u00E9 = 'e' with acute accent
         let input = br#"{"age": 1, "name": "caf\u00E9"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "caf\u{00E9}");
     }
@@ -2799,7 +2802,7 @@ mod tests {
     fn json_string_unicode_surrogate_pair() {
         // \uD83D\uDE00 = U+1F600 (grinning face emoji)
         let input = br#"{"age": 1, "name": "\uD83D\uDE00"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(result.name, "\u{1F600}");
     }
@@ -2808,7 +2811,7 @@ mod tests {
     fn json_key_with_unicode_escape() {
         // "na\u006De" unescapes to "name"
         let input = br#"{"age": 42, "na\u006De": "Alice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2822,7 +2825,7 @@ mod tests {
     #[test]
     fn json_string_invalid_escape() {
         let input = br#"{"age": 1, "name": "hello\xworld"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result = deserialize::<Friend>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::InvalidEscapeSequence);
@@ -2831,7 +2834,7 @@ mod tests {
     #[test]
     fn json_string_lone_high_surrogate() {
         let input = br#"{"age": 1, "name": "\uD800"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result = deserialize::<Friend>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::InvalidEscapeSequence);
@@ -2840,7 +2843,7 @@ mod tests {
     #[test]
     fn json_string_truncated_unicode() {
         let input = br#"{"age": 1, "name": "\u00"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result = deserialize::<Friend>(&deser, input);
         assert!(result.is_err());
     }
@@ -2849,7 +2852,7 @@ mod tests {
     fn json_skip_value_with_unicode_escape() {
         // Unknown field "extra" has a string with \uXXXX — should be skipped correctly
         let input = br#"{"age": 42, "extra": "test\uD83D\uDE00end", "name": "Alice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2864,7 +2867,7 @@ mod tests {
     fn json_skip_value_with_backslash_escape() {
         // Unknown field with simple escapes in its value
         let input = br#"{"age": 42, "extra": "test\n\t\\end", "name": "Alice"}"#;
-        let deser = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let result: Friend = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -2899,7 +2902,7 @@ mod tests {
             scores: scores.clone(),
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Config::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Config::SHAPE, &postcard::KajitPostcard);
         let result: Config = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, Config { scores });
     }
@@ -2923,7 +2926,7 @@ mod tests {
             scores: HashMap::new(),
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Config::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Config::SHAPE, &postcard::KajitPostcard);
         let result: Config = deserialize(&deser, &encoded).unwrap();
         assert_eq!(
             result,
@@ -2953,7 +2956,7 @@ mod tests {
         vars.insert("PATH".to_string(), "/usr/bin".to_string());
         let source = EnvSerde { vars: vars.clone() };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Env::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Env::SHAPE, &postcard::KajitPostcard);
         let result: Env = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, Env { vars });
     }
@@ -2980,7 +2983,7 @@ mod tests {
             scores: scores.clone(),
         };
         let encoded = ::postcard::to_allocvec(&source).unwrap();
-        let deser = compile_decoder(Config::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Config::SHAPE, &postcard::KajitPostcard);
         let result: Config = deserialize(&deser, &encoded).unwrap();
         assert_eq!(result, Config { scores });
     }
@@ -2996,7 +2999,7 @@ mod tests {
         }
 
         let input = br#"{"scores": {"alice": 42, "bob": 7}}"#;
-        let deser = compile_decoder(Config::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Config::SHAPE, &json::KajitJson);
         let result: Config = deserialize(&deser, input).unwrap();
         let mut expected = HashMap::new();
         expected.insert("alice".to_string(), 42u32);
@@ -3015,7 +3018,7 @@ mod tests {
         }
 
         let input = br#"{"scores": {}}"#;
-        let deser = compile_decoder(Config::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Config::SHAPE, &json::KajitJson);
         let result: Config = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3036,7 +3039,7 @@ mod tests {
         }
 
         let input = br#"{"vars": {"HOME": "/root", "PATH": "/usr/bin"}}"#;
-        let deser = compile_decoder(Env::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Env::SHAPE, &json::KajitJson);
         let result: Env = deserialize(&deser, input).unwrap();
         let mut expected = HashMap::new();
         expected.insert("HOME".to_string(), "/root".to_string());
@@ -3056,7 +3059,7 @@ mod tests {
 
         // More than initial cap=4 to trigger growth
         let input = br#"{"data": {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6}}"#;
-        let deser = compile_decoder(Big::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Big::SHAPE, &json::KajitJson);
         let result: Big = deserialize(&deser, input).unwrap();
         let mut expected = HashMap::new();
         for (k, v) in [("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5), ("f", 6)] {
@@ -3081,7 +3084,7 @@ mod tests {
     #[test]
     fn json_rename_field() {
         let input = br#"{"user_name": "Alice", "age": 30}"#;
-        let deser = compile_decoder(RenameField::SHAPE, &json::FadJson);
+        let deser = compile_decoder(RenameField::SHAPE, &json::KajitJson);
         let result: RenameField = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3099,7 +3102,7 @@ mod tests {
         // Using the original Rust field name "name" should fail
         // because the key dispatch only knows about "user_name".
         let input = br#"{"name": "Alice", "age": 30}"#;
-        let deser = compile_decoder(RenameField::SHAPE, &json::FadJson);
+        let deser = compile_decoder(RenameField::SHAPE, &json::KajitJson);
         let result = deserialize::<RenameField>(&deser, input);
         assert!(result.is_err(), "original field name should not match");
     }
@@ -3116,7 +3119,7 @@ mod tests {
     #[test]
     fn json_rename_all_camel_case() {
         let input = br#"{"userName": "Bob", "birthYear": 1990}"#;
-        let deser = compile_decoder(CamelCaseStruct::SHAPE, &json::FadJson);
+        let deser = compile_decoder(CamelCaseStruct::SHAPE, &json::KajitJson);
         let result: CamelCaseStruct = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3133,7 +3136,7 @@ mod tests {
         // Postcard is positional — rename has no effect.
         // Fields are deserialized in declaration order regardless of name.
         let wire = ::postcard::to_allocvec(&("Alice".to_string(), 30u32)).unwrap();
-        let deser = compile_decoder(RenameField::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(RenameField::SHAPE, &postcard::KajitPostcard);
         let result: RenameField = deserialize(&deser, &wire).unwrap();
         assert_eq!(
             result,
@@ -3157,7 +3160,7 @@ mod tests {
     #[test]
     fn json_transparent_scalar() {
         let input = b"42";
-        let deser = compile_decoder(Wrapper::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Wrapper::SHAPE, &json::KajitJson);
         let result: Wrapper = deserialize(&deser, input).unwrap();
         assert_eq!(result, Wrapper(42));
     }
@@ -3167,7 +3170,7 @@ mod tests {
     #[test]
     fn postcard_transparent_scalar() {
         let wire = ::postcard::to_allocvec(&42u32).unwrap();
-        let deser = compile_decoder(Wrapper::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Wrapper::SHAPE, &postcard::KajitPostcard);
         let result: Wrapper = deserialize(&deser, &wire).unwrap();
         assert_eq!(result, Wrapper(42));
     }
@@ -3180,7 +3183,7 @@ mod tests {
     #[test]
     fn json_transparent_string() {
         let input = br#""hello""#;
-        let deser = compile_decoder(StringWrapper::SHAPE, &json::FadJson);
+        let deser = compile_decoder(StringWrapper::SHAPE, &json::KajitJson);
         let result: StringWrapper = deserialize(&deser, input).unwrap();
         assert_eq!(result, StringWrapper("hello".into()));
     }
@@ -3189,7 +3192,7 @@ mod tests {
     #[test]
     fn postcard_transparent_string() {
         let wire = ::postcard::to_allocvec(&"hello".to_string()).unwrap();
-        let deser = compile_decoder(StringWrapper::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(StringWrapper::SHAPE, &postcard::KajitPostcard);
         let result: StringWrapper = deserialize(&deser, &wire).unwrap();
         assert_eq!(result, StringWrapper("hello".into()));
     }
@@ -3203,7 +3206,7 @@ mod tests {
     #[test]
     fn json_transparent_composite() {
         let input = br#"{"age": 25, "name": "Eve"}"#;
-        let deser = compile_decoder(StructWrapper::SHAPE, &json::FadJson);
+        let deser = compile_decoder(StructWrapper::SHAPE, &json::KajitJson);
         let result: StructWrapper = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3219,7 +3222,7 @@ mod tests {
     #[test]
     fn postcard_transparent_composite() {
         let wire = ::postcard::to_allocvec(&(25u32, "Eve".to_string())).unwrap();
-        let deser = compile_decoder(StructWrapper::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(StructWrapper::SHAPE, &postcard::KajitPostcard);
         let result: StructWrapper = deserialize(&deser, &wire).unwrap();
         assert_eq!(
             result,
@@ -3246,7 +3249,7 @@ mod tests {
     #[test]
     fn json_deny_unknown_fields_rejects() {
         let input = br#"{"x": 1, "y": 2, "z": 3}"#;
-        let deser = compile_decoder(Strict::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Strict::SHAPE, &json::KajitJson);
         let result = deserialize::<Strict>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::UnknownField);
@@ -3257,7 +3260,7 @@ mod tests {
     #[test]
     fn json_deny_unknown_fields_allows_known() {
         let input = br#"{"x": 1, "y": 2}"#;
-        let deser = compile_decoder(Strict::SHAPE, &json::FadJson);
+        let deser = compile_decoder(Strict::SHAPE, &json::KajitJson);
         let result: Strict = deserialize(&deser, input).unwrap();
         assert_eq!(result, Strict { x: 1, y: 2 });
     }
@@ -3267,7 +3270,7 @@ mod tests {
     fn postcard_deny_unknown_fields_irrelevant() {
         // Postcard is positional — deny_unknown_fields has no effect.
         let wire = ::postcard::to_allocvec(&(10u32, 20u32)).unwrap();
-        let deser = compile_decoder(Strict::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(Strict::SHAPE, &postcard::KajitPostcard);
         let result: Strict = deserialize(&deser, &wire).unwrap();
         assert_eq!(result, Strict { x: 10, y: 20 });
     }
@@ -3288,7 +3291,7 @@ mod tests {
     fn json_default_field_missing() {
         // "score" is missing — should get its Default (0).
         let input = br#"{"name": "Alice"}"#;
-        let deser = compile_decoder(WithDefault::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithDefault::SHAPE, &json::KajitJson);
         let result: WithDefault = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3304,7 +3307,7 @@ mod tests {
     fn json_default_field_present() {
         // "score" is present — use the provided value.
         let input = br#"{"name": "Alice", "score": 99}"#;
-        let deser = compile_decoder(WithDefault::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithDefault::SHAPE, &json::KajitJson);
         let result: WithDefault = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3320,7 +3323,7 @@ mod tests {
     fn json_default_field_required_still_errors() {
         // "name" has no default — missing it should error.
         let input = br#"{"score": 50}"#;
-        let deser = compile_decoder(WithDefault::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithDefault::SHAPE, &json::KajitJson);
         let result = deserialize::<WithDefault>(&deser, input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::MissingRequiredField);
@@ -3337,7 +3340,7 @@ mod tests {
     #[test]
     fn json_default_string_field() {
         let input = br#"{"value": 42}"#;
-        let deser = compile_decoder(WithDefaultString::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithDefaultString::SHAPE, &json::KajitJson);
         let result: WithDefaultString = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3366,7 +3369,7 @@ mod tests {
     fn json_container_default_empty_object() {
         // Container-level #[facet(default)] — all fields optional.
         let input = br#"{}"#;
-        let deser = compile_decoder(AllDefault::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AllDefault::SHAPE, &json::KajitJson);
         let result: AllDefault = deserialize(&deser, input).unwrap();
         assert_eq!(result, AllDefault { x: 0, y: 0 });
     }
@@ -3375,7 +3378,7 @@ mod tests {
     #[test]
     fn json_container_default_partial() {
         let input = br#"{"x": 5}"#;
-        let deser = compile_decoder(AllDefault::SHAPE, &json::FadJson);
+        let deser = compile_decoder(AllDefault::SHAPE, &json::KajitJson);
         let result: AllDefault = deserialize(&deser, input).unwrap();
         assert_eq!(result, AllDefault { x: 5, y: 0 });
     }
@@ -3385,7 +3388,7 @@ mod tests {
     fn postcard_default_irrelevant() {
         // Postcard is positional — all fields are always present, defaults don't apply.
         let wire = ::postcard::to_allocvec(&("hello".to_string(), 7u32)).unwrap();
-        let deser = compile_decoder(WithDefault::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithDefault::SHAPE, &postcard::KajitPostcard);
         let result: WithDefault = deserialize(&deser, &wire).unwrap();
         assert_eq!(
             result,
@@ -3413,7 +3416,7 @@ mod tests {
     fn json_skip_field() {
         // "cached" is skipped — it should NOT appear in input and gets its default (0).
         let input = br#"{"name": "Alice"}"#;
-        let deser = compile_decoder(WithSkip::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithSkip::SHAPE, &json::KajitJson);
         let result: WithSkip = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3431,7 +3434,7 @@ mod tests {
         // If the skipped field's name appears in input, it's treated as unknown.
         // Without deny_unknown_fields, it's silently skipped.
         let input = br#"{"name": "Alice", "cached": 99}"#;
-        let deser = compile_decoder(WithSkip::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithSkip::SHAPE, &json::KajitJson);
         let result: WithSkip = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3454,7 +3457,7 @@ mod tests {
     #[test]
     fn json_skip_deserializing_field() {
         let input = br#"{"name": "Bob"}"#;
-        let deser = compile_decoder(WithSkipDeser::SHAPE, &json::FadJson);
+        let deser = compile_decoder(WithSkipDeser::SHAPE, &json::KajitJson);
         let result: WithSkipDeser = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3471,7 +3474,7 @@ mod tests {
     fn postcard_skip_field() {
         // Postcard: skipped field is NOT on the wire. Only "name" is serialized.
         let wire = ::postcard::to_allocvec(&("Alice".to_string(),)).unwrap();
-        let deser = compile_decoder(WithSkip::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(WithSkip::SHAPE, &postcard::KajitPostcard);
         let result: WithSkip = deserialize(&deser, &wire).unwrap();
         assert_eq!(
             result,
@@ -3494,7 +3497,7 @@ mod tests {
     #[test]
     fn json_skip_with_custom_default() {
         let input = br#"{"value": 10}"#;
-        let deser = compile_decoder(SkipWithCustomDefault::SHAPE, &json::FadJson);
+        let deser = compile_decoder(SkipWithCustomDefault::SHAPE, &json::KajitJson);
         let result: SkipWithCustomDefault = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3518,7 +3521,7 @@ mod tests {
     #[test]
     fn json_box_scalar() {
         let input = br#"{"value": 42}"#;
-        let deser = compile_decoder(BoxedScalar::SHAPE, &json::FadJson);
+        let deser = compile_decoder(BoxedScalar::SHAPE, &json::KajitJson);
         let result: BoxedScalar = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3539,7 +3542,7 @@ mod tests {
             value: u32,
         }
         let input = ::postcard::to_allocvec(&Ref { value: 42 }).unwrap();
-        let deser = compile_decoder(BoxedScalar::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(BoxedScalar::SHAPE, &postcard::KajitPostcard);
         let result: BoxedScalar = deserialize(&deser, &input).unwrap();
         assert_eq!(
             result,
@@ -3558,7 +3561,7 @@ mod tests {
     #[test]
     fn json_box_string() {
         let input = br#"{"name": "hello"}"#;
-        let deser = compile_decoder(BoxedString::SHAPE, &json::FadJson);
+        let deser = compile_decoder(BoxedString::SHAPE, &json::KajitJson);
         let result: BoxedString = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3577,7 +3580,7 @@ mod tests {
     #[test]
     fn json_box_nested_struct() {
         let input = br#"{"inner": {"age": 30, "name": "Bob"}}"#;
-        let deser = compile_decoder(BoxedNested::SHAPE, &json::FadJson);
+        let deser = compile_decoder(BoxedNested::SHAPE, &json::KajitJson);
         let result: BoxedNested = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3610,7 +3613,7 @@ mod tests {
             },
         })
         .unwrap();
-        let deser = compile_decoder(BoxedNested::SHAPE, &postcard::FadPostcard);
+        let deser = compile_decoder(BoxedNested::SHAPE, &postcard::KajitPostcard);
         let result: BoxedNested = deserialize(&deser, &input).unwrap();
         assert_eq!(
             result,
@@ -3632,7 +3635,7 @@ mod tests {
     #[test]
     fn json_option_box_some() {
         let input = br#"{"value": 7}"#;
-        let deser = compile_decoder(OptionBox::SHAPE, &json::FadJson);
+        let deser = compile_decoder(OptionBox::SHAPE, &json::KajitJson);
         let result: OptionBox = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3645,7 +3648,7 @@ mod tests {
     #[test]
     fn json_option_box_none() {
         let input = br#"{"value": null}"#;
-        let deser = compile_decoder(OptionBox::SHAPE, &json::FadJson);
+        let deser = compile_decoder(OptionBox::SHAPE, &json::KajitJson);
         let result: OptionBox = deserialize(&deser, input).unwrap();
         assert_eq!(result, OptionBox { value: None });
     }
@@ -3659,7 +3662,7 @@ mod tests {
     #[test]
     fn json_vec_box() {
         let input = br#"{"items": [1, 2, 3]}"#;
-        let deser = compile_decoder(VecBox::SHAPE, &json::FadJson);
+        let deser = compile_decoder(VecBox::SHAPE, &json::KajitJson);
         let result: VecBox = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3678,7 +3681,7 @@ mod tests {
     #[test]
     fn json_arc_scalar() {
         let input = br#"{"value": 99}"#;
-        let deser = compile_decoder(ArcScalar::SHAPE, &json::FadJson);
+        let deser = compile_decoder(ArcScalar::SHAPE, &json::KajitJson);
         let result: ArcScalar = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3697,7 +3700,7 @@ mod tests {
     #[test]
     fn json_rc_scalar() {
         let input = br#"{"value": 77}"#;
-        let deser = compile_decoder(RcScalar::SHAPE, &json::FadJson);
+        let deser = compile_decoder(RcScalar::SHAPE, &json::KajitJson);
         let result: RcScalar = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3715,7 +3718,7 @@ mod tests {
     #[test]
     fn json_unit_field() {
         let input = br#"{"geo": null, "name": "test"}"#;
-        let deser = compile_decoder(UnitField::SHAPE, &json::FadJson);
+        let deser = compile_decoder(UnitField::SHAPE, &json::KajitJson);
         let result: UnitField = deserialize(&deser, input).unwrap();
         assert_eq!(
             result,
@@ -3748,7 +3751,7 @@ mod tests {
             age: 42,
             name: "Alice".into(),
         };
-        let enc = compile_encoder(Friend::SHAPE, &postcard::FadPostcard);
+        let enc = compile_encoder(Friend::SHAPE, &postcard::KajitPostcard);
         let got = serialize(&enc, &facet_val);
         assert_eq!(got, expected);
     }
@@ -3818,7 +3821,7 @@ mod tests {
             a_char: 'ß',
             a_name: "hello".into(),
         };
-        let enc = compile_encoder(AllScalars::SHAPE, &postcard::FadPostcard);
+        let enc = compile_encoder(AllScalars::SHAPE, &postcard::KajitPostcard);
         let got = serialize(&enc, &facet_val);
         assert_eq!(got, expected);
     }
@@ -3859,7 +3862,7 @@ mod tests {
             inner: Inner { x: 10, y: 20 },
             label: "test".into(),
         };
-        let enc = compile_encoder(Outer::SHAPE, &postcard::FadPostcard);
+        let enc = compile_encoder(Outer::SHAPE, &postcard::KajitPostcard);
         let got = serialize(&enc, &facet_val);
         assert_eq!(got, expected);
     }
@@ -3886,7 +3889,7 @@ mod tests {
         let facet_val = WithString {
             name: String::new(),
         };
-        let enc = compile_encoder(WithString::SHAPE, &postcard::FadPostcard);
+        let enc = compile_encoder(WithString::SHAPE, &postcard::KajitPostcard);
         let got = serialize(&enc, &facet_val);
         assert_eq!(got, expected);
     }
@@ -3912,21 +3915,21 @@ mod tests {
         }
 
         let facet_val = WithString { data: long };
-        let enc = compile_encoder(WithString::SHAPE, &postcard::FadPostcard);
+        let enc = compile_encoder(WithString::SHAPE, &postcard::KajitPostcard);
         let got = serialize(&enc, &facet_val);
         assert_eq!(got, expected);
     }
 
     #[test]
     fn postcard_encode_roundtrip() {
-        // Encode with fad, decode with fad — full roundtrip.
+        // Encode with kajit, decode with kajit — full roundtrip.
         let original = Friend {
             age: 42,
             name: "Alice".into(),
         };
-        let enc = compile_encoder(Friend::SHAPE, &postcard::FadPostcard);
+        let enc = compile_encoder(Friend::SHAPE, &postcard::KajitPostcard);
         let bytes = serialize(&enc, &original);
-        let dec = compile_decoder(Friend::SHAPE, &postcard::FadPostcard);
+        let dec = compile_decoder(Friend::SHAPE, &postcard::KajitPostcard);
         let decoded: Friend = deserialize(&dec, &bytes).unwrap();
         assert_eq!(decoded, original);
     }
@@ -3953,7 +3956,7 @@ mod tests {
             age: 42,
             name: "Alice".into(),
         };
-        let enc = compile_encoder(Friend::SHAPE, &json::FadJsonEncoder);
+        let enc = compile_encoder(Friend::SHAPE, &json::KajitJsonEncoder);
         let got = String::from_utf8(serialize(&enc, &facet_val)).unwrap();
         assert_eq!(got, expected);
     }
@@ -4023,7 +4026,7 @@ mod tests {
             a_char: 'ß',
             a_name: "hello".into(),
         };
-        let enc = compile_encoder(AllScalars::SHAPE, &json::FadJsonEncoder);
+        let enc = compile_encoder(AllScalars::SHAPE, &json::KajitJsonEncoder);
         let got = String::from_utf8(serialize(&enc, &facet_val)).unwrap();
         assert_eq!(got, expected);
     }
@@ -4064,7 +4067,7 @@ mod tests {
             inner: Inner { x: 10, y: 20 },
             label: "test".into(),
         };
-        let enc = compile_encoder(Outer::SHAPE, &json::FadJsonEncoder);
+        let enc = compile_encoder(Outer::SHAPE, &json::KajitJsonEncoder);
         let got = String::from_utf8(serialize(&enc, &facet_val)).unwrap();
         assert_eq!(got, expected);
     }
@@ -4100,7 +4103,7 @@ mod tests {
             let expected = serde_json::to_string(&serde_val).unwrap();
 
             let facet_val = WithString { text: text.into() };
-            let enc = compile_encoder(WithString::SHAPE, &json::FadJsonEncoder);
+            let enc = compile_encoder(WithString::SHAPE, &json::KajitJsonEncoder);
             let got = String::from_utf8(serialize(&enc, &facet_val)).unwrap();
             assert_eq!(got, expected, "mismatch for text: {:?}", text);
         }
@@ -4108,14 +4111,14 @@ mod tests {
 
     #[test]
     fn json_encode_roundtrip() {
-        // Encode with fad JSON, decode with fad JSON — full roundtrip.
+        // Encode with kajit JSON, decode with kajit JSON — full roundtrip.
         let original = Friend {
             age: 42,
             name: "Alice".into(),
         };
-        let enc = compile_encoder(Friend::SHAPE, &json::FadJsonEncoder);
+        let enc = compile_encoder(Friend::SHAPE, &json::KajitJsonEncoder);
         let bytes = serialize(&enc, &original);
-        let dec = compile_decoder(Friend::SHAPE, &json::FadJson);
+        let dec = compile_decoder(Friend::SHAPE, &json::KajitJson);
         let decoded: Friend = deserialize(&dec, &bytes).unwrap();
         assert_eq!(decoded, original);
     }
@@ -4125,7 +4128,7 @@ mod tests {
     #[test]
     fn json_tuple_deser() {
         let input = br#"[42, "Alice"]"#;
-        let dec = compile_decoder(<(u32, String)>::SHAPE, &json::FadJson);
+        let dec = compile_decoder(<(u32, String)>::SHAPE, &json::KajitJson);
         let result: (u32, String) = deserialize(&dec, input).unwrap();
         assert_eq!(result, (42, "Alice".into()));
     }
@@ -4134,7 +4137,7 @@ mod tests {
     fn postcard_tuple_deser() {
         let original: (u32, String) = (42, "Alice".into());
         let bytes = ::postcard::to_allocvec(&original).unwrap();
-        let dec = compile_decoder(<(u32, String)>::SHAPE, &postcard::FadPostcard);
+        let dec = compile_decoder(<(u32, String)>::SHAPE, &postcard::KajitPostcard);
         let result: (u32, String) = deserialize(&dec, &bytes).unwrap();
         assert_eq!(result, original);
     }
@@ -4142,7 +4145,7 @@ mod tests {
     #[test]
     fn json_tuple_triple_deser() {
         let input = br#"[1, 2, 3]"#;
-        let dec = compile_decoder(<(u32, u32, u32)>::SHAPE, &json::FadJson);
+        let dec = compile_decoder(<(u32, u32, u32)>::SHAPE, &json::KajitJson);
         let result: (u32, u32, u32) = deserialize(&dec, input).unwrap();
         assert_eq!(result, (1, 2, 3));
     }
@@ -4150,7 +4153,7 @@ mod tests {
     #[test]
     fn json_array_deser() {
         let input = br#"[10, 20, 30, 40]"#;
-        let dec = compile_decoder(<[u32; 4]>::SHAPE, &json::FadJson);
+        let dec = compile_decoder(<[u32; 4]>::SHAPE, &json::KajitJson);
         let result: [u32; 4] = deserialize(&dec, input).unwrap();
         assert_eq!(result, [10, 20, 30, 40]);
     }
@@ -4159,7 +4162,7 @@ mod tests {
     fn postcard_array_deser() {
         let original: [u32; 4] = [10, 20, 30, 40];
         let bytes = ::postcard::to_allocvec(&original).unwrap();
-        let dec = compile_decoder(<[u32; 4]>::SHAPE, &postcard::FadPostcard);
+        let dec = compile_decoder(<[u32; 4]>::SHAPE, &postcard::KajitPostcard);
         let result: [u32; 4] = deserialize(&dec, &bytes).unwrap();
         assert_eq!(result, original);
     }
@@ -4167,7 +4170,7 @@ mod tests {
     #[test]
     fn json_tuple_nested_deser() {
         let input = br#"[[1, 2], [3, 4]]"#;
-        let dec = compile_decoder(<([u32; 2], [u32; 2])>::SHAPE, &json::FadJson);
+        let dec = compile_decoder(<([u32; 2], [u32; 2])>::SHAPE, &json::KajitJson);
         let result: ([u32; 2], [u32; 2]) = deserialize(&dec, input).unwrap();
         assert_eq!(result, ([1, 2], [3, 4]));
     }

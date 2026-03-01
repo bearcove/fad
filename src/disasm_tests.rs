@@ -245,37 +245,37 @@ fn disasm_postcard_supported_surface() {
         "postcard",
         "all_scalars",
         AllScalars::SHAPE,
-        &crate::postcard::FadPostcard,
+        &crate::postcard::KajitPostcard,
     );
     assert_case_snapshot(
         "postcard",
         "nested_struct",
         Outer::SHAPE,
-        &crate::postcard::FadPostcard,
+        &crate::postcard::KajitPostcard,
     );
     assert_case_snapshot(
         "postcard",
         "flatten",
         Document::SHAPE,
-        &crate::postcard::FadPostcard,
+        &crate::postcard::KajitPostcard,
     );
     assert_case_snapshot(
         "postcard",
         "enum_external",
         Animal::SHAPE,
-        &crate::postcard::FadPostcard,
+        &crate::postcard::KajitPostcard,
     );
     assert_case_snapshot(
         "postcard",
         "option",
         OptionModel::SHAPE,
-        &crate::postcard::FadPostcard,
+        &crate::postcard::KajitPostcard,
     );
     assert_case_snapshot(
         "postcard",
         "vec",
         VecModel::SHAPE,
-        &crate::postcard::FadPostcard,
+        &crate::postcard::KajitPostcard,
     );
 }
 
@@ -285,34 +285,44 @@ fn disasm_json_supported_surface() {
         "json",
         "all_scalars",
         AllScalars::SHAPE,
-        &crate::json::FadJson,
+        &crate::json::KajitJson,
     );
-    assert_case_snapshot("json", "nested_struct", Outer::SHAPE, &crate::json::FadJson);
-    assert_case_snapshot("json", "flatten", Document::SHAPE, &crate::json::FadJson);
+    assert_case_snapshot(
+        "json",
+        "nested_struct",
+        Outer::SHAPE,
+        &crate::json::KajitJson,
+    );
+    assert_case_snapshot("json", "flatten", Document::SHAPE, &crate::json::KajitJson);
     assert_case_snapshot(
         "json",
         "enum_external",
         Animal::SHAPE,
-        &crate::json::FadJson,
+        &crate::json::KajitJson,
     );
     assert_case_snapshot(
         "json",
         "enum_adjacent",
         AdjAnimal::SHAPE,
-        &crate::json::FadJson,
+        &crate::json::KajitJson,
     );
     assert_case_snapshot(
         "json",
         "enum_internal",
         IntAnimal::SHAPE,
-        &crate::json::FadJson,
+        &crate::json::KajitJson,
     );
     assert_case_snapshot(
         "json",
         "enum_untagged",
         UntaggedAnimal::SHAPE,
-        &crate::json::FadJson,
+        &crate::json::KajitJson,
     );
-    assert_case_snapshot("json", "option", OptionModel::SHAPE, &crate::json::FadJson);
-    assert_case_snapshot("json", "vec", VecModel::SHAPE, &crate::json::FadJson);
+    assert_case_snapshot(
+        "json",
+        "option",
+        OptionModel::SHAPE,
+        &crate::json::KajitJson,
+    );
+    assert_case_snapshot("json", "vec", VecModel::SHAPE, &crate::json::KajitJson);
 }

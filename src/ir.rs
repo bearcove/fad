@@ -1,4 +1,4 @@
-//! RVSDG-based intermediate representation for fad's JIT compiler.
+//! RVSDG-based intermediate representation for kajit's JIT compiler.
 //!
 //! The IR captures deserialization/serialization semantics as a Regionalized
 //! Value State Dependence Graph. Values flow through data edges, effects

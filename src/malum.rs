@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 /// Returns true if the malum (direct Vec layout) path is enabled.
 ///
-/// Enabled by default. Set `FAD_NO_MALUM=1` to disable.
+/// Enabled by default. Set `KAJIT_NO_MALUM=1` to disable.
 pub fn malum_enabled() -> bool {
-    std::env::var("FAD_NO_MALUM").map_or(true, |v| v != "1")
+    std::env::var("KAJIT_NO_MALUM").map_or(true, |v| v != "1")
 }
 
 /// Discovered Vec field offsets (in bytes from base of the Vec).

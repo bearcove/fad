@@ -127,7 +127,7 @@ pub enum Op {
     /// Advance the output pointer by the value in slot.
     AdvanceOutputBySlot { slot: Slot },
     /// Ensure at least `count` bytes are available in the output buffer.
-    /// Calls fad_output_grow if needed.
+    /// Calls kajit_output_grow if needed.
     OutputBoundsCheck { count: u32 },
     /// Sign-extend a narrower value in the slot to full register width.
     /// `from` is the source width (W1 or W2); the value is sign-extended

@@ -135,8 +135,8 @@ static CITM_STR: LazyLock<String> = LazyLock::new(|| {
 // Cached compiled deserializers
 // =============================================================================
 
-static FAD_CITM: LazyLock<fad::compiler::CompiledDecoder> =
-    LazyLock::new(|| fad::compile_decoder(CitmCatalog::SHAPE, &fad::json::FadJson));
+static KAJIT_CITM: LazyLock<kajit::compiler::CompiledDecoder> =
+    LazyLock::new(|| kajit::compile_decoder(CitmCatalog::SHAPE, &kajit::json::KajitJson));
 
 // =============================================================================
 // Benchmarks
@@ -156,12 +156,12 @@ fn main() {
     });
 
     v.push(harness::Bench {
-        name: "citm_catalog/fad_dynasm_deser".into(),
+        name: "citm_catalog/kajit_dynasm_deser".into(),
         func: Box::new(|runner| {
             let data = &*CITM_STR;
-            let deser = &*FAD_CITM;
+            let deser = &*KAJIT_CITM;
             runner.run(|| {
-                black_box(fad::from_str::<CitmCatalog>(deser, black_box(data)).unwrap());
+                black_box(kajit::from_str::<CitmCatalog>(deser, black_box(data)).unwrap());
             });
         }),
     });

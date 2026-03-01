@@ -1,4 +1,4 @@
-# fad
+# kajit
 
 JIT deserializer for Rust. Generates native machine code at runtime from
 [facet](https://github.com/facet-rs/facet) type reflection. No proc macros,
@@ -6,7 +6,7 @@ no schema files — `#[derive(Facet)]` on your types is all it needs.
 
 ## How it works
 
-fad walks a type's `Shape` (facet's reflection metadata) at startup and emits
+kajit walks a type's `Shape` (facet's reflection metadata) at startup and emits
 aarch64 or x86_64 machine code via [dynasmrt](https://crates.io/crates/dynasmrt).
 One function per type, composed recursively. Nested structs get inlined or called
 depending on the format. The generated code runs directly against input bytes with
@@ -42,7 +42,7 @@ instructions by each backend.
 
 ## Performance
 
-fad aims to generate the same quality of code a human would write by hand for each
+kajit aims to generate the same quality of code a human would write by hand for each
 specific type. Varint decoding has a single-byte fast path inlined into the
 hot loop; multi-byte varints fall through to an intrinsic. Vec loops over
 scalar elements write directly to the output buffer with no intermediate

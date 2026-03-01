@@ -577,7 +577,7 @@ impl<'fmt> DecoderCompiler<'fmt> {
         // Restore out, then call new_into_fn to wrap T into the pointer.
         self.ectx.emit_restore_out(option_scratch_offset);
         self.ectx.emit_call_option_init_some(
-            crate::intrinsics::fad_pointer_new_into as *const u8,
+            crate::intrinsics::kajit_pointer_new_into as *const u8,
             new_into_fn as *const u8,
             0, // offset=0: function receives out pointing to the pointer slot
             option_scratch_offset,
@@ -797,7 +797,7 @@ fn collect_fields_recursive(
             Some(DefaultSource::Custom(custom_fn)) => {
                 // Custom default expression: #[facet(default = expr)]
                 Some(DefaultInfo {
-                    trampoline: crate::intrinsics::fad_field_default_custom as *const u8,
+                    trampoline: crate::intrinsics::kajit_field_default_custom as *const u8,
                     fn_ptr: custom_fn as *const u8,
                     shape: None,
                 })
@@ -852,7 +852,7 @@ fn resolve_trait_default(shape: &'static Shape) -> Option<crate::format::Default
         facet::TypeOps::Direct(ops) => {
             let default_fn = ops.default_in_place?;
             Some(DefaultInfo {
-                trampoline: crate::intrinsics::fad_field_default_trait as *const u8,
+                trampoline: crate::intrinsics::kajit_field_default_trait as *const u8,
                 fn_ptr: default_fn as *const u8,
                 shape: None,
             })
@@ -860,7 +860,7 @@ fn resolve_trait_default(shape: &'static Shape) -> Option<crate::format::Default
         facet::TypeOps::Indirect(ops) => {
             let default_fn = ops.default_in_place?;
             Some(DefaultInfo {
-                trampoline: crate::intrinsics::fad_field_default_indirect as *const u8,
+                trampoline: crate::intrinsics::kajit_field_default_indirect as *const u8,
                 fn_ptr: default_fn as *const u8,
                 shape: Some(shape),
             })
@@ -1134,7 +1134,7 @@ fn emit_field(
         // Restore out, then call new_into_fn to wrap T into the pointer.
         ectx.emit_restore_out(option_scratch_offset);
         ectx.emit_call_option_init_some(
-            crate::intrinsics::fad_pointer_new_into as *const u8,
+            crate::intrinsics::kajit_pointer_new_into as *const u8,
             new_into_fn as *const u8,
             field.offset as u32,
             option_scratch_offset,
@@ -2728,7 +2728,7 @@ fn register_jit_symbols(
             entry.offset.map(|off| {
                 let shape = unsafe { &*shape_ptr };
                 (
-                    format!("fad::{direction}::{}", shape.type_identifier),
+                    format!("kajit::{direction}::{}", shape.type_identifier),
                     off.0,
                 )
             })

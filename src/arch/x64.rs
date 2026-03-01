@@ -817,7 +817,7 @@ impl EmitCtx {
         self.emit_reload_cursor_and_check_error();
     }
 
-    /// Call fad_string_validate_alloc_copy(ctx, start, len) for the String malum path.
+    /// Call kajit_string_validate_alloc_copy(ctx, start, len) for the String malum path.
     /// `start_sp_offset` holds the start pointer. len = r12 - start.
     /// Returns buf pointer in rax. Does NOT advance cursor — caller does that.
     /// Saves len to `len_save_sp_offset` for WriteMalumString.
@@ -870,7 +870,7 @@ impl EmitCtx {
         );
     }
 
-    /// Emit inline key-reading slow path call: fad_json_key_slow_from_jit(ctx, start, prefix_len, &key_ptr, &key_len).
+    /// Emit inline key-reading slow path call: kajit_json_key_slow_from_jit(ctx, start, prefix_len, &key_ptr, &key_len).
     /// start is in `start_sp_offset`, prefix_len = r12 - start.
     /// key_ptr/key_len written to `key_ptr_sp_offset` and `key_len_sp_offset`.
     pub fn emit_call_key_slow_from_jit(
@@ -1208,7 +1208,7 @@ impl EmitCtx {
         );
     }
 
-    /// Call fad_option_init_none(init_none_fn, out + offset).
+    /// Call kajit_option_init_none(init_none_fn, out + offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_none(
         &mut self,
@@ -1233,7 +1233,7 @@ impl EmitCtx {
     }
 
     /// Call wrapper(fn_ptr, out + offset, extra_ptr).
-    /// Used for `fad_field_default_indirect(default_fn, out, shape)`.
+    /// Used for `kajit_field_default_indirect(default_fn, out, shape)`.
     pub fn emit_call_trampoline_3(
         &mut self,
         wrapper_fn: *const u8,
@@ -1260,7 +1260,7 @@ impl EmitCtx {
         self.emit_call_fn_ptr(wrapper_fn);
     }
 
-    /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
+    /// Call kajit_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_some(
         &mut self,
@@ -1289,7 +1289,7 @@ impl EmitCtx {
 
     // ── Vec support ──────────────────────────────────────────────────
 
-    /// Call fad_vec_alloc with a constant count (for JSON initial allocation).
+    /// Call kajit_vec_alloc with a constant count (for JSON initial allocation).
     ///
     /// Result (buf pointer) is in rax.
     pub fn emit_call_json_vec_initial_alloc(
@@ -1358,7 +1358,7 @@ impl EmitCtx {
         );
     }
 
-    /// Call fad_vec_alloc(ctx, count, elem_size, elem_align).
+    /// Call kajit_vec_alloc(ctx, count, elem_size, elem_align).
     ///
     /// count is in r10d (from emit_read_postcard_discriminant or JSON parse).
     /// Result (buf pointer) is in rax.
@@ -1386,7 +1386,7 @@ impl EmitCtx {
         self.emit_reload_cursor_and_check_error();
     }
 
-    /// Call fad_vec_grow(ctx, old_buf, len, old_cap, new_cap, elem_size, elem_align).
+    /// Call kajit_vec_grow(ctx, old_buf, len, old_cap, new_cap, elem_size, elem_align).
     ///
     /// Reads old_buf, len, old_cap from stack slots. Computes new_cap = old_cap * 2.
     /// After call: new buf pointer is in rax.
@@ -1787,11 +1787,11 @@ impl EmitCtx {
         );
     }
 
-    /// Call `fad_map_build(from_pair_slice_fn, saved_out, pairs_buf, count)`.
+    /// Call `kajit_map_build(from_pair_slice_fn, saved_out, pairs_buf, count)`.
     ///
     /// We cannot call `from_pair_slice` directly from JIT code because its
     /// first arg `PtrUninit` is a 16-byte struct — passed in 2 registers on
-    /// Linux x64 but by hidden pointer on Windows x64.  `fad_map_build` is a
+    /// Linux x64 but by hidden pointer on Windows x64.  `kajit_map_build` is a
     /// plain-C trampoline that takes four pointer-/usize-sized args and
     /// constructs `PtrUninit` internally.
     pub fn emit_call_map_from_pairs(
@@ -1817,10 +1817,10 @@ impl EmitCtx {
             ; mov r8, [rsp + buf_slot as i32]          // arg2 = pairs_ptr
             ; mov r9, [rsp + count_slot as i32]        // arg3 = count
         );
-        self.emit_call_fn_ptr(crate::intrinsics::fad_map_build as *const () as *const u8);
+        self.emit_call_fn_ptr(crate::intrinsics::kajit_map_build as *const () as *const u8);
     }
 
-    /// Call `fad_map_build(from_pair_slice_fn, r14, null, 0)` — empty map.
+    /// Call `kajit_map_build(from_pair_slice_fn, r14, null, 0)` — empty map.
     ///
     /// Same trampoline pattern as `emit_call_map_from_pairs`.
     pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
@@ -1840,10 +1840,10 @@ impl EmitCtx {
             ; xor r8d, r8d           // arg2 = null pairs ptr
             ; xor r9d, r9d           // arg3 = count = 0
         );
-        self.emit_call_fn_ptr(crate::intrinsics::fad_map_build as *const () as *const u8);
+        self.emit_call_fn_ptr(crate::intrinsics::kajit_map_build as *const () as *const u8);
     }
 
-    /// Call `fad_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
+    /// Call `kajit_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
     ///
     /// Used on the success path after `from_pair_slice` has moved the pairs into the map.
     /// Does NOT branch to error exit (pairs free on success path, not error).
@@ -2139,7 +2139,7 @@ impl EmitCtx {
                     data_src,
                     len_src,
                 } => {
-                    // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
+                    // Call kajit_string_validate_alloc_copy(ctx, data_ptr, data_len)
                     // Returns buf pointer in rax
                     // arg0 = ctx, arg1 = data_ptr (slot), arg2 = data_len (slot)
                     self.emit_flush_input_cursor();
@@ -2300,13 +2300,13 @@ impl EmitCtx {
                         ; jge =>have_space
                     );
 
-                    // Not enough space — call fad_output_grow(ctx, needed)
+                    // Not enough space — call kajit_output_grow(ctx, needed)
                     self.emit_enc_flush_output_cursor();
                     #[cfg(not(windows))]
                     dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, count);
                     #[cfg(windows)]
                     dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, count);
-                    self.emit_call_fn_ptr(crate::intrinsics::fad_output_grow as *const u8);
+                    self.emit_call_fn_ptr(crate::intrinsics::kajit_output_grow as *const u8);
                     self.emit_enc_reload_and_check_error();
 
                     dynasm!(self.ops ; .arch x64 ; =>have_space);
@@ -3135,7 +3135,7 @@ impl EmitCtx {
     }
 
     /// Ensure the output buffer has at least `count` bytes of capacity.
-    /// Inlines the comparison; calls fad_output_grow only when needed.
+    /// Inlines the comparison; calls kajit_output_grow only when needed.
     pub fn emit_enc_ensure_capacity(&mut self, count: u32) {
         let have_space = self.ops.new_dynamic_label();
 
@@ -3148,13 +3148,13 @@ impl EmitCtx {
             ; jge =>have_space
         );
 
-        // Not enough space — call fad_output_grow(ctx, needed)
+        // Not enough space — call kajit_output_grow(ctx, needed)
         self.emit_enc_flush_output_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, count as i32);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, count as i32);
-        self.emit_call_fn_ptr(crate::intrinsics::fad_output_grow as *const u8);
+        self.emit_call_fn_ptr(crate::intrinsics::kajit_output_grow as *const u8);
         self.emit_enc_reload_and_check_error();
 
         dynasm!(self.ops ; .arch x64 ; =>have_space);
