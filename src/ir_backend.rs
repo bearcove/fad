@@ -3420,8 +3420,9 @@ mod tests {
         };
         let bytes = postcard::to_allocvec(&expected).expect("serialize vec");
 
-        let legacy = crate::compile_decoder_legacy(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
-        let ir = crate::compile_decoder_via_ir(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+        let legacy =
+            crate::compile_decoder_legacy(ScalarVec::SHAPE, &crate::postcard::KajitPostcard);
+        let ir = crate::compile_decoder_via_ir(ScalarVec::SHAPE, &crate::postcard::KajitPostcard);
 
         let legacy_out = crate::deserialize::<ScalarVec>(&legacy, &bytes).expect("legacy decode");
         let ir_out = crate::deserialize::<ScalarVec>(&ir, &bytes).expect("ir decode");

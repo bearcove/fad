@@ -788,7 +788,8 @@ mod tests {
     // r[verify ir.regalloc.engine]
     #[test]
     fn regalloc2_allocates_postcard_vec_decoder() {
-        let mut func = compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+        let mut func =
+            compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::KajitPostcard);
         crate::ir_passes::run_default_passes(&mut func);
         let lin = linearize(&mut func);
         let alloc = allocate_linear_ir(&lin).expect("regalloc2 should allocate postcard vec path");
@@ -840,7 +841,8 @@ mod tests {
         if !cfg!(target_arch = "aarch64") {
             return;
         }
-        let mut func = compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+        let mut func =
+            compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::KajitPostcard);
         crate::ir_passes::run_default_passes(&mut func);
         let lin = linearize(&mut func);
         let alloc = allocate_linear_ir(&lin).expect("regalloc2 should allocate postcard vec path");
@@ -856,7 +858,8 @@ mod tests {
     // r[verify ir.regalloc.checker]
     #[test]
     fn regalloc_checker_detects_broken_mapping() {
-        let mut func = compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+        let mut func =
+            compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::KajitPostcard);
         crate::ir_passes::run_default_passes(&mut func);
         let lin = linearize(&mut func);
         let ra = crate::regalloc_mir::lower_linear_ir(&lin);

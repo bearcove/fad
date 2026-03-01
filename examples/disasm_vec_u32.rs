@@ -22,11 +22,11 @@ fn serde_deser(data: &[u8]) -> NumsSerde {
 }
 
 fn main() {
-    // === fad JIT ===
-    let deser = fad::compile_decoder(Nums::SHAPE, &fad::postcard::FadPostcard);
+    // === kajit JIT ===
+    let deser = kajit::compile_decoder(Nums::SHAPE, &kajit::postcard::KajitPostcard);
     let code = deser.code();
     let base = code.as_ptr() as u64;
-    println!("=== fad postcard Vec<u32> ===");
+    println!("=== kajit postcard Vec<u32> ===");
     println!(
         "{}",
         disasm_bytes(code, base, Some(deser.entry_offset()), false)

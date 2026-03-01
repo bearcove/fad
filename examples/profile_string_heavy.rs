@@ -12,10 +12,10 @@ fn main() {
             .collect(),
     };
     let data = serde_json::to_string(&bag).unwrap();
-    let decoder = fad::compile_decoder(StringBag::SHAPE, &fad::json::FadJson);
+    let decoder = kajit::compile_decoder(StringBag::SHAPE, &kajit::json::KajitJson);
 
     for _ in 0..100_000 {
-        let result: StringBag = fad::from_str(&decoder, std::hint::black_box(&data)).unwrap();
+        let result: StringBag = kajit::from_str(&decoder, std::hint::black_box(&data)).unwrap();
         std::hint::black_box(&result);
     }
 }

@@ -9,12 +9,12 @@ use crate::malum::{StringOffsets, VecOffsets};
 /// Resolved default information for a field.
 #[derive(Clone, Copy)]
 pub struct DefaultInfo {
-    /// Pointer to the intrinsic trampoline (fad_field_default_trait or fad_field_default_custom).
+    /// Pointer to the intrinsic trampoline (kajit_field_default_trait or kajit_field_default_custom).
     pub trampoline: *const u8,
     /// Pointer to the actual default function (from TypeOps or custom expression).
     pub fn_ptr: *const u8,
     /// For indirect types (generic containers), the shape needed to construct OxPtrUninit.
-    /// When Some, the 3-argument trampoline `fad_field_default_indirect` is used.
+    /// When Some, the 3-argument trampoline `kajit_field_default_indirect` is used.
     pub shape: Option<&'static facet::Shape>,
 }
 
@@ -222,9 +222,9 @@ pub trait Decoder {
     ///
     /// The format reads the wire discriminant (postcard: 0x00/0x01 byte, JSON:
     /// null peek), then either:
-    /// - None: calls `fad_option_init_none(init_none_fn, out + offset)`
+    /// - None: calls `kajit_option_init_none(init_none_fn, out + offset)`
     /// - Some: redirects `out` to a scratch area, calls `emit_inner` to
-    ///   deserialize T, then calls `fad_option_init_some(init_some_fn, out + offset, scratch)`
+    ///   deserialize T, then calls `kajit_option_init_some(init_some_fn, out + offset, scratch)`
     ///
     /// `scratch_offset`: stack offset where inner T can be temporarily deserialized.
     fn emit_option(

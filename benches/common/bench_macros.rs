@@ -2,11 +2,11 @@
 
 // bench!(v, name, Type, value)                — json + postcard, deser only
 // bench!(v, name, Type, value, +ser)          — json + postcard, deser + ser
-// bench!(v, name, Type, value, +ir)           — json deser + postcard serde/fad_dynasm/fad_ir deser
-// bench!(v, name, Type, value, +ser, +ir)     — json deser+ser + postcard serde/fad_dynasm/fad_ir deser + serde/fad_dynasm ser
+// bench!(v, name, Type, value, +ir)           — json deser + postcard serde/kajit_dynasm/kajit_ir deser
+// bench!(v, name, Type, value, +ser, +ir)     — json deser+ser + postcard serde/kajit_dynasm/kajit_ir deser + serde/kajit_dynasm ser
 // bench!(v, name, Type, value, json_only)     — json only, deser only
-// bench!(v, name, Type, value, postcard_legacy_ir)         — postcard serde + fad_dynasm + fad_ir, deser only
-// bench!(v, name, Type, value, postcard_legacy_ir_compile) — postcard fad_dynasm vs fad_ir, deser + compile
+// bench!(v, name, Type, value, postcard_legacy_ir)         — postcard serde + kajit_dynasm + kajit_ir, deser only
+// bench!(v, name, Type, value, postcard_legacy_ir_compile) — postcard kajit_dynasm vs kajit_ir, deser + compile
 
 macro_rules! bench {
     ($v:ident, $name:ident, $Type:ty, $value:expr) => {{
@@ -60,8 +60,8 @@ macro_rules! bench {
         static DATA: LazyLock<String> = LazyLock::new(|| {
             serde_json::to_string(&{ $value }).unwrap()
         });
-        static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_legacy(<$Type>::SHAPE, &fad::json::FadJson)
+        static DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_legacy(<$Type>::SHAPE, &kajit::json::KajitJson)
         });
 
         let prefix = format!("{}/json", $group);
@@ -74,11 +74,11 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_deser"),
+            name: format!("{prefix}/kajit_dynasm_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
-                runner.run(|| { black_box(fad::from_str::<$Type>(deser, black_box(data)).unwrap()); });
+                runner.run(|| { black_box(kajit::from_str::<$Type>(deser, black_box(data)).unwrap()); });
             }),
         });
     }};
@@ -89,11 +89,11 @@ macro_rules! bench {
         static DATA: LazyLock<String> = LazyLock::new(|| {
             serde_json::to_string(&{ $value }).unwrap()
         });
-        static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_legacy(<$Type>::SHAPE, &fad::json::FadJson)
+        static DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_legacy(<$Type>::SHAPE, &kajit::json::KajitJson)
         });
-        static ENCODER: LazyLock<fad::compiler::CompiledEncoder> = LazyLock::new(|| {
-            fad::compile_encoder(<$Type>::SHAPE, &fad::json::FadJsonEncoder)
+        static ENCODER: LazyLock<kajit::compiler::CompiledEncoder> = LazyLock::new(|| {
+            kajit::compile_encoder(<$Type>::SHAPE, &kajit::json::KajitJsonEncoder)
         });
 
         let prefix = format!("{}/json", $group);
@@ -106,11 +106,11 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_deser"),
+            name: format!("{prefix}/kajit_dynasm_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
-                runner.run(|| { black_box(fad::from_str::<$Type>(deser, black_box(data)).unwrap()); });
+                runner.run(|| { black_box(kajit::from_str::<$Type>(deser, black_box(data)).unwrap()); });
             }),
         });
         $v.push(harness::Bench {
@@ -121,11 +121,11 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_ser"),
+            name: format!("{prefix}/kajit_dynasm_ser"),
             func: Box::new(|runner| {
                 let val: $Type = $value;
                 let enc = &*ENCODER;
-                runner.run(|| { black_box(fad::serialize(enc, black_box(&val))); });
+                runner.run(|| { black_box(kajit::serialize(enc, black_box(&val))); });
             }),
         });
     }};
@@ -136,8 +136,8 @@ macro_rules! bench {
         static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
             ::postcard::to_allocvec(&{ $value }).unwrap()
         });
-        static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_legacy(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_legacy(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
 
         let prefix = format!("{}/postcard", $group);
@@ -150,11 +150,11 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_deser"),
+            name: format!("{prefix}/kajit_dynasm_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
-                runner.run(|| { black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
+                runner.run(|| { black_box(kajit::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
             }),
         });
     }};
@@ -165,11 +165,11 @@ macro_rules! bench {
         static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
             ::postcard::to_allocvec(&{ $value }).unwrap()
         });
-        static DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_legacy(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_legacy(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
-        static ENCODER: LazyLock<fad::compiler::CompiledEncoder> = LazyLock::new(|| {
-            fad::compile_encoder(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static ENCODER: LazyLock<kajit::compiler::CompiledEncoder> = LazyLock::new(|| {
+            kajit::compile_encoder(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
 
         let prefix = format!("{}/postcard", $group);
@@ -182,11 +182,11 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_deser"),
+            name: format!("{prefix}/kajit_dynasm_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
-                runner.run(|| { black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
+                runner.run(|| { black_box(kajit::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
             }),
         });
         $v.push(harness::Bench {
@@ -197,29 +197,29 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_ser"),
+            name: format!("{prefix}/kajit_dynasm_ser"),
             func: Box::new(|runner| {
                 let val: $Type = $value;
                 let enc = &*ENCODER;
-                runner.run(|| { black_box(fad::serialize(enc, black_box(&val))); });
+                runner.run(|| { black_box(kajit::serialize(enc, black_box(&val))); });
             }),
         });
     }};
 
-    // ── Postcard (deser + ser, with fad_dynasm + fad_ir side-by-side) ───
+    // ── Postcard (deser + ser, with kajit_dynasm + kajit_ir side-by-side) ───
 
     (@postcard_ser_ir $v:ident, $group:expr, $Type:ty, $value:expr) => {{
         static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
             ::postcard::to_allocvec(&{ $value }).unwrap()
         });
-        static LEGACY_DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_legacy(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static LEGACY_DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_legacy(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
-        static IR_DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_via_ir(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static IR_DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_via_ir(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
-        static ENCODER: LazyLock<fad::compiler::CompiledEncoder> = LazyLock::new(|| {
-            fad::compile_encoder(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static ENCODER: LazyLock<kajit::compiler::CompiledEncoder> = LazyLock::new(|| {
+            kajit::compile_encoder(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
 
         let prefix = format!("{}/postcard", $group);
@@ -232,19 +232,19 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_deser"),
+            name: format!("{prefix}/kajit_dynasm_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*LEGACY_DECODER;
-                runner.run(|| { black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
+                runner.run(|| { black_box(kajit::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_ir_deser"),
+            name: format!("{prefix}/kajit_ir_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*IR_DECODER;
-                runner.run(|| { black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
+                runner.run(|| { black_box(kajit::deserialize::<$Type>(deser, black_box(data)).unwrap()); });
             }),
         });
         $v.push(harness::Bench {
@@ -255,26 +255,26 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_ser"),
+            name: format!("{prefix}/kajit_dynasm_ser"),
             func: Box::new(|runner| {
                 let val: $Type = $value;
                 let enc = &*ENCODER;
-                runner.run(|| { black_box(fad::serialize(enc, black_box(&val))); });
+                runner.run(|| { black_box(kajit::serialize(enc, black_box(&val))); });
             }),
         });
     }};
 
-    // ── Postcard serde + fad_dynasm vs fad_ir (deser, optional compile) ──
+    // ── Postcard serde + kajit_dynasm vs kajit_ir (deser, optional compile) ──
 
     (@postcard_legacy_ir $v:ident, $group:expr, $Type:ty, $value:expr, $with_compile:expr) => {{
         static DATA: LazyLock<Vec<u8>> = LazyLock::new(|| {
             ::postcard::to_allocvec(&{ $value }).unwrap()
         });
-        static LEGACY_DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_legacy(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static LEGACY_DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_legacy(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
-        static IR_DECODER: LazyLock<fad::compiler::CompiledDecoder> = LazyLock::new(|| {
-            fad::compile_decoder_via_ir(<$Type>::SHAPE, &fad::postcard::FadPostcard)
+        static IR_DECODER: LazyLock<kajit::compiler::CompiledDecoder> = LazyLock::new(|| {
+            kajit::compile_decoder_via_ir(<$Type>::SHAPE, &kajit::postcard::KajitPostcard)
         });
 
         let prefix = format!("{}/postcard", $group);
@@ -290,47 +290,47 @@ macro_rules! bench {
         });
 
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_dynasm_deser"),
+            name: format!("{prefix}/kajit_dynasm_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*LEGACY_DECODER;
                 runner.run(|| {
-                    black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap());
+                    black_box(kajit::deserialize::<$Type>(deser, black_box(data)).unwrap());
                 });
             }),
         });
 
         $v.push(harness::Bench {
-            name: format!("{prefix}/fad_ir_deser"),
+            name: format!("{prefix}/kajit_ir_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*IR_DECODER;
                 runner.run(|| {
-                    black_box(fad::deserialize::<$Type>(deser, black_box(data)).unwrap());
+                    black_box(kajit::deserialize::<$Type>(deser, black_box(data)).unwrap());
                 });
             }),
         });
 
         if $with_compile {
             $v.push(harness::Bench {
-                name: format!("{prefix}/fad_dynasm_compile"),
+                name: format!("{prefix}/kajit_dynasm_compile"),
                 func: Box::new(|runner| {
                     runner.run(|| {
-                        black_box(fad::compile_decoder_legacy(
+                        black_box(kajit::compile_decoder_legacy(
                             <$Type>::SHAPE,
-                            &fad::postcard::FadPostcard,
+                            &kajit::postcard::KajitPostcard,
                         ));
                     });
                 }),
             });
 
             $v.push(harness::Bench {
-                name: format!("{prefix}/fad_ir_compile"),
+                name: format!("{prefix}/kajit_ir_compile"),
                 func: Box::new(|runner| {
                     runner.run(|| {
-                        black_box(fad::compile_decoder_via_ir(
+                        black_box(kajit::compile_decoder_via_ir(
                             <$Type>::SHAPE,
-                            &fad::postcard::FadPostcard,
+                            &kajit::postcard::KajitPostcard,
                         ));
                     });
                 }),

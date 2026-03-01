@@ -12,10 +12,10 @@ struct ScalarVec {
 }
 
 fn main() {
-    let legacy = fad::compile_decoder_legacy(ScalarVec::SHAPE, &fad::postcard::FadPostcard);
-    let ir = fad::compile_decoder_via_ir(ScalarVec::SHAPE, &fad::postcard::FadPostcard);
+    let legacy = kajit::compile_decoder_legacy(ScalarVec::SHAPE, &kajit::postcard::KajitPostcard);
+    let ir = kajit::compile_decoder_via_ir(ScalarVec::SHAPE, &kajit::postcard::KajitPostcard);
 
-    println!("=== fad postcard ScalarVec (legacy) ===");
+    println!("=== kajit postcard ScalarVec (legacy) ===");
     println!(
         "{}",
         disasm_bytes(
@@ -25,7 +25,7 @@ fn main() {
         )
     );
 
-    println!("\n=== fad postcard ScalarVec (ir) ===");
+    println!("\n=== kajit postcard ScalarVec (ir) ===");
     println!(
         "{}",
         disasm_bytes(

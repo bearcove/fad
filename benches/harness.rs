@@ -1,4 +1,4 @@
-//! Custom benchmark harness for fad.
+//! Custom benchmark harness for kajit.
 //!
 //! Emits NDJSON to stdout, human-readable progress to stderr.
 //! Proper warmup, auto-batching, and percentile stats.

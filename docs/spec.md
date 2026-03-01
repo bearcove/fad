@@ -1,24 +1,24 @@
-# fad specification
+# kajit specification
 
-fad yearns for fast deserialization in Rust, based on JIT compilation of
+kajit yearns for fast deserialization in Rust, based on JIT compilation of
 serialization/deserialization code based on [facet] reflection.
 
 [facet]: https://github.com/facet-rs/facet
 
 ## Context
 
-fad uses facet's reflection system (proc macros exposing type information: layout,
+kajit uses facet's reflection system (proc macros exposing type information: layout,
 fields, vtables) as the basis for all serialization and deserialization.
 
-fad emits machine code at runtime via dynasmrt, caching compiled code per
+kajit emits machine code at runtime via dynasmrt, caching compiled code per
 (type, format, direction) combination.
 
-fad targets at minimum JSON and postcard as format crates.
+kajit targets at minimum JSON and postcard as format crates.
 
 ## API surface
 
 r[api.compile]
-fad exposes a `compile_deser` function that takes a `&'static Shape` and a format
+kajit exposes a `compile_deser` function that takes a `&'static Shape` and a format
 implementation, and returns a compiled deserializer.
 
 r[api.input]
@@ -39,8 +39,8 @@ keys proceed in parallel.
 
 ```rust
 use facet::Facet;
-// this implements a `fad` trait
-use fad_json::FadJson;
+// this implements a `kajit` trait
+use kajit_json::KajitJson;
 
 // A random type that happens to derive Facet
 #[derive(Facet)]
@@ -50,7 +50,7 @@ struct MyDocument {
     // etc.
 }
 
-let deser = fad::compile_deser(<MyDocument as Facet>::SHAPE, FadJson)?;
+let deser = kajit::compile_deser(<MyDocument as Facet>::SHAPE, KajitJson)?;
 let doc = MaybeUninit::<MyDocument>::uninit();
 
 unsafe { deser.call(&mut doc, r#"{ "users": [], "birthdays": {} }"#.as_bytes()); };
@@ -94,12 +94,12 @@ On the other hand, when it comes to
 have no 'name' (they're not maps, they're known lists of fields, conceptually):
 postcard is non-self-describing.
 
-fad generates machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
+kajit generates machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
 
 ## Intermediate representation
 
 r[ir]
-fad compiles shapes through an intermediate representation before emitting
+kajit compiles shapes through an intermediate representation before emitting
 machine code. The pipeline is:
 
 ```
@@ -441,7 +441,7 @@ algorithm.
 ### Backends
 
 r[ir.backends]
-fad supports two backends — aarch64 and x86_64 — selected at compile
+kajit supports two backends — aarch64 and x86_64 — selected at compile
 time via `#[cfg(target_arch)]`. Both backends consume the same linearized
 IR and produce native machine code via dynasmrt.
 
@@ -593,7 +593,7 @@ as core IR.
 ## Scalar types
 
 r[scalar.types]
-fad supports deserialization and serialization of all Rust integer types
+kajit supports deserialization and serialization of all Rust integer types
 (u8, u16, u32, u64, u128, i8, i16, i32, i64, i128), floating-point types
 (f32, f64), bool, and char.
 
@@ -1018,7 +1018,7 @@ deserializers in declaration order — no keys, no framing, no dispatch, no
 loop. The dispatch table is ignored.
 
 ```rust
-impl Format for FadPostcard {
+impl Format for KajitPostcard {
     fn emit_field_loop(
         &self,
         code: &mut Code,
@@ -1064,7 +1064,7 @@ The trie is baked into the emitted code as a branch tree — no heap allocation
 at runtime.
 
 ```rust
-impl Format for FadJson {
+impl Format for KajitJson {
     fn emit_field_loop(
         &self,
         code: &mut Code,
@@ -1152,7 +1152,7 @@ r[deser.rename.all]
 convention to all fields. The derive macro computes each field's renamed
 value at Rust compile time and stores it in the field metadata. The
 JIT compiler sees the final renamed names via `effective_name()` — no
-case conversion logic is needed in fad itself.
+case conversion logic is needed in kajit itself.
 
 r[deser.rename.json]
 For JSON, renamed field names are used in the key-matching dispatch chain.
@@ -1614,7 +1614,7 @@ r[deser.json.enum.untagged]
 deserializer determines the variant from the value itself.
 
 r[deser.json.enum.untagged.no-trial]
-fad does NOT use trial deserialization. Instead, it analyzes variant shapes at
+kajit does NOT use trial deserialization. Instead, it analyzes variant shapes at
 JIT-compile time to build a dispatch strategy, then resolves at runtime by
 peeking at the value type.
 
@@ -1992,7 +1992,7 @@ deser_Friend:
 
 ### Why not setjmp/longjmp?
 
-fad does not use setjmp/longjmp. longjmp skips destructors, leaving
+kajit does not use setjmp/longjmp. longjmp skips destructors, leaving
 partially-constructed values in an undroppable state. setjmp has its own
 cost, and it makes error messages (offset, context) harder to produce.
 
@@ -2001,7 +2001,7 @@ That's one cycle, almost always correctly predicted as not-taken.
 
 ### Why not two-register return?
 
-fad does not use two-register return for errors. Emitted functions write into
+kajit does not use two-register return for errors. Emitted functions write into
 `out` by pointer — they don't "return" the deserialized value. Error
 propagation would still require a branch after every call, same cost as the
 error slot, but with error state split between return registers and the
@@ -2093,7 +2093,7 @@ and no allocation cost is paid.
 ## Assumed layout mode (`malum`)
 
 r[malum]
-fad has a feature called `malum` (Latin for "the fruit of the tree of the
+kajit has a feature called `malum` (Latin for "the fruit of the tree of the
 knowledge of good and evil") that enables direct manipulation of standard
 library types whose memory layouts are not guaranteed by the language but
 are de facto stable. This includes `Vec<T>`, `String`, `Box<T>`, and
@@ -2105,10 +2105,10 @@ via `default-features = false` for maximum safety at the cost of
 performance.
 
 r[malum.what-it-enables]
-When `malum` is enabled, fad writes directly into the memory representation
+When `malum` is enabled, kajit writes directly into the memory representation
 of standard library types instead of going through vtable function pointers
 or intermediate staging areas. For example, `Vec<T>` is known to be
-`(ptr, len, cap)` — 24 bytes on 64-bit — and fad writes those three words
+`(ptr, len, cap)` — 24 bytes on 64-bit — and kajit writes those three words
 directly.
 
 r[malum.jit-time-validation]
@@ -2155,7 +2155,7 @@ const _: () = assert!(align_of::<Vec<u8>>() == 8);
 These catch changes before any code runs.
 
 r[malum.fallback]
-When `malum` is disabled, fad falls back to the chunk-chain strategy
+When `malum` is disabled, kajit falls back to the chunk-chain strategy
 (see below) for all collection types. This is slower but makes zero
 assumptions about standard library internals.
 
@@ -2200,14 +2200,14 @@ dropped.
 ## Vec deserialization strategy
 
 r[seq.no-vec-push]
-fad does NOT use `Vec::push` or `Vec::with_capacity` + push during
+kajit does NOT use `Vec::push` or `Vec::with_capacity` + push during
 deserialization. `Vec::push` requires a staging area per element and a
 vtable call per push — both unacceptable for a JIT deserializer.
 
 ### Fast path: direct layout (`malum`)
 
 r[seq.malum]
-When the `malum` feature is enabled, fad writes `Vec<T>` directly as
+When the `malum` feature is enabled, kajit writes `Vec<T>` directly as
 `(ptr, len, cap)` — 24 bytes at the output location. The emitted code
 manages its own backing buffer, deserializes elements in-place, and writes
 the three words when done.
@@ -2377,7 +2377,7 @@ to drop.
 ## Option, Result, and opaque types
 
 r[opaque.vtable]
-`Option<T>` and `Result<T, E>` are opaque types — fad cannot treat them as
+`Option<T>` and `Result<T, E>` are opaque types — kajit cannot treat them as
 regular enums because niche optimization makes their memory layout
 unpredictable. Construction and inspection go through facet's dedicated
 vtables (`OptionVTable`, `ResultVTable`).
@@ -2404,10 +2404,10 @@ struct ResultVTable {
 
 These vtable functions are monomorphized per `T` at `const`-eval time. They
 know the exact layout (including niche optimization) because they're compiled
-by `rustc` for the concrete type. fad calls them as intrinsics — it cannot
+by `rustc` for the concrete type. kajit calls them as intrinsics — it cannot
 inline their logic into emitted code because the logic depends on `T`.
 
-### How fad deserializes Option<T>
+### How kajit deserializes Option<T>
 
 r[deser.json.option]
 For JSON, `Option<T>` fields have three behaviors:
@@ -2459,7 +2459,7 @@ deser_Option_u32:
     error("invalid option tag")
 ```
 
-### How fad deserializes Result<T, E>
+### How kajit deserializes Result<T, E>
 
 r[deser.json.result]
 For JSON, `Result<T, E>` uses externally tagged encoding (`{ "Ok": value }`
@@ -2489,7 +2489,7 @@ deser_Result_u32_String:
 
 ### Why not just use the enum path?
 
-fad does not attempt to inline niche optimization logic into emitted code.
+kajit does not attempt to inline niche optimization logic into emitted code.
 The vtable functions already handle every niche pattern correctly. The cost
 is one indirect call per Option/Result construction, negligible compared to
 the actual deserialization work. Special-casing known niche patterns is a
@@ -2499,7 +2499,7 @@ future optimization, not the default path.
 
 r[deser.pointer]
 Smart pointers (`Box<T>`, `Arc<T>`, `Rc<T>`) are wire-transparent: the wire
-format contains just `T`. fad detects them via `Def::Pointer` with a
+format contains just `T`. kajit detects them via `Def::Pointer` with a
 `KnownPointer` of `Box`, `Arc`, or `Rc`, and a non-None `new_into_fn` in
 the vtable.
 
@@ -2511,7 +2511,7 @@ is called to move the value into the heap-allocated pointer.
 r[deser.pointer.new-into]
 The `new_into_fn` trampoline bridges thin raw pointers from JIT code to
 facet's wide pointer types (`PtrUninit`, `PtrMut`). It has the same
-three-argument ABI as `fad_option_init_some`: `(fn_ptr, out, value_ptr)`.
+three-argument ABI as `kajit_option_init_some`: `(fn_ptr, out, value_ptr)`.
 
 r[deser.pointer.format-transparent]
 No format-level changes are needed — both JSON and postcard deserialize the
@@ -2553,7 +2553,7 @@ field").
 ## Maps and sets
 
 r[map.chunk-chain]
-Maps and sets are opaque collection types. fad deserializes them using the
+Maps and sets are opaque collection types. kajit deserializes them using the
 same chunk-chain strategy as sequences: build a chain of flat entries, then
 finalize into the collection via vtable.
 

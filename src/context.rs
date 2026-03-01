@@ -402,8 +402,8 @@ mod tests {
     }
 
     #[test]
-    fn fad_output_grow_intrinsic() {
-        use crate::intrinsics::fad_output_grow;
+    fn kajit_output_grow_intrinsic() {
+        use crate::intrinsics::kajit_output_grow;
 
         let mut ctx = EncodeContext::with_capacity(4);
         // Write 2 bytes
@@ -415,7 +415,7 @@ mod tests {
         }
 
         // Call the intrinsic like JIT would
-        unsafe { fad_output_grow(&mut ctx, 100) };
+        unsafe { kajit_output_grow(&mut ctx, 100) };
         assert_eq!(ctx.error.code, 0);
         assert_eq!(ctx.written(), 2);
         assert!(ctx.remaining() >= 100);

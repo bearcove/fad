@@ -3,8 +3,8 @@
 //! cargo build --profile profiling --example profile_map_struct
 //! valgrind --tool=callgrind --callgrind-out-file=callgrind.serde_json \
 //!     ./target/profiling/examples/profile_map_struct serde_json
-//! valgrind --tool=callgrind --callgrind-out-file=callgrind.fad \
-//!     ./target/profiling/examples/profile_map_struct fad
+//! valgrind --tool=callgrind --callgrind-out-file=callgrind.kajit \
+//!     ./target/profiling/examples/profile_map_struct kajit
 
 use facet::Facet;
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ const ITERS: usize = 1000;
 fn main() {
     let mode = std::env::args()
         .nth(1)
-        .expect("usage: profile_map_struct <serde_json|fad>");
+        .expect("usage: profile_map_struct <serde_json|kajit>");
 
     match mode.as_str() {
         "serde_json" => {
@@ -47,10 +47,10 @@ fn main() {
                 black_box(serde_json::from_slice::<MapStructSerde>(black_box(INPUT)).unwrap());
             }
         }
-        "fad" => {
-            let deser = fad::compile_decoder(MapStructFacet::SHAPE, &fad::json::FadJson);
+        "kajit" => {
+            let deser = kajit::compile_decoder(MapStructFacet::SHAPE, &kajit::json::KajitJson);
             for _ in 0..ITERS {
-                black_box(fad::deserialize::<MapStructFacet>(&deser, black_box(INPUT)).unwrap());
+                black_box(kajit::deserialize::<MapStructFacet>(&deser, black_box(INPUT)).unwrap());
             }
         }
         other => panic!("unknown mode: {other}"),

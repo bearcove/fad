@@ -2,7 +2,7 @@
 
 specs (
     {
-        name fad
+        name kajit
         include (docs/spec.md)
         impls (
             {

@@ -67,8 +67,8 @@ static CANADA_JSON: LazyLock<Vec<u8>> = LazyLock::new(|| {
 // Cached compiled deserializers
 // =============================================================================
 
-static FAD_CANADA: LazyLock<fad::compiler::CompiledDecoder> =
-    LazyLock::new(|| fad::compile_decoder(FeatureCollection::SHAPE, &fad::json::FadJson));
+static KAJIT_CANADA: LazyLock<kajit::compiler::CompiledDecoder> =
+    LazyLock::new(|| kajit::compile_decoder(FeatureCollection::SHAPE, &kajit::json::KajitJson));
 
 // =============================================================================
 // Benchmarks
@@ -88,12 +88,12 @@ fn main() {
     });
 
     v.push(harness::Bench {
-        name: "canada/fad_dynasm_deser".into(),
+        name: "canada/kajit_dynasm_deser".into(),
         func: Box::new(|runner| {
             let data = &*CANADA_JSON;
-            let deser = &*FAD_CANADA;
+            let deser = &*KAJIT_CANADA;
             runner.run(|| {
-                black_box(fad::deserialize::<FeatureCollection>(deser, black_box(data)).unwrap());
+                black_box(kajit::deserialize::<FeatureCollection>(deser, black_box(data)).unwrap());
             });
         }),
     });

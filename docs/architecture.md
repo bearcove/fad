@@ -1,6 +1,6 @@
-# fad architecture
+# kajit architecture
 
-fad is a JIT-compiled deserializer for Rust. It uses [facet] reflection to
+kajit is a JIT-compiled deserializer for Rust. It uses [facet] reflection to
 inspect type metadata at runtime and [dynasmrt] to emit native machine code
 for aarch64 and x86_64.
 
@@ -205,14 +205,14 @@ JSON's `emit_struct_fields` emits a state machine:
 
 ```
 1. Zero bitset at [sp+48]
-2. Call fad_json_expect_object_start (consumes '{')
+2. Call kajit_json_expect_object_start (consumes '{')
 3. Peek for empty object
 4. Loop:
    a. Read key → (key_ptr, key_len) at [sp+56], [sp+64]
    b. Consume ':'
-   c. Linear compare: for each field, call fad_json_key_equals
+   c. Linear compare: for each field, call kajit_json_key_equals
       - Match → jump to field handler, set bit in bitset
-   d. No match → fad_json_skip_value
+   d. No match → kajit_json_skip_value
    e. Read comma-or-end → '}' breaks loop, ',' continues
 5. Check bitset has all required field bits set
 ```
@@ -229,7 +229,7 @@ Tests can inspect emitted code using yaxpeax-arm (aarch64) and yaxpeax-x86
 - `disasm_native(fn_ptr, max_bytes)` — disassemble any function pointer
 
 Use `cargo test --release disasm_... -- --nocapture` for optimized output.
-This enables side-by-side comparison of fad's JIT output vs LLVM-optimized
+This enables side-by-side comparison of kajit's JIT output vs LLVM-optimized
 serde codegen.
 
 ## Milestones

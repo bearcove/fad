@@ -43,7 +43,7 @@ pub(crate) const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
 /// key pointer and length. The cursor is past the closing `"`.
 ///
 /// Fast path (no escapes): entirely JIT'd, no intrinsic calls.
-/// Slow path (escapes): calls fad_json_key_slow_from_jit.
+/// Slow path (escapes): calls kajit_json_key_slow_from_jit.
 fn emit_read_key_inline(ectx: &mut EmitCtx) {
     let found_quote = ectx.new_label();
     let found_escape = ectx.new_label();
@@ -51,7 +51,7 @@ fn emit_read_key_inline(ectx: &mut EmitCtx) {
     let done = ectx.new_label();
 
     // 1. Skip whitespace, expect and consume opening '"'
-    ectx.emit_json_expect_quote_after_ws(json_intrinsics::fad_json_skip_ws as *const u8);
+    ectx.emit_json_expect_quote_after_ws(json_intrinsics::kajit_json_skip_ws as *const u8);
 
     // 2. Save start position to KEY_PTR_OFFSET
     //    (for the fast path, this IS the key pointer — zero-copy)
@@ -68,7 +68,7 @@ fn emit_read_key_inline(ectx: &mut EmitCtx) {
     // 5. Slow path: found '\' — call key unescape intrinsic
     ectx.bind_label(found_escape);
     ectx.emit_call_key_slow_from_jit(
-        json_intrinsics::fad_json_key_slow_from_jit as *const u8,
+        json_intrinsics::kajit_json_key_slow_from_jit as *const u8,
         KEY_PTR_OFFSET,
         KEY_PTR_OFFSET,
         KEY_LEN_OFFSET,
@@ -83,9 +83,9 @@ fn emit_read_key_inline(ectx: &mut EmitCtx) {
 }
 
 /// JSON wire format — key-value pairs, linear key dispatch.
-pub struct FadJson;
+pub struct KajitJson;
 
-impl Decoder for FadJson {
+impl Decoder for KajitJson {
     fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
         48
     }
@@ -114,7 +114,7 @@ impl Decoder for FadJson {
 
         // peek after whitespace — check for empty object
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
         // If peek == '}', branch to empty_object handler
@@ -138,7 +138,7 @@ impl Decoder for FadJson {
         for (i, field) in fields.iter().enumerate() {
             let name_bytes = field.name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -163,7 +163,7 @@ impl Decoder for FadJson {
         if deny_unknown_fields {
             ectx.emit_error(ErrorCode::UnknownField);
         } else {
-            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
         }
 
         // === after_dispatch ===
@@ -198,12 +198,12 @@ impl Decoder for FadJson {
     ) {
         // Expect '['
         ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_array_start as *const u8,
+            json_intrinsics::kajit_json_expect_array_start as *const u8,
         );
 
         if fields.is_empty() {
             ectx.emit_call_intrinsic_ctx_only(
-                json_intrinsics::fad_json_expect_array_end as *const u8,
+                json_intrinsics::kajit_json_expect_array_end as *const u8,
             );
             return;
         }
@@ -212,11 +212,11 @@ impl Decoder for FadJson {
             emit_field(ectx, field);
             if i + 1 < fields.len() {
                 ectx.emit_call_intrinsic_ctx_only(
-                    json_intrinsics::fad_json_expect_comma as *const u8,
+                    json_intrinsics::kajit_json_expect_comma as *const u8,
                 );
             } else {
                 ectx.emit_call_intrinsic_ctx_only(
-                    json_intrinsics::fad_json_expect_array_end as *const u8,
+                    json_intrinsics::kajit_json_expect_array_end as *const u8,
                 );
             }
         }
@@ -238,7 +238,7 @@ impl Decoder for FadJson {
 
         // Peek at first non-whitespace byte
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
 
@@ -253,7 +253,7 @@ impl Decoder for FadJson {
 
         // Call init_some(init_some_fn, out + offset, scratch)
         ectx.emit_call_option_init_some(
-            crate::intrinsics::fad_option_init_some as *const u8,
+            crate::intrinsics::kajit_option_init_some as *const u8,
             init_some_fn,
             offset as u32,
             scratch_offset,
@@ -263,9 +263,9 @@ impl Decoder for FadJson {
         // === None path ===
         ectx.bind_label(none_label);
         // Consume the "null" literal
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
         ectx.emit_call_option_init_none(
-            crate::intrinsics::fad_option_init_none as *const u8,
+            crate::intrinsics::kajit_option_init_none as *const u8,
             init_none_fn,
             offset as u32,
         );
@@ -321,12 +321,12 @@ impl Decoder for FadJson {
 
         // Expect '['
         ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_expect_array_start as *const u8,
+            json_intrinsics::kajit_json_expect_array_start as *const u8,
         );
 
         // Peek: check for empty array ']'
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b']', empty_label);
@@ -334,7 +334,7 @@ impl Decoder for FadJson {
         // Initial allocation: cap=4
         let initial_cap: u32 = 4;
         ectx.emit_call_json_vec_initial_alloc(
-            intrinsics::fad_vec_alloc as *const u8,
+            intrinsics::kajit_vec_alloc as *const u8,
             initial_cap,
             elem_size,
             elem_align,
@@ -372,7 +372,7 @@ impl Decoder for FadJson {
         // === Growth path ===
         ectx.bind_label(grow_label);
         ectx.emit_call_vec_grow(
-            intrinsics::fad_vec_grow as *const u8,
+            intrinsics::kajit_vec_grow as *const u8,
             buf_slot,
             len_slot,
             cap_slot,
@@ -403,7 +403,7 @@ impl Decoder for FadJson {
         // === Error cleanup ===
         ectx.bind_label(error_cleanup);
         ectx.emit_vec_error_cleanup(
-            intrinsics::fad_vec_free as *const u8,
+            intrinsics::kajit_vec_free as *const u8,
             saved_out_slot,
             buf_slot,
             cap_slot,
@@ -481,7 +481,7 @@ impl Decoder for FadJson {
 
         // Peek: check for empty object '}'
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'}', empty_label);
@@ -489,7 +489,7 @@ impl Decoder for FadJson {
         // Initial allocation: cap=4
         let initial_cap: u32 = 4;
         ectx.emit_call_json_vec_initial_alloc(
-            intrinsics::fad_vec_alloc as *const u8,
+            intrinsics::kajit_vec_alloc as *const u8,
             initial_cap,
             pair_stride,
             pair_align,
@@ -531,7 +531,7 @@ impl Decoder for FadJson {
         // === Growth path ===
         ectx.bind_label(grow_label);
         ectx.emit_call_vec_grow(
-            intrinsics::fad_vec_grow as *const u8,
+            intrinsics::kajit_vec_grow as *const u8,
             buf_slot,
             len_slot,
             cap_slot,
@@ -545,7 +545,7 @@ impl Decoder for FadJson {
         ectx.emit_call_map_from_pairs(from_pair_slice_fn, saved_out_slot, buf_slot, len_slot);
         // Free the pairs buffer (using cap, which may be > len after growth)
         ectx.emit_call_pairs_free(
-            intrinsics::fad_vec_free as *const u8,
+            intrinsics::kajit_vec_free as *const u8,
             buf_slot,
             cap_slot,
             pair_stride,
@@ -562,7 +562,7 @@ impl Decoder for FadJson {
         // === Error cleanup: free pairs buffer, branch to error exit ===
         ectx.bind_label(error_cleanup);
         ectx.emit_vec_error_cleanup(
-            intrinsics::fad_vec_free as *const u8,
+            intrinsics::kajit_vec_free as *const u8,
             saved_out_slot,
             buf_slot,
             cap_slot,
@@ -579,7 +579,7 @@ impl Decoder for FadJson {
     fn emit_read_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
         // Unit type: skip the JSON value (always null), write nothing (ZST).
         if scalar_type == ScalarType::Unit {
-            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
             return;
         }
         if scalar_type == ScalarType::F64 {
@@ -587,22 +587,22 @@ impl Decoder for FadJson {
             return;
         }
         let fn_ptr: *const u8 = match scalar_type {
-            ScalarType::U8 => json_intrinsics::fad_json_read_u8 as _,
-            ScalarType::U16 => json_intrinsics::fad_json_read_u16 as _,
-            ScalarType::U32 => json_intrinsics::fad_json_read_u32 as _,
-            ScalarType::U64 => json_intrinsics::fad_json_read_u64 as _,
-            ScalarType::U128 => json_intrinsics::fad_json_read_u128 as _,
-            ScalarType::USize => json_intrinsics::fad_json_read_usize as _,
-            ScalarType::I8 => json_intrinsics::fad_json_read_i8 as _,
-            ScalarType::I16 => json_intrinsics::fad_json_read_i16 as _,
-            ScalarType::I32 => json_intrinsics::fad_json_read_i32 as _,
-            ScalarType::I64 => json_intrinsics::fad_json_read_i64 as _,
-            ScalarType::I128 => json_intrinsics::fad_json_read_i128 as _,
-            ScalarType::ISize => json_intrinsics::fad_json_read_isize as _,
-            ScalarType::F32 => json_intrinsics::fad_json_read_f32 as _,
+            ScalarType::U8 => json_intrinsics::kajit_json_read_u8 as _,
+            ScalarType::U16 => json_intrinsics::kajit_json_read_u16 as _,
+            ScalarType::U32 => json_intrinsics::kajit_json_read_u32 as _,
+            ScalarType::U64 => json_intrinsics::kajit_json_read_u64 as _,
+            ScalarType::U128 => json_intrinsics::kajit_json_read_u128 as _,
+            ScalarType::USize => json_intrinsics::kajit_json_read_usize as _,
+            ScalarType::I8 => json_intrinsics::kajit_json_read_i8 as _,
+            ScalarType::I16 => json_intrinsics::kajit_json_read_i16 as _,
+            ScalarType::I32 => json_intrinsics::kajit_json_read_i32 as _,
+            ScalarType::I64 => json_intrinsics::kajit_json_read_i64 as _,
+            ScalarType::I128 => json_intrinsics::kajit_json_read_i128 as _,
+            ScalarType::ISize => json_intrinsics::kajit_json_read_isize as _,
+            ScalarType::F32 => json_intrinsics::kajit_json_read_f32 as _,
             ScalarType::F64 => unreachable!(),
-            ScalarType::Bool => json_intrinsics::fad_json_read_bool as _,
-            ScalarType::Char => json_intrinsics::fad_json_read_char as _,
+            ScalarType::Bool => json_intrinsics::kajit_json_read_bool as _,
+            ScalarType::Char => json_intrinsics::kajit_json_read_char as _,
             _ => panic!("unsupported JSON scalar: {:?}", scalar_type),
         };
         ectx.emit_call_intrinsic(fn_ptr, offset as u32);
@@ -621,7 +621,7 @@ impl Decoder for FadJson {
         let done = ectx.new_label();
 
         // 1. Skip whitespace, expect and consume opening '"'
-        ectx.emit_json_expect_quote_after_ws(json_intrinsics::fad_json_skip_ws as *const u8);
+        ectx.emit_json_expect_quote_after_ws(json_intrinsics::kajit_json_skip_ws as *const u8);
 
         // 2. Save start position to stack
         ectx.emit_save_cursor_to_stack(SAVED_CURSOR_OFFSET);
@@ -635,7 +635,7 @@ impl Decoder for FadJson {
             ScalarType::String => {
                 // Malum path: validate + alloc + copy, then write ptr/len/cap directly
                 ectx.emit_call_validate_alloc_copy_from_scan(
-                    intrinsics::fad_string_validate_alloc_copy as *const u8,
+                    intrinsics::kajit_string_validate_alloc_copy as *const u8,
                     SAVED_CURSOR_OFFSET,
                     CANDIDATES_OFFSET, // reuse as temp for len
                 );
@@ -647,14 +647,14 @@ impl Decoder for FadJson {
             }
             ScalarType::Str => {
                 ectx.emit_call_string_finish(
-                    json_intrinsics::fad_json_finish_str_fast as *const u8,
+                    json_intrinsics::kajit_json_finish_str_fast as *const u8,
                     offset as u32,
                     SAVED_CURSOR_OFFSET,
                 );
             }
             ScalarType::CowStr => {
                 ectx.emit_call_string_finish(
-                    json_intrinsics::fad_json_finish_cow_str_fast as *const u8,
+                    json_intrinsics::kajit_json_finish_cow_str_fast as *const u8,
                     offset as u32,
                     SAVED_CURSOR_OFFSET,
                 );
@@ -668,7 +668,7 @@ impl Decoder for FadJson {
         match scalar_type {
             ScalarType::String => {
                 ectx.emit_call_string_escape(
-                    json_intrinsics::fad_json_string_with_escapes as *const u8,
+                    json_intrinsics::kajit_json_string_with_escapes as *const u8,
                     offset as u32,
                     SAVED_CURSOR_OFFSET,
                 );
@@ -679,7 +679,7 @@ impl Decoder for FadJson {
             }
             ScalarType::CowStr => {
                 ectx.emit_call_string_escape(
-                    json_intrinsics::fad_json_cow_str_with_escapes as *const u8,
+                    json_intrinsics::kajit_json_cow_str_with_escapes as *const u8,
                     offset as u32,
                     SAVED_CURSOR_OFFSET,
                 );
@@ -710,7 +710,7 @@ impl Decoder for FadJson {
 
         // Peek at first non-whitespace byte to determine path.
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
 
@@ -733,7 +733,7 @@ impl Decoder for FadJson {
         for (variant, label) in &unit_labels {
             let name_bytes = variant.name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -772,7 +772,7 @@ impl Decoder for FadJson {
         for (i, variant) in variants.iter().enumerate() {
             let name_bytes = variant.name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -793,7 +793,7 @@ impl Decoder for FadJson {
                     // Unit variant inside object: { "Cat": null } — skip the value.
                     emit_variant_body(ectx, variant);
                     ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_skip_value as *const u8,
+                        json_intrinsics::kajit_json_skip_value as *const u8,
                     );
                 }
                 VariantKind::Struct | VariantKind::Tuple => {
@@ -809,7 +809,9 @@ impl Decoder for FadJson {
 
         // After variant body: expect closing '}'
         ectx.bind_label(expect_end_label);
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_object_end as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::kajit_json_expect_object_end as *const u8,
+        );
 
         ectx.bind_label(done_label);
     }
@@ -837,7 +839,7 @@ impl Decoder for FadJson {
         // Verify it equals tag_key, error if not
         let tag_key_bytes = tag_key.as_bytes();
         ectx.emit_call_pure_4arg(
-            json_intrinsics::fad_json_key_equals as *const u8,
+            json_intrinsics::kajit_json_key_equals as *const u8,
             KEY_PTR_OFFSET,
             KEY_LEN_OFFSET,
             tag_key_bytes.as_ptr(),
@@ -846,7 +848,7 @@ impl Decoder for FadJson {
         let tag_ok = ectx.new_label();
         ectx.emit_cbnz_x0(tag_ok);
         ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_error_expected_tag_key as *const u8,
+            json_intrinsics::kajit_json_error_expected_tag_key as *const u8,
         );
         ectx.bind_label(tag_ok);
 
@@ -861,7 +863,7 @@ impl Decoder for FadJson {
         for (i, variant) in variants.iter().enumerate() {
             let name_bytes = variant.name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -881,7 +883,7 @@ impl Decoder for FadJson {
 
                     // comma_or_end: '}' means done, ',' means content key follows
                     ectx.emit_call_intrinsic_ctx_and_stack_out(
-                        json_intrinsics::fad_json_comma_or_end_object as *const u8,
+                        json_intrinsics::kajit_json_comma_or_end_object as *const u8,
                         RESULT_BYTE_OFFSET,
                     );
                     let unit_done = ectx.new_label();
@@ -889,16 +891,16 @@ impl Decoder for FadJson {
 
                     // Had comma → read content_key, ':', skip value (typically null), expect '}'
                     ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-                        json_intrinsics::fad_json_read_key as *const u8,
+                        json_intrinsics::kajit_json_read_key as *const u8,
                         KEY_PTR_OFFSET,
                         KEY_LEN_OFFSET,
                     );
                     ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
                     ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_skip_value as *const u8,
+                        json_intrinsics::kajit_json_skip_value as *const u8,
                     );
                     ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_expect_object_end as *const u8,
+                        json_intrinsics::kajit_json_expect_object_end as *const u8,
                     );
 
                     ectx.bind_label(unit_done);
@@ -907,14 +909,14 @@ impl Decoder for FadJson {
                     // Non-unit: expect comma, content key, colon, then variant body, then '}'
                     // comma_or_end → expect ','
                     ectx.emit_call_intrinsic_ctx_and_stack_out(
-                        json_intrinsics::fad_json_comma_or_end_object as *const u8,
+                        json_intrinsics::kajit_json_comma_or_end_object as *const u8,
                         RESULT_BYTE_OFFSET,
                     );
                     // (If we got '}' here, the next read_key will error — that's fine)
 
                     // Read content key
                     ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-                        json_intrinsics::fad_json_read_key as *const u8,
+                        json_intrinsics::kajit_json_read_key as *const u8,
                         KEY_PTR_OFFSET,
                         KEY_LEN_OFFSET,
                     );
@@ -922,7 +924,7 @@ impl Decoder for FadJson {
                     // Verify it equals content_key (optional check for better errors)
                     let ck_bytes = content_key.as_bytes();
                     ectx.emit_call_pure_4arg(
-                        json_intrinsics::fad_json_key_equals as *const u8,
+                        json_intrinsics::kajit_json_key_equals as *const u8,
                         KEY_PTR_OFFSET,
                         KEY_LEN_OFFSET,
                         ck_bytes.as_ptr(),
@@ -939,7 +941,7 @@ impl Decoder for FadJson {
 
                     // expect '}'
                     ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_expect_object_end as *const u8,
+                        json_intrinsics::kajit_json_expect_object_end as *const u8,
                     );
                 }
             }
@@ -971,7 +973,7 @@ impl Decoder for FadJson {
         // Verify it equals tag_key
         let tag_key_bytes = tag_key.as_bytes();
         ectx.emit_call_pure_4arg(
-            json_intrinsics::fad_json_key_equals as *const u8,
+            json_intrinsics::kajit_json_key_equals as *const u8,
             KEY_PTR_OFFSET,
             KEY_LEN_OFFSET,
             tag_key_bytes.as_ptr(),
@@ -980,7 +982,7 @@ impl Decoder for FadJson {
         let tag_ok = ectx.new_label();
         ectx.emit_cbnz_x0(tag_ok);
         ectx.emit_call_intrinsic_ctx_only(
-            json_intrinsics::fad_json_error_expected_tag_key as *const u8,
+            json_intrinsics::kajit_json_error_expected_tag_key as *const u8,
         );
         ectx.bind_label(tag_ok);
 
@@ -995,7 +997,7 @@ impl Decoder for FadJson {
         for (i, variant) in variants.iter().enumerate() {
             let name_bytes = variant.name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -1013,7 +1015,7 @@ impl Decoder for FadJson {
                     emit_variant_discriminant(ectx, variant);
                     // Expect closing '}' (possibly after comma + unknown keys)
                     ectx.emit_call_intrinsic_ctx_only(
-                        json_intrinsics::fad_json_expect_object_end as *const u8,
+                        json_intrinsics::kajit_json_expect_object_end as *const u8,
                     );
                 }
                 VariantKind::Struct => {
@@ -1146,7 +1148,7 @@ impl Decoder for FadJson {
 
         // Peek at first non-whitespace byte
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
 
@@ -1214,7 +1216,7 @@ impl Decoder for FadJson {
 
             // Read the string as a borrowed key (ptr + len)
             ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-                json_intrinsics::fad_json_read_key as *const u8,
+                json_intrinsics::kajit_json_read_key as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
             );
@@ -1229,7 +1231,7 @@ impl Decoder for FadJson {
             for &(vi, label) in &unit_labels {
                 let name_bytes = variants[vi].name.as_bytes();
                 ectx.emit_call_pure_4arg(
-                    json_intrinsics::fad_json_key_equals as *const u8,
+                    json_intrinsics::kajit_json_key_equals as *const u8,
                     KEY_PTR_OFFSET,
                     KEY_LEN_OFFSET,
                     name_bytes.as_ptr(),
@@ -1319,7 +1321,7 @@ impl Decoder for FadJson {
         for (i, field) in fields.iter().enumerate() {
             let name_bytes = field.name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -1343,7 +1345,7 @@ impl Decoder for FadJson {
         if deny_unknown_fields {
             ectx.emit_error(ErrorCode::UnknownField);
         } else {
-            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
         }
 
         // After dispatch
@@ -1387,7 +1389,7 @@ fn emit_default_or_required_check(ectx: &mut EmitCtx, fields: &[FieldEmitInfo]) 
     }
 }
 
-impl FadJson {
+impl KajitJson {
     /// Emit the object-bucket solver for untagged enum disambiguation.
     ///
     /// Two-pass approach:
@@ -1419,7 +1421,7 @@ impl FadJson {
 
         // Check for empty object → resolve immediately
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
         let empty_object = ectx.new_label();
@@ -1444,7 +1446,7 @@ impl FadJson {
         for (i, &(name, _mask)) in solver.key_masks.iter().enumerate() {
             let name_bytes = name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -1453,7 +1455,7 @@ impl FadJson {
             ectx.emit_cbnz_x0(key_labels[i]);
         }
         // Unknown key — skip value, don't narrow
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
         ectx.emit_branch(after_key_dispatch);
 
         // Per-key handlers
@@ -1469,7 +1471,7 @@ impl FadJson {
             if !has_vt && !has_sub {
                 // Simple: just skip the value
                 ectx.emit_call_intrinsic_ctx_only(
-                    json_intrinsics::fad_json_skip_value as *const u8,
+                    json_intrinsics::kajit_json_skip_value as *const u8,
                 );
             } else if has_sub {
                 // Sub-solver: peek, if '{' run sub-scan, else value-type + skip
@@ -1482,7 +1484,7 @@ impl FadJson {
                 // Value-type evidence only: peek, AND type mask, skip
                 self.emit_value_type_peek(ectx, &solver.value_type_masks[i]);
                 ectx.emit_call_intrinsic_ctx_only(
-                    json_intrinsics::fad_json_skip_value as *const u8,
+                    json_intrinsics::kajit_json_skip_value as *const u8,
                 );
             }
 
@@ -1543,7 +1545,7 @@ impl FadJson {
 
         // Peek at the value's first byte
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
 
@@ -1614,7 +1616,7 @@ impl FadJson {
 
         // Peek at value to determine if it's an object
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, b'{', sub_scan_path);
@@ -1634,7 +1636,7 @@ impl FadJson {
                 ectx.bind_label(after_vt);
             }
         }
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
         ectx.emit_branch(after_all);
 
         // ── Object path: run sub-scan ────────────────────────────────
@@ -1648,7 +1650,7 @@ impl FadJson {
         let after_sub_scan = ectx.new_label();
 
         ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_peek_after_ws as *const u8,
+            json_intrinsics::kajit_json_peek_after_ws as *const u8,
             RESULT_BYTE_OFFSET,
         );
         let empty_inner = ectx.new_label();
@@ -1660,7 +1662,7 @@ impl FadJson {
         // Read inner key
         emit_read_key_inline(ectx);
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::kajit_json_skip_value as *const u8);
 
         // Inner key dispatch: for each inner key, AND outer mask
         let after_inner_dispatch = ectx.new_label();
@@ -1673,7 +1675,7 @@ impl FadJson {
         for (j, &(inner_name, _)) in sub_solver.inner_key_masks.iter().enumerate() {
             let name_bytes = inner_name.as_bytes();
             ectx.emit_call_pure_4arg(
-                json_intrinsics::fad_json_key_equals as *const u8,
+                json_intrinsics::kajit_json_key_equals as *const u8,
                 KEY_PTR_OFFSET,
                 KEY_LEN_OFFSET,
                 name_bytes.as_ptr(),
@@ -1716,9 +1718,9 @@ impl FadJson {
 // ── JSON Encoder ────────────────────────────────────────────────────
 
 /// Compact JSON encoder — no whitespace between tokens.
-pub struct FadJsonEncoder;
+pub struct KajitJsonEncoder;
 
-impl Encoder for FadJsonEncoder {
+impl Encoder for KajitJsonEncoder {
     fn supports_inline_nested(&self) -> bool {
         false // JSON needs `{`/`}` framing per struct level
     }
@@ -1758,23 +1760,23 @@ impl Encoder for FadJsonEncoder {
 
     fn emit_encode_scalar(&self, ectx: &mut EmitCtx, offset: usize, scalar_type: ScalarType) {
         let fn_ptr: *const u8 = match scalar_type {
-            ScalarType::U8 => json_intrinsics::fad_json_write_u8 as _,
-            ScalarType::U16 => json_intrinsics::fad_json_write_u16 as _,
-            ScalarType::U32 => json_intrinsics::fad_json_write_u32 as _,
-            ScalarType::U64 => json_intrinsics::fad_json_write_u64 as _,
-            ScalarType::U128 => json_intrinsics::fad_json_write_u128 as _,
-            ScalarType::USize => json_intrinsics::fad_json_write_usize as _,
-            ScalarType::I8 => json_intrinsics::fad_json_write_i8 as _,
-            ScalarType::I16 => json_intrinsics::fad_json_write_i16 as _,
-            ScalarType::I32 => json_intrinsics::fad_json_write_i32 as _,
-            ScalarType::I64 => json_intrinsics::fad_json_write_i64 as _,
-            ScalarType::I128 => json_intrinsics::fad_json_write_i128 as _,
-            ScalarType::ISize => json_intrinsics::fad_json_write_isize as _,
-            ScalarType::F32 => json_intrinsics::fad_json_write_f32 as _,
-            ScalarType::F64 => json_intrinsics::fad_json_write_f64 as _,
-            ScalarType::Bool => json_intrinsics::fad_json_write_bool as _,
-            ScalarType::Char => json_intrinsics::fad_json_write_char as _,
-            ScalarType::Unit => json_intrinsics::fad_json_write_unit as _,
+            ScalarType::U8 => json_intrinsics::kajit_json_write_u8 as _,
+            ScalarType::U16 => json_intrinsics::kajit_json_write_u16 as _,
+            ScalarType::U32 => json_intrinsics::kajit_json_write_u32 as _,
+            ScalarType::U64 => json_intrinsics::kajit_json_write_u64 as _,
+            ScalarType::U128 => json_intrinsics::kajit_json_write_u128 as _,
+            ScalarType::USize => json_intrinsics::kajit_json_write_usize as _,
+            ScalarType::I8 => json_intrinsics::kajit_json_write_i8 as _,
+            ScalarType::I16 => json_intrinsics::kajit_json_write_i16 as _,
+            ScalarType::I32 => json_intrinsics::kajit_json_write_i32 as _,
+            ScalarType::I64 => json_intrinsics::kajit_json_write_i64 as _,
+            ScalarType::I128 => json_intrinsics::kajit_json_write_i128 as _,
+            ScalarType::ISize => json_intrinsics::kajit_json_write_isize as _,
+            ScalarType::F32 => json_intrinsics::kajit_json_write_f32 as _,
+            ScalarType::F64 => json_intrinsics::kajit_json_write_f64 as _,
+            ScalarType::Bool => json_intrinsics::kajit_json_write_bool as _,
+            ScalarType::Char => json_intrinsics::kajit_json_write_char as _,
+            ScalarType::Unit => json_intrinsics::kajit_json_write_unit as _,
             _ => panic!("unsupported JSON scalar for encode: {:?}", scalar_type),
         };
         ectx.emit_enc_call_intrinsic_with_input(fn_ptr, offset as u32);
@@ -1788,7 +1790,7 @@ impl Encoder for FadJsonEncoder {
         _string_offsets: &crate::malum::StringOffsets,
     ) {
         ectx.emit_enc_call_intrinsic_with_input(
-            json_intrinsics::fad_json_write_string as *const u8,
+            json_intrinsics::kajit_json_write_string as *const u8,
             offset as u32,
         );
     }

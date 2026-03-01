@@ -818,7 +818,7 @@ impl EmitCtx {
         self.emit_reload_cursor_and_check_error();
     }
 
-    /// Call fad_string_validate_alloc_copy(ctx, start, len) for String malum path.
+    /// Call kajit_string_validate_alloc_copy(ctx, start, len) for String malum path.
     /// start is in `start_sp_offset`. len = x19 - start.
     /// Returns buf pointer in x0. Saves len to `len_save_sp_offset`.
     pub fn emit_call_validate_alloc_copy_from_scan(
@@ -1231,7 +1231,7 @@ impl EmitCtx {
         );
     }
 
-    /// Call fad_option_init_none(init_none_fn, out + offset).
+    /// Call kajit_option_init_none(init_none_fn, out + offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_none(
         &mut self,
@@ -1245,7 +1245,7 @@ impl EmitCtx {
     }
 
     /// Call wrapper(fn_ptr, out + offset, extra_ptr).
-    /// Used for `fad_field_default_indirect(default_fn, out, shape)`.
+    /// Used for `kajit_field_default_indirect(default_fn, out, shape)`.
     pub fn emit_call_trampoline_3(
         &mut self,
         wrapper_fn: *const u8,
@@ -1259,7 +1259,7 @@ impl EmitCtx {
         self.emit_call_fn_ptr(wrapper_fn);
     }
 
-    /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
+    /// Call kajit_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_some(
         &mut self,
@@ -1281,12 +1281,12 @@ impl EmitCtx {
     // Vec deserialization support
     // =====================================================================
 
-    /// Call fad_vec_alloc(ctx, count, elem_size, elem_align).
+    /// Call kajit_vec_alloc(ctx, count, elem_size, elem_align).
     ///
     /// Before call: count is in w9 (from emit_read_postcard_discriminant).
     /// After call: result (buf pointer) is in x0.
     /// Flushes cursor, reloads after, checks error.
-    /// Call fad_vec_alloc(ctx, count, elem_size, elem_align).
+    /// Call kajit_vec_alloc(ctx, count, elem_size, elem_align).
     ///
     /// count is in w9 (from emit_read_postcard_discriminant or JSON parse).
     /// Result (buf pointer) is in x0.
@@ -1307,7 +1307,7 @@ impl EmitCtx {
         self.emit_reload_cursor_and_check_error();
     }
 
-    /// Call fad_vec_grow(ctx, old_buf, len, old_cap, new_cap, elem_size, elem_align).
+    /// Call kajit_vec_grow(ctx, old_buf, len, old_cap, new_cap, elem_size, elem_align).
     ///
     /// Reads old_buf, len, old_cap from stack slots. Computes new_cap = old_cap * 2.
     /// After call: new buf pointer is in x0.
@@ -1344,7 +1344,7 @@ impl EmitCtx {
         );
     }
 
-    /// Call fad_vec_alloc with a constant count (for JSON initial allocation).
+    /// Call kajit_vec_alloc with a constant count (for JSON initial allocation).
     ///
     /// Result (buf pointer) is in x0.
     pub fn emit_call_json_vec_initial_alloc(
@@ -1731,11 +1731,11 @@ impl EmitCtx {
         );
     }
 
-    /// Call `fad_map_build(from_pair_slice_fn, saved_out, pairs_buf, count)`.
+    /// Call `kajit_map_build(from_pair_slice_fn, saved_out, pairs_buf, count)`.
     ///
     /// We cannot call `from_pair_slice` directly from JIT code because its
     /// first arg `PtrUninit` is a 16-byte struct (passed in 2 registers on
-    /// aarch64).  `fad_map_build` is a plain-C trampoline that takes four
+    /// aarch64).  `kajit_map_build` is a plain-C trampoline that takes four
     /// pointer-/usize-sized args and constructs `PtrUninit` internally.
     pub fn emit_call_map_from_pairs(
         &mut self,
@@ -1744,7 +1744,7 @@ impl EmitCtx {
         buf_slot: u32,
         count_slot: u32,
     ) {
-        let trampoline = crate::intrinsics::fad_map_build as *const u8;
+        let trampoline = crate::intrinsics::kajit_map_build as *const u8;
         // Load from_pair_slice_fn via x8, then mov to x0 (can't load directly
         // into x0 because emit_call_fn_ptr will clobber x8).
         load_imm64!(self.ops, x8, from_pair_slice_fn as u64);
@@ -1758,11 +1758,11 @@ impl EmitCtx {
         self.emit_call_fn_ptr(trampoline);
     }
 
-    /// Call `fad_map_build(from_pair_slice_fn, x21, null, 0)` — empty map.
+    /// Call `kajit_map_build(from_pair_slice_fn, x21, null, 0)` — empty map.
     ///
     /// Same trampoline pattern as `emit_call_map_from_pairs`.
     pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
-        let trampoline = crate::intrinsics::fad_map_build as *const u8;
+        let trampoline = crate::intrinsics::kajit_map_build as *const u8;
         load_imm64!(self.ops, x8, from_pair_slice_fn as u64);
         dynasm!(self.ops
             ; .arch aarch64
@@ -1774,7 +1774,7 @@ impl EmitCtx {
         self.emit_call_fn_ptr(trampoline);
     }
 
-    /// Call `fad_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
+    /// Call `kajit_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
     ///
     /// Used on the success path after `from_pair_slice` has moved the pairs into the map.
     /// Does NOT branch to error exit (pairs free on success path, not error).
@@ -2174,7 +2174,7 @@ impl EmitCtx {
                 Op::OutputBoundsCheck { count } => {
                     let count = *count;
                     let have_space = self.ops.new_dynamic_label();
-                    let grow_fn = crate::intrinsics::fad_output_grow as *const u8;
+                    let grow_fn = crate::intrinsics::kajit_output_grow as *const u8;
 
                     dynasm!(self.ops
                         ; .arch aarch64
@@ -2917,10 +2917,10 @@ impl EmitCtx {
     }
 
     /// Emit a bounds check: ensure at least `count` bytes available in output.
-    /// If not enough space, calls fad_output_grow intrinsic.
+    /// If not enough space, calls kajit_output_grow intrinsic.
     pub fn emit_enc_ensure_capacity(&mut self, count: u32) {
         let have_space = self.ops.new_dynamic_label();
-        let grow_fn = crate::intrinsics::fad_output_grow as *const u8;
+        let grow_fn = crate::intrinsics::kajit_output_grow as *const u8;
 
         dynasm!(self.ops
             ; .arch aarch64

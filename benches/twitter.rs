@@ -8,7 +8,7 @@
 //! Several Status fields (`geo`, `coordinates`, `place`, `contributors`) are
 //! always `null` in this fixture. We use bare `()` for these, matching the
 //! serde-rs/json-benchmark convention. In JSON, `null` deserializes to `()`.
-//! This is _not_ a cheat — both serde_json and fad consume the `null` token.
+//! This is _not_ a cheat — both serde_json and kajit consume the `null` token.
 //! If the fixture ever contained non-null values for these fields, the types
 //! would need to be real structs (GeoJSON Point, etc.).
 
@@ -22,7 +22,7 @@ use std::hint::black_box;
 use std::sync::LazyLock;
 
 // =============================================================================
-// Types for twitter.json — shared between serde and fad
+// Types for twitter.json — shared between serde and kajit
 // =============================================================================
 
 #[derive(Debug, Deserialize, Facet)]
@@ -272,8 +272,8 @@ static TWITTER_STR: LazyLock<String> =
 // Cached compiled deserializers
 // =============================================================================
 
-static FAD_TWITTER: LazyLock<fad::compiler::CompiledDecoder> =
-    LazyLock::new(|| fad::compile_decoder(Twitter::SHAPE, &fad::json::FadJson));
+static KAJIT_TWITTER: LazyLock<kajit::compiler::CompiledDecoder> =
+    LazyLock::new(|| kajit::compile_decoder(Twitter::SHAPE, &kajit::json::KajitJson));
 
 // =============================================================================
 // Benchmarks
@@ -293,12 +293,12 @@ fn main() {
     });
 
     v.push(harness::Bench {
-        name: "twitter/fad_dynasm_deser".into(),
+        name: "twitter/kajit_dynasm_deser".into(),
         func: Box::new(|runner| {
             let data = &*TWITTER_STR;
-            let deser = &*FAD_TWITTER;
+            let deser = &*KAJIT_TWITTER;
             runner.run(|| {
-                black_box(fad::from_str::<Twitter>(deser, black_box(data)).unwrap());
+                black_box(kajit::from_str::<Twitter>(deser, black_box(data)).unwrap());
             });
         }),
     });

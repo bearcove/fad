@@ -14,9 +14,9 @@ use crate::recipe::{self, Width};
 
 /// Postcard wire format — fields in declaration order, varint-encoded integers,
 /// length-prefixed strings.
-pub struct FadPostcard;
+pub struct KajitPostcard;
 
-impl Decoder for FadPostcard {
+impl Decoder for KajitPostcard {
     fn extra_stack_space(&self, _fields: &[FieldEmitInfo]) -> u32 {
         // We need at least 8 bytes of scratch space on the stack for:
         // - varint slow path temp (used by emit_read_postcard_discriminant
@@ -59,31 +59,35 @@ impl Decoder for FadPostcard {
 
             // Tier 2: varint fast path + intrinsic slow path
             ScalarType::U16 => {
-                ectx.emit_inline_varint_fast_path(offset, 2, false, intrinsics::fad_read_u16 as _)
+                ectx.emit_inline_varint_fast_path(offset, 2, false, intrinsics::kajit_read_u16 as _)
             }
             ScalarType::U32 => ectx.emit_inline_varint_fast_path(
                 offset,
                 4,
                 false,
-                intrinsics::fad_read_varint_u32 as _,
+                intrinsics::kajit_read_varint_u32 as _,
             ),
             ScalarType::U64 => {
-                ectx.emit_inline_varint_fast_path(offset, 8, false, intrinsics::fad_read_u64 as _)
+                ectx.emit_inline_varint_fast_path(offset, 8, false, intrinsics::kajit_read_u64 as _)
             }
             ScalarType::I16 => {
-                ectx.emit_inline_varint_fast_path(offset, 2, true, intrinsics::fad_read_i16 as _)
+                ectx.emit_inline_varint_fast_path(offset, 2, true, intrinsics::kajit_read_i16 as _)
             }
             ScalarType::I32 => {
-                ectx.emit_inline_varint_fast_path(offset, 4, true, intrinsics::fad_read_i32 as _)
+                ectx.emit_inline_varint_fast_path(offset, 4, true, intrinsics::kajit_read_i32 as _)
             }
             ScalarType::I64 => {
-                ectx.emit_inline_varint_fast_path(offset, 8, true, intrinsics::fad_read_i64 as _)
+                ectx.emit_inline_varint_fast_path(offset, 8, true, intrinsics::kajit_read_i64 as _)
             }
-            ScalarType::U128 => ectx.emit_call_intrinsic(intrinsics::fad_read_u128 as _, offset),
-            ScalarType::I128 => ectx.emit_call_intrinsic(intrinsics::fad_read_i128 as _, offset),
-            ScalarType::USize => ectx.emit_call_intrinsic(intrinsics::fad_read_usize as _, offset),
-            ScalarType::ISize => ectx.emit_call_intrinsic(intrinsics::fad_read_isize as _, offset),
-            ScalarType::Char => ectx.emit_call_intrinsic(intrinsics::fad_read_char as _, offset),
+            ScalarType::U128 => ectx.emit_call_intrinsic(intrinsics::kajit_read_u128 as _, offset),
+            ScalarType::I128 => ectx.emit_call_intrinsic(intrinsics::kajit_read_i128 as _, offset),
+            ScalarType::USize => {
+                ectx.emit_call_intrinsic(intrinsics::kajit_read_usize as _, offset)
+            }
+            ScalarType::ISize => {
+                ectx.emit_call_intrinsic(intrinsics::kajit_read_isize as _, offset)
+            }
+            ScalarType::Char => ectx.emit_call_intrinsic(intrinsics::kajit_read_char as _, offset),
             _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
         }
     }
@@ -100,19 +104,19 @@ impl Decoder for FadPostcard {
                 ectx.emit_inline_postcard_string_malum(
                     offset as u32,
                     string_offsets,
-                    intrinsics::fad_read_varint_u32 as *const u8,
-                    intrinsics::fad_string_validate_alloc_copy as *const u8,
+                    intrinsics::kajit_read_varint_u32 as *const u8,
+                    intrinsics::kajit_string_validate_alloc_copy as *const u8,
                 );
             }
             ScalarType::Str => {
                 ectx.emit_call_intrinsic(
-                    intrinsics::fad_read_postcard_str as *const u8,
+                    intrinsics::kajit_read_postcard_str as *const u8,
                     offset as u32,
                 );
             }
             ScalarType::CowStr => {
                 ectx.emit_call_intrinsic(
-                    intrinsics::fad_read_postcard_cow_str as *const u8,
+                    intrinsics::kajit_read_postcard_cow_str as *const u8,
                     offset as u32,
                 );
             }
@@ -149,7 +153,7 @@ impl Decoder for FadPostcard {
 
         // Call init_some(init_some_fn, out + offset, scratch)
         ectx.emit_call_option_init_some(
-            intrinsics::fad_option_init_some as *const u8,
+            intrinsics::kajit_option_init_some as *const u8,
             init_some_fn,
             offset as u32,
             scratch_offset,
@@ -159,7 +163,7 @@ impl Decoder for FadPostcard {
         // === None path ===
         ectx.bind_label(none_label);
         ectx.emit_call_option_init_none(
-            intrinsics::fad_option_init_none as *const u8,
+            intrinsics::kajit_option_init_none as *const u8,
             init_none_fn,
             offset as u32,
         );
@@ -212,7 +216,7 @@ impl Decoder for FadPostcard {
         let error_cleanup = ectx.new_label();
 
         // Read element count (varint → w9)
-        ectx.emit_read_postcard_discriminant(intrinsics::fad_read_varint_u32 as *const u8);
+        ectx.emit_read_postcard_discriminant(intrinsics::kajit_read_varint_u32 as *const u8);
 
         // r[impl seq.malum.empty]
         // If count == 0, write empty Vec and skip
@@ -221,10 +225,10 @@ impl Decoder for FadPostcard {
         // Save count to stack before alloc call (caller-saved reg, clobbered by call)
         ectx.emit_save_count_to_stack(count_slot);
 
-        // Allocate: fad_vec_alloc(ctx, count, elem_size, elem_align)
+        // Allocate: kajit_vec_alloc(ctx, count, elem_size, elem_align)
         // count is in w9, result in x0
         ectx.emit_call_vec_alloc(
-            intrinsics::fad_vec_alloc as *const u8,
+            intrinsics::kajit_vec_alloc as *const u8,
             elem_size,
             elem_align,
         );
@@ -245,21 +249,21 @@ impl Decoder for FadPostcard {
         // Check if we can use the tight varint loop (writes directly to cursor
         // register, no mov to out, slow path out-of-line).
         let varint_info = elem_shape.scalar_type().and_then(|st| match st {
-            ScalarType::U16 => Some((2, false, intrinsics::fad_read_u16 as *const u8)),
-            ScalarType::U32 => Some((4, false, intrinsics::fad_read_varint_u32 as *const u8)),
-            ScalarType::U64 => Some((8, false, intrinsics::fad_read_u64 as *const u8)),
-            ScalarType::I16 => Some((2, true, intrinsics::fad_read_i16 as *const u8)),
-            ScalarType::I32 => Some((4, true, intrinsics::fad_read_i32 as *const u8)),
-            ScalarType::I64 => Some((8, true, intrinsics::fad_read_i64 as *const u8)),
+            ScalarType::U16 => Some((2, false, intrinsics::kajit_read_u16 as *const u8)),
+            ScalarType::U32 => Some((4, false, intrinsics::kajit_read_varint_u32 as *const u8)),
+            ScalarType::U64 => Some((8, false, intrinsics::kajit_read_u64 as *const u8)),
+            ScalarType::I16 => Some((2, true, intrinsics::kajit_read_i16 as *const u8)),
+            ScalarType::I32 => Some((4, true, intrinsics::kajit_read_i32 as *const u8)),
+            ScalarType::I64 => Some((8, true, intrinsics::kajit_read_i64 as *const u8)),
             ScalarType::USize => Some((
                 core::mem::size_of::<usize>() as u32,
                 false,
-                intrinsics::fad_read_usize as *const u8,
+                intrinsics::kajit_read_usize as *const u8,
             )),
             ScalarType::ISize => Some((
                 core::mem::size_of::<isize>() as u32,
                 true,
-                intrinsics::fad_read_isize as *const u8,
+                intrinsics::kajit_read_isize as *const u8,
             )),
             _ => None,
         });
@@ -315,7 +319,7 @@ impl Decoder for FadPostcard {
         ectx.bind_label(error_cleanup);
         ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
         ectx.emit_vec_error_cleanup(
-            intrinsics::fad_vec_free as *const u8,
+            intrinsics::kajit_vec_free as *const u8,
             saved_out_slot,
             buf_slot,
             count_slot,
@@ -379,7 +383,7 @@ impl Decoder for FadPostcard {
         let error_cleanup = ectx.new_label();
 
         // Read pair count (varint → w9/r10d)
-        ectx.emit_read_postcard_discriminant(intrinsics::fad_read_varint_u32 as *const u8);
+        ectx.emit_read_postcard_discriminant(intrinsics::kajit_read_varint_u32 as *const u8);
 
         // If count == 0, emit empty map directly
         ectx.emit_cbz_count(empty_label);
@@ -387,9 +391,9 @@ impl Decoder for FadPostcard {
         // Save count before alloc call (caller-saved reg, clobbered by call)
         ectx.emit_save_count_to_stack(count_slot);
 
-        // Allocate pairs buffer: fad_vec_alloc(ctx, count, pair_stride, pair_align)
+        // Allocate pairs buffer: kajit_vec_alloc(ctx, count, pair_stride, pair_align)
         ectx.emit_call_vec_alloc(
-            intrinsics::fad_vec_alloc as *const u8,
+            intrinsics::kajit_vec_alloc as *const u8,
             pair_stride,
             pair_align,
         );
@@ -437,7 +441,7 @@ impl Decoder for FadPostcard {
         ectx.emit_call_map_from_pairs(from_pair_slice_fn, saved_out_slot, buf_slot, count_slot);
         // Free the pairs buffer (count == cap for postcard's exact allocation)
         ectx.emit_call_pairs_free(
-            intrinsics::fad_vec_free as *const u8,
+            intrinsics::kajit_vec_free as *const u8,
             buf_slot,
             count_slot, // cap == count for postcard
             pair_stride,
@@ -454,7 +458,7 @@ impl Decoder for FadPostcard {
         ectx.bind_label(error_cleanup);
         ectx.emit_vec_restore_callee_saved(save_x23_slot, save_x24_slot);
         ectx.emit_vec_error_cleanup(
-            intrinsics::fad_vec_free as *const u8,
+            intrinsics::kajit_vec_free as *const u8,
             saved_out_slot,
             buf_slot,
             count_slot, // cap == count for postcard
@@ -475,8 +479,8 @@ impl Decoder for FadPostcard {
         emit_variant_body: &mut dyn FnMut(&mut EmitCtx, &VariantEmitInfo),
     ) {
         // Read varint discriminant into scratch register (w9 on aarch64, r10d on x64).
-        // Uses fad_read_varint_u32 as slow path intrinsic.
-        ectx.emit_read_postcard_discriminant(intrinsics::fad_read_varint_u32 as *const u8);
+        // Uses kajit_read_varint_u32 as slow path intrinsic.
+        ectx.emit_read_postcard_discriminant(intrinsics::kajit_read_varint_u32 as *const u8);
 
         let done_label = ectx.new_label();
         let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
@@ -502,7 +506,7 @@ impl Decoder for FadPostcard {
 
 // ── Encoder implementation ──────────────────────────────────────────
 
-impl Encoder for FadPostcard {
+impl Encoder for KajitPostcard {
     fn supports_inline_nested(&self) -> bool {
         true
     }
@@ -564,19 +568,19 @@ impl Encoder for FadPostcard {
             // Multi-byte varints — intrinsic calls.
             ScalarType::U128 => {
                 ectx.emit_enc_call_intrinsic_with_input(
-                    intrinsics::fad_encode_u128 as *const u8,
+                    intrinsics::kajit_encode_u128 as *const u8,
                     offset,
                 );
             }
             ScalarType::I128 => {
                 ectx.emit_enc_call_intrinsic_with_input(
-                    intrinsics::fad_encode_i128 as *const u8,
+                    intrinsics::kajit_encode_i128 as *const u8,
                     offset,
                 );
             }
             ScalarType::Char => {
                 ectx.emit_enc_call_intrinsic_with_input(
-                    intrinsics::fad_encode_char as *const u8,
+                    intrinsics::kajit_encode_char as *const u8,
                     offset,
                 );
             }
@@ -595,7 +599,7 @@ impl Encoder for FadPostcard {
         // All string-like types (String, &str, Cow<str>) share the same (ptr, len)
         // layout. The intrinsic reads ptr and len using discovered offsets.
         ectx.emit_enc_call_intrinsic_with_input(
-            intrinsics::fad_encode_postcard_string as *const u8,
+            intrinsics::kajit_encode_postcard_string as *const u8,
             offset as u32,
         );
     }
@@ -740,7 +744,7 @@ fn lower_postcard_varint_scalar(
     builder.write_to_field(value, offset, width);
 }
 
-impl IrDecoder for FadPostcard {
+impl IrDecoder for KajitPostcard {
     // r[impl ir.format-trait.lower]
 
     fn lower_struct_fields(
@@ -785,34 +789,34 @@ impl IrDecoder for FadPostcard {
             }
 
             ScalarType::Bool => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_bool as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_bool as _), &[], offset, false);
             }
             ScalarType::U8 => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_u8 as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_u8 as _), &[], offset, false);
             }
             ScalarType::I8 => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_i8 as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_i8 as _), &[], offset, false);
             }
             ScalarType::F32 => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_f32 as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_f32 as _), &[], offset, false);
             }
             ScalarType::F64 => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_f64 as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_f64 as _), &[], offset, false);
             }
             ScalarType::U128 => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_u128 as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_u128 as _), &[], offset, false);
             }
             ScalarType::I128 => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_i128 as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_i128 as _), &[], offset, false);
             }
             ScalarType::USize => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_usize as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_usize as _), &[], offset, false);
             }
             ScalarType::ISize => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_isize as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_isize as _), &[], offset, false);
             }
             ScalarType::Char => {
-                builder.call_intrinsic(ifn(intrinsics::fad_read_char as _), &[], offset, false);
+                builder.call_intrinsic(ifn(intrinsics::kajit_read_char as _), &[], offset, false);
             }
             _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
         }
@@ -828,9 +832,9 @@ impl IrDecoder for FadPostcard {
         let len = lower_postcard_varint_value(builder, 32);
 
         let func = match scalar_type {
-            ScalarType::String => ifn(intrinsics::fad_read_postcard_string_with_len as _),
-            ScalarType::Str => ifn(intrinsics::fad_read_postcard_str_with_len as _),
-            ScalarType::CowStr => ifn(intrinsics::fad_read_postcard_cow_str_with_len as _),
+            ScalarType::String => ifn(intrinsics::kajit_read_postcard_string_with_len as _),
+            ScalarType::Str => ifn(intrinsics::kajit_read_postcard_str_with_len as _),
+            ScalarType::CowStr => ifn(intrinsics::kajit_read_postcard_cow_str_with_len as _),
             _ => panic!("unsupported postcard string scalar: {:?}", scalar_type),
         };
 
@@ -861,7 +865,7 @@ impl IrDecoder for FadPostcard {
                     // None path: call init_none(init_none_fn, out + offset).
                     let init_fn = rb.const_val(init_none_fn as u64);
                     rb.call_intrinsic(
-                        ifn(intrinsics::fad_option_init_none_ctx as _),
+                        ifn(intrinsics::kajit_option_init_none_ctx as _),
                         &[init_fn],
                         offset,
                         false,
@@ -877,7 +881,7 @@ impl IrDecoder for FadPostcard {
                     rb.set_out_ptr(saved_out);
                     let init_fn = rb.const_val(init_some_fn as u64);
                     rb.call_intrinsic(
-                        ifn(intrinsics::fad_option_init_some_ctx as _),
+                        ifn(intrinsics::kajit_option_init_some_ctx as _),
                         &[init_fn, scratch_ptr],
                         offset,
                         false,
@@ -978,12 +982,12 @@ impl IrDecoder for FadPostcard {
                     rb.set_results(&[]);
                 }
                 1 => {
-                    // Allocate buffer: fad_vec_alloc(ctx, count, elem_size, elem_align) → buf ptr.
+                    // Allocate buffer: kajit_vec_alloc(ctx, count, elem_size, elem_align) → buf ptr.
                     let size_arg = rb.const_val(elem_size);
                     let align_arg = rb.const_val(elem_align);
                     let buf = rb
                         .call_intrinsic(
-                            ifn(intrinsics::fad_vec_alloc as _),
+                            ifn(intrinsics::kajit_vec_alloc as _),
                             &[count, size_arg, align_arg],
                             0,
                             true,
@@ -1045,7 +1049,7 @@ mod ir_tests {
         let mut builder = IrBuilder::new(test_shape());
         {
             let mut rb = builder.root_region();
-            FadPostcard.lower_struct_fields(&mut rb, fields, false, lower_field);
+            KajitPostcard.lower_struct_fields(&mut rb, fields, false, lower_field);
             rb.set_results(&[]);
         }
         builder.finish()
@@ -1062,7 +1066,7 @@ mod ir_tests {
         }];
 
         let func = build_postcard_struct(&fields, &mut |builder, field| {
-            FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::Bool);
+            KajitPostcard.lower_read_scalar(builder, field.offset, ScalarType::Bool);
         });
 
         // One field → one CallIntrinsic node in the root region body.
@@ -1078,7 +1082,7 @@ mod ir_tests {
                 has_result,
                 ..
             }) => {
-                assert_eq!(f.0, intrinsics::fad_read_bool as *const () as usize);
+                assert_eq!(f.0, intrinsics::kajit_read_bool as *const () as usize);
                 assert_eq!(*field_offset, 0);
                 assert!(!has_result);
             }
@@ -1106,8 +1110,8 @@ mod ir_tests {
         ];
 
         let func = build_postcard_struct(&fields, &mut |builder, field| match field.name {
-            "x" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U32),
-            "y" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8),
+            "x" => KajitPostcard.lower_read_scalar(builder, field.offset, ScalarType::U32),
+            "y" => KajitPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8),
             _ => panic!("unexpected field"),
         });
 
@@ -1122,12 +1126,13 @@ mod ir_tests {
                     field_offset,
                     ..
                 }) => {
-                    if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+                    if f.0 == intrinsics::kajit_read_varint_u32 as *const () as usize
                         && *field_offset == 0
                     {
                         has_u32_intrinsic = true;
                     }
-                    if f.0 == intrinsics::fad_read_u8 as *const () as usize && *field_offset == 4 {
+                    if f.0 == intrinsics::kajit_read_u8 as *const () as usize && *field_offset == 4
+                    {
                         has_u8_intrinsic = true;
                     }
                 }
@@ -1155,14 +1160,14 @@ mod ir_tests {
         }];
 
         let func = build_postcard_struct(&fields, &mut |builder, field| {
-            FadPostcard.lower_read_string(builder, field.offset, ScalarType::String);
+            KajitPostcard.lower_read_string(builder, field.offset, ScalarType::String);
         });
 
         let has_varint_intrinsic = func.nodes.iter().any(|(_, n)| {
             matches!(
                 &n.kind,
                 NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. })
-                    if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+                    if f.0 == intrinsics::kajit_read_varint_u32 as *const () as usize
             )
         });
         assert!(
@@ -1174,7 +1179,7 @@ mod ir_tests {
             matches!(
                 &n.kind,
                 NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. })
-                    if f.0 == intrinsics::fad_read_postcard_string_with_len as *const () as usize
+                    if f.0 == intrinsics::kajit_read_postcard_string_with_len as *const () as usize
             )
         });
         assert!(
@@ -1204,7 +1209,7 @@ mod ir_tests {
         ];
 
         let func = build_postcard_struct(&fields, &mut |builder, field| {
-            FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8);
+            KajitPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8);
         });
 
         let body = func.root_body();
@@ -1241,7 +1246,7 @@ mod ir_tests {
         }];
 
         let func = build_postcard_struct(&fields, &mut |builder, field| {
-            FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::Bool);
+            KajitPostcard.lower_read_scalar(builder, field.offset, ScalarType::Bool);
         });
 
         let display = format!("{}", func);
@@ -1259,12 +1264,12 @@ mod ir_tests {
         let mut builder = IrBuilder::new(test_shape());
         {
             let mut rb = builder.root_region();
-            let none_fn = intrinsics::fad_option_init_none as *const u8;
-            let some_fn = intrinsics::fad_option_init_some as *const u8;
+            let none_fn = intrinsics::kajit_option_init_none as *const u8;
+            let some_fn = intrinsics::kajit_option_init_some as *const u8;
             let scratch = rb.alloc_slot();
-            FadPostcard.lower_option(&mut rb, 0, none_fn, some_fn, scratch, &mut |rb| {
+            KajitPostcard.lower_option(&mut rb, 0, none_fn, some_fn, scratch, &mut |rb| {
                 // Inner: read a u8.
-                FadPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
+                KajitPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
             });
             rb.set_results(&[]);
         }
@@ -1342,10 +1347,10 @@ mod ir_tests {
         let mut builder = IrBuilder::new(test_shape());
         {
             let mut rb = builder.root_region();
-            FadPostcard.lower_enum(&mut rb, &variants, &mut |rb, variant| {
+            KajitPostcard.lower_enum(&mut rb, &variants, &mut |rb, variant| {
                 // For variant B, read a u8 field.
                 for field in &variant.fields {
-                    FadPostcard.lower_read_scalar(rb, field.offset, ScalarType::U8);
+                    KajitPostcard.lower_read_scalar(rb, field.offset, ScalarType::U8);
                 }
             });
             rb.set_results(&[]);
@@ -1364,7 +1369,7 @@ mod ir_tests {
             matches!(
                 &n.kind,
                 NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. })
-                    if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+                    if f.0 == intrinsics::kajit_read_varint_u32 as *const () as usize
             )
         });
         assert!(
@@ -1416,13 +1421,13 @@ mod ir_tests {
                 other => panic!("expected List def, got {other:?}"),
             };
             let vec_offsets = crate::malum::discover_vec_offsets(list_def, list_shape);
-            FadPostcard.lower_vec(
+            KajitPostcard.lower_vec(
                 &mut rb,
                 0,
                 <u8 as facet::Facet>::SHAPE,
                 &vec_offsets,
                 &mut |rb| {
-                    FadPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
+                    KajitPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
                 },
             );
             rb.set_results(&[]);
@@ -1443,7 +1448,7 @@ mod ir_tests {
                 NodeKind::Simple(IrOp::CallIntrinsic {
                     func: f,
                     ..
-                }) if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+                }) if f.0 == intrinsics::kajit_read_varint_u32 as *const () as usize
             )
         });
         assert!(
@@ -1459,10 +1464,10 @@ mod ir_tests {
                     func: f,
                     has_result: true,
                     ..
-                }) if f.0 == intrinsics::fad_vec_alloc as *const () as usize
+                }) if f.0 == intrinsics::kajit_vec_alloc as *const () as usize
             )
         });
-        assert!(has_alloc, "vec should call fad_vec_alloc");
+        assert!(has_alloc, "vec should call kajit_vec_alloc");
 
         // Verify theta body has the element read.
         let theta_node = func
