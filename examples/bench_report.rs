@@ -1,8 +1,8 @@
-//! Parse divan bench output from stdin and generate bench_report/index.html.
+//! Parse NDJSON bench output from stdin and generate bench_report/{index.html,results.json,results.md}.
 //!
 //!   cargo bench --bench synthetic 2>/dev/null | cargo run --example bench_report
-//!   # or via justfile:
-//!   just bench-report
+//!   # or all benchmarks:
+//!   cargo bench 2>/dev/null | cargo run --example bench_report
 
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -11,10 +11,10 @@ fn main() {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).expect("failed to read stdin");
 
-    let sections = parse_divan(&input);
+    let sections = parse_ndjson(&input);
 
     if sections.is_empty() || sections.iter().all(|s| s.groups.is_empty()) {
-        eprintln!("no groups parsed — pipe in `cargo bench` output");
+        eprintln!("no groups parsed — pipe in `cargo bench` NDJSON output");
         std::process::exit(1);
     }
 
@@ -89,80 +89,25 @@ struct Row {
     median_ns: f64,
 }
 
-// ── Parser ─────────────────────────────────────────────────────────────────
-//
-// Handles arbitrary nesting depth from divan's tree output.
-// Builds a path stack, then reorganizes leaves into sections by format × direction.
+// ── Parser (NDJSON) ───────────────────────────────────────────────────────
 
-fn parse_divan(s: &str) -> Vec<Section> {
-    let mut current_section = String::new();
-    let mut path_stack: Vec<String> = Vec::new();
-    // (original_section_label, full_path, median_ns)
-    let mut entries: Vec<(String, Vec<String>, f64)> = Vec::new();
+fn parse_ndjson(input: &str) -> Vec<Section> {
+    let mut entries: Vec<(Vec<String>, f64)> = Vec::new();
 
-    for line in s.lines() {
-        let line = line.trim_end();
-        if line.is_empty() { continue; }
-
-        // Section header: "synthetic  fastest │ slowest │ ..."
-        if !line.starts_with('│') && !line.starts_with('├') && !line.starts_with('╰')
-            && line.contains("fastest")
-        {
-            current_section = line.split_whitespace().next().unwrap_or("bench").to_string();
-            path_stack.clear();
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
             continue;
         }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(name) = v["name"].as_str() else { continue };
+        let Some(median_ns) = v["median_ns"].as_f64() else { continue };
 
-        if current_section.is_empty() {
-            current_section = "bench".to_string();
-        }
-
-        // Compute depth by scanning indent prefix.
-        // Each nesting level is either "   " (3 spaces) or "│  " (│ + 2 spaces = 5 bytes).
-        let bytes = line.as_bytes();
-        let mut pos = 0;
-        let mut depth = 0;
-        while pos < bytes.len() {
-            if pos + 4 < bytes.len()
-                && bytes[pos] == 0xe2 && bytes[pos + 1] == 0x94 && bytes[pos + 2] == 0x82
-                && bytes[pos + 3] == b' ' && bytes[pos + 4] == b' '
-            {
-                // "│  " connector (5 bytes)
-                depth += 1;
-                pos += 5;
-            } else if pos + 2 < bytes.len()
-                && bytes[pos] == b' ' && bytes[pos + 1] == b' ' && bytes[pos + 2] == b' '
-            {
-                // "   " indent (3 bytes)
-                depth += 1;
-                pos += 3;
-            } else {
-                break;
-            }
-        }
-
-        let content = &line[pos..];
-        if !content.starts_with('├') && !content.starts_with('╰') { continue; }
-
-        // Split the content (after tree prefix) on │ to get columns
-        let cols: Vec<&str> = content.split('│').collect();
-        let name = name_only(strip_box(cols[0]).trim());
-        if name.is_empty() { continue; }
-
-        // Try to parse median from column index 2 (name+fastest | slowest | median | ...)
-        let median = cols.get(2).and_then(|s| parse_time(s.trim()));
-
-        if let Some(median_ns) = median {
-            // Leaf node with timing data
-            path_stack.truncate(depth);
-            let mut full_path = path_stack.clone();
-            full_path.push(name);
-            entries.push((current_section.clone(), full_path, median_ns));
-        } else {
-            // Intermediate node (group header)
-            path_stack.truncate(depth);
-            path_stack.push(name);
-        }
+        let parts: Vec<String> = name.split('/').map(String::from).collect();
+        entries.push((parts, median_ns));
     }
 
     organize_entries(&entries)
@@ -174,12 +119,12 @@ fn parse_divan(s: &str) -> Vec<Section> {
 ///   section = "{format} {direction}", group = type, row = fn
 /// - 2-component paths `[group, fn]` from manual bench groups:
 ///   infer format from group name prefix, same routing
-/// - 1-component paths `[fn]` from flat benchmarks (canada, twitter, citm):
-///   section = original section label, group = section label, row = fn
-fn organize_entries(entries: &[(String, Vec<String>, f64)]) -> Vec<Section> {
+/// - 1-component paths `[fn]` from flat benchmarks:
+///   section = "json deser", group = first component, row = fn
+fn organize_entries(entries: &[(Vec<String>, f64)]) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
 
-    for (orig_section, path, median_ns) in entries {
+    for (path, median_ns) in entries {
         let (section_label, group_name, row_name) = match path.len() {
             3 => {
                 let direction = if path[2].ends_with("_ser") { "ser" } else { "deser" };
@@ -196,7 +141,7 @@ fn organize_entries(entries: &[(String, Vec<String>, f64)]) -> Vec<Section> {
                 (format!("{format} {direction}"), clean_name, path[1].clone())
             }
             1 => {
-                (orig_section.clone(), orig_section.clone(), path[0].clone())
+                ("json deser".to_string(), path[0].clone(), path[0].clone())
             }
             _ => continue,
         };
@@ -223,28 +168,6 @@ fn organize_entries(entries: &[(String, Vec<String>, f64)]) -> Vec<Section> {
     }
 
     sections
-}
-
-fn strip_box(s: &str) -> String {
-    s.chars().filter(|&c| !('\u{2500}'..='\u{257F}').contains(&c)).collect()
-}
-
-fn name_only(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut end = s.len();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b' ' && bytes[i + 1] == b' ' { end = i; break; }
-        i += 1;
-    }
-    s[..end].trim().to_string()
-}
-
-fn parse_time(s: &str) -> Option<f64> {
-    let (num, unit) = s.trim().split_once(' ')?;
-    let n: f64 = num.parse().ok()?;
-    let mul = match unit { "ns" => 1.0, "µs" => 1_000.0, "ms" => 1_000_000.0, "s" => 1_000_000_000.0, _ => return None };
-    Some(n * mul)
 }
 
 fn fmt_time_html(ns: f64) -> String {

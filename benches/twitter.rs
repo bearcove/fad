@@ -12,21 +12,17 @@
 //! If the fixture ever contained non-null values for these fields, the types
 //! would need to be real structs (GeoJSON Point, etc.).
 
-use divan::{Bencher, black_box};
+#[path = "harness.rs"]
+mod harness;
+
 use facet::Facet;
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::hint::black_box;
 use std::sync::LazyLock;
-
-fn main() {
-    divan::main();
-}
 
 // =============================================================================
 // Types for twitter.json — shared between serde and fad
-//
-// We use a single set of types that derive both Deserialize and Facet.
-// Fields use borrowed types (&str, Cow<str>) for zero-copy where possible.
 // =============================================================================
 
 #[derive(Debug, Deserialize, Facet)]
@@ -237,14 +233,14 @@ struct Media<'a> {
 
 #[derive(Debug, Deserialize, Facet)]
 struct Sizes {
-    medium: Size,
-    small: Size,
-    thumb: Size,
-    large: Size,
+    medium: SizeInfo,
+    small: SizeInfo,
+    thumb: SizeInfo,
+    large: SizeInfo,
 }
 
 #[derive(Debug, Deserialize, Facet)]
-struct Size {
+struct SizeInfo {
     w: u64,
     h: u64,
     resize: String,
@@ -283,21 +279,29 @@ static FAD_TWITTER: LazyLock<fad::compiler::CompiledDecoder> =
 // Benchmarks
 // =============================================================================
 
-#[divan::bench]
-fn serde_json(bencher: Bencher) {
-    let data = &*TWITTER_STR;
-    bencher.bench(|| {
-        let result: Twitter = black_box(serde_json::from_str(black_box(data)).unwrap());
-        black_box(result)
-    });
-}
+fn main() {
+    let mut v: Vec<harness::Bench> = Vec::new();
 
-#[divan::bench]
-fn fad_from_str(bencher: Bencher) {
-    let data = &*TWITTER_STR;
-    let deser = &*FAD_TWITTER;
-    bencher.bench(|| {
-        let result: Twitter = black_box(fad::from_str(deser, black_box(data)).unwrap());
-        black_box(result)
+    v.push(harness::Bench {
+        name: "twitter/serde_json".into(),
+        func: Box::new(|runner| {
+            let data = &*TWITTER_STR;
+            runner.run(|| {
+                black_box(serde_json::from_str::<Twitter>(black_box(data)).unwrap());
+            });
+        }),
     });
+
+    v.push(harness::Bench {
+        name: "twitter/fad".into(),
+        func: Box::new(|runner| {
+            let data = &*TWITTER_STR;
+            let deser = &*FAD_TWITTER;
+            runner.run(|| {
+                black_box(fad::from_str::<Twitter>(deser, black_box(data)).unwrap());
+            });
+        }),
+    });
+
+    harness::run_benchmarks(v);
 }

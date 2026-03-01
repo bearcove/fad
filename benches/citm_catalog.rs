@@ -10,16 +10,15 @@
 //! We use bare `()` for these, matching the serde-rs/json-benchmark
 //! convention. See `benches/twitter.rs` for more context.
 
-use divan::{Bencher, black_box};
+#[path = "harness.rs"]
+mod harness;
+
 use facet::Facet;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::sync::LazyLock;
-
-fn main() {
-    divan::main();
-}
 
 // =============================================================================
 // Types for citm_catalog.json
@@ -143,21 +142,29 @@ static FAD_CITM: LazyLock<fad::compiler::CompiledDecoder> =
 // Benchmarks
 // =============================================================================
 
-#[divan::bench]
-fn serde_json(bencher: Bencher) {
-    let data = &*CITM_STR;
-    bencher.bench(|| {
-        let result: CitmCatalog = black_box(serde_json::from_str(black_box(data)).unwrap());
-        black_box(result)
-    });
-}
+fn main() {
+    let mut v: Vec<harness::Bench> = Vec::new();
 
-#[divan::bench]
-fn fad_from_str(bencher: Bencher) {
-    let data = &*CITM_STR;
-    let deser = &*FAD_CITM;
-    bencher.bench(|| {
-        let result: CitmCatalog = black_box(fad::from_str(deser, black_box(data)).unwrap());
-        black_box(result)
+    v.push(harness::Bench {
+        name: "citm_catalog/serde_json".into(),
+        func: Box::new(|runner| {
+            let data = &*CITM_STR;
+            runner.run(|| {
+                black_box(serde_json::from_str::<CitmCatalog>(black_box(data)).unwrap());
+            });
+        }),
     });
+
+    v.push(harness::Bench {
+        name: "citm_catalog/fad".into(),
+        func: Box::new(|runner| {
+            let data = &*CITM_STR;
+            let deser = &*FAD_CITM;
+            runner.run(|| {
+                black_box(fad::from_str::<CitmCatalog>(deser, black_box(data)).unwrap());
+            });
+        }),
+    });
+
+    harness::run_benchmarks(v);
 }

@@ -2,14 +2,13 @@
 //!
 //! Tests deeply nested arrays of floating-point coordinates.
 
-use divan::{Bencher, black_box};
+#[path = "harness.rs"]
+mod harness;
+
 use facet::Facet;
 use serde::Deserialize;
+use std::hint::black_box;
 use std::sync::LazyLock;
-
-fn main() {
-    divan::main();
-}
 
 // =============================================================================
 // Types for canada.json (GeoJSON)
@@ -75,25 +74,39 @@ static FAD_CANADA: LazyLock<fad::compiler::CompiledDecoder> =
 // Benchmarks
 // =============================================================================
 
-#[divan::bench]
-fn serde_json(bencher: Bencher) {
-    let data = &*CANADA_JSON;
-    bencher
-        .bench(|| black_box(serde_json::from_slice::<FeatureCollection>(black_box(data)).unwrap()));
-}
+fn main() {
+    let mut v: Vec<harness::Bench> = Vec::new();
 
-#[divan::bench]
-fn facet_json_tier0(bencher: Bencher) {
-    let data = &*CANADA_JSON;
-    bencher
-        .bench(|| black_box(facet_json::from_slice::<FeatureCollection>(black_box(data)).unwrap()));
-}
-
-#[divan::bench]
-fn fad(bencher: Bencher) {
-    let data = &*CANADA_JSON;
-    let deser = &*FAD_CANADA;
-    bencher.bench(|| {
-        black_box(fad::deserialize::<FeatureCollection>(deser, black_box(data)).unwrap())
+    v.push(harness::Bench {
+        name: "canada/serde_json".into(),
+        func: Box::new(|runner| {
+            let data = &*CANADA_JSON;
+            runner.run(|| {
+                black_box(serde_json::from_slice::<FeatureCollection>(black_box(data)).unwrap());
+            });
+        }),
     });
+
+    v.push(harness::Bench {
+        name: "canada/facet_json".into(),
+        func: Box::new(|runner| {
+            let data = &*CANADA_JSON;
+            runner.run(|| {
+                black_box(facet_json::from_slice::<FeatureCollection>(black_box(data)).unwrap());
+            });
+        }),
+    });
+
+    v.push(harness::Bench {
+        name: "canada/fad".into(),
+        func: Box::new(|runner| {
+            let data = &*CANADA_JSON;
+            let deser = &*FAD_CANADA;
+            runner.run(|| {
+                black_box(fad::deserialize::<FeatureCollection>(deser, black_box(data)).unwrap());
+            });
+        }),
+    });
+
+    harness::run_benchmarks(v);
 }
