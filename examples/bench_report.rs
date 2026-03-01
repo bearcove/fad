@@ -84,18 +84,22 @@ fn main() {
 
 struct Meta {
     datetime: String,
-    commit: String,
+    commit_short: String,
+    commit_full: String,
+    os_name: String,
     platform: String,
 }
 
 impl Meta {
     fn collect() -> Self {
         let datetime = sh("date", &["+%Y-%m-%d %H:%M %Z"]);
-        let commit = sh("git", &["rev-parse", "--short", "HEAD"]);
+        let commit_short = sh("git", &["rev-parse", "--short", "HEAD"]);
+        let commit_full = sh("git", &["rev-parse", "HEAD"]);
         let uname = sh("uname", &["-srm"]);
+        let os_name = sh("uname", &["-s"]);
         let cpu = cpu_name();
         let platform = if cpu.is_empty() { uname } else { format!("{uname} · {cpu}") };
-        Meta { datetime, commit, platform }
+        Meta { datetime, commit_short, commit_full, os_name, platform }
     }
 }
 
@@ -256,7 +260,7 @@ fn render_json(sections: &[Section], meta: &Meta) -> String {
     j.push_str("{\n");
     write!(j, r#"  "datetime": "{}","#, meta.datetime).unwrap();
     j.push('\n');
-    write!(j, r#"  "commit": "{}","#, meta.commit).unwrap();
+    write!(j, r#"  "commit": "{}","#, meta.commit_short).unwrap();
     j.push('\n');
     write!(j, r#"  "platform": "{}","#, meta.platform.replace('"', r#"\""#)).unwrap();
     j.push('\n');
@@ -307,7 +311,7 @@ fn render_markdown(sections: &[Section], meta: &Meta) -> String {
     let mut m = String::new();
     writeln!(m, "# Bench Report").unwrap();
     writeln!(m).unwrap();
-    writeln!(m, "> {} · {} · {}", meta.datetime, meta.commit, meta.platform).unwrap();
+    writeln!(m, "> {} · {} · {}", meta.datetime, meta.commit_short, meta.platform).unwrap();
     writeln!(m).unwrap();
 
     for section in sections {
@@ -406,7 +410,7 @@ fn render(sections: &[Section], meta: &Meta) -> String {
   --bg:#070A0F;--surface:#0C1118;--border:rgba(255,255,255,0.07);
   --track:#1A2535;
   --text:#AAB8C8;--bright:#E4EEF8;--dim:#6A7A8A;
-  --fad:#D4A030;--ref:#4A8ED4;
+  --fad:#34829c;--ref:#74d44a;
   --mono:"IBM Plex Mono",monospace;--sans:"Plus Jakarta Sans",sans-serif;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -443,8 +447,8 @@ body{
   font-variant-numeric:tabular-nums;
   text-align:right;white-space:nowrap;
 }
-.ratio-col.win{color:#3DB858}
-.ratio-col.lose{color:#C05050}
+.ratio-col.win{color:var(--fad)}
+.ratio-col.lose{color:var(--ref)}
 .t-fad{
   font-size:12px;font-weight:500;color:var(--bright);
   text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;
@@ -475,15 +479,16 @@ body{
   font-family:var(--sans);font-size:13px;font-weight:700;
   text-align:center;padding-bottom:6px;color:var(--text);
 }
-.summary-cell .fad-n{color:#3DB858}
+.summary-cell .fad-n{color:var(--fad)}
 .summary-cell .ref-n{color:var(--ref)}
-.summary-cell .pipe{color:var(--dim);margin:0 10px}
+.summary-cell .sep{color:var(--dim);margin:0 8px}
 /* footer */
 footer{
   margin-top:24px;padding-top:12px;
   border-top:1px solid var(--border);
   font-size:12px;color:var(--dim);
 }
+footer a:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -527,7 +532,7 @@ footer{
                 .unwrap_or_else(|| "serde".to_string());
             let serde_wins = comparable_total - fad_wins;
             write!(h,
-                r#"<div class="bench-row"><span></span><span></span><span></span><div class="summary-cell">fad wins <span class="fad-n">{fad_wins}</span><span class="pipe">|</span>{ref_name} wins <span class="ref-n">{serde_wins}</span></div><span></span></div>"#,
+                r#"<div class="bench-row"><span></span><span></span><span></span><div class="summary-cell">fad wins <span class="fad-n">{fad_wins}</span><span class="sep">&middot;</span>{ref_name} wins <span class="ref-n">{serde_wins}</span></div><span></span></div>"#,
             ).unwrap();
         }
 
@@ -624,7 +629,14 @@ footer{
     }
 
     h.push_str("<footer>");
-    write!(h, "{} · {} · {}", esc(&meta.datetime), esc(&meta.commit), esc(&meta.platform)).unwrap();
+    write!(h, "{} · ", esc(&meta.datetime)).unwrap();
+    // Commit link to GitHub
+    write!(h, r#"<a href="https://github.com/bearcove/fad/commit/{}" style="color:var(--dim);text-decoration:none">{}</a>"#,
+        esc(&meta.commit_full), esc(&meta.commit_short)).unwrap();
+    write!(h, " · ").unwrap();
+    // OS icon
+    h.push_str(os_icon(&meta.os_name));
+    write!(h, " {}", esc(&meta.platform)).unwrap();
     h.push_str("</footer>\n");
 
     h.push_str(r#"<script>
@@ -638,6 +650,16 @@ function switchTab(id) {
 "#);
 
     h
+}
+
+/// Inline SVG icon for the OS.
+fn os_icon(os_name: &str) -> &'static str {
+    match os_name {
+        "Darwin" => r#"<svg style="vertical-align:-2px" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>"#,
+        "Linux" => r#"<svg style="vertical-align:-2px" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.345 1.884 1.345.358 0 .705-.094 1.053-.283.591-.32.974-.77 1.143-1.272.17-.505.138-1.12-.164-1.768-.096-.2-.238-.381-.394-.556-.104-.131-.196-.237-.238-.356a.723.723 0 01-.024-.344c.018-.174.107-.377.224-.578.202-.362.483-.775.67-1.264l.003-.007c.183-.471.298-1.03.248-1.694-.045-.6-.228-1.278-.583-2.029-.177-.375-.385-.739-.63-1.1-.24-.35-.512-.669-.792-.982-.095-.104-.185-.21-.262-.337-.087-.145-.16-.293-.21-.439.005-.009.009-.019.009-.03.24-.682.359-1.515.359-2.485 0-1.252-.37-2.293-.978-3.036-.598-.733-1.378-1.096-2.078-1.096-.4 0-.766.108-1.055.287-.29.178-.556.45-.768.816a12.262 12.262 0 00-.48.891 10.078 10.078 0 00-.162.381.25.25 0 00-.026.07c-.15.3-.315.505-.464.633-.165.138-.31.192-.449.208-.096.01-.248-.04-.425-.192a2.474 2.474 0 01-.398-.441c-.3-.398-.657-.963-1.047-1.467-.39-.502-.844-.973-1.413-1.28-.57-.307-1.165-.438-1.843-.434z"/></svg>"#,
+        _ if os_name.contains("Windows") || os_name.contains("MINGW") || os_name.contains("MSYS") => r#"<svg style="vertical-align:-2px" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>"#,
+        _ => "",
+    }
 }
 
 /// Produce a CSS-safe ID from a section label (e.g., "json deser" → "json-deser").
