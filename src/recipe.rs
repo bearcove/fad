@@ -41,13 +41,25 @@ pub enum Op {
     /// Load `width` bytes from cursor into slot.
     LoadFromCursor { dst: Slot, width: Width },
     /// Store `width` bytes from slot to out+offset.
-    StoreToOut { src: Slot, offset: u32, width: Width },
+    StoreToOut {
+        src: Slot,
+        offset: u32,
+        width: Width,
+    },
     /// Store 1 byte from slot to stack.
     StoreByteToStack { src: Slot, sp_offset: u32 },
     /// Store slot to stack.
-    StoreToStack { src: Slot, sp_offset: u32, width: Width },
+    StoreToStack {
+        src: Slot,
+        sp_offset: u32,
+        width: Width,
+    },
     /// Load from stack into slot.
-    LoadFromStack { dst: Slot, sp_offset: u32, width: Width },
+    LoadFromStack {
+        dst: Slot,
+        sp_offset: u32,
+        width: Width,
+    },
     /// Advance cursor by `count` bytes.
     AdvanceCursor { count: u32 },
     /// Advance cursor by the value in slot.
@@ -55,7 +67,11 @@ pub enum Op {
     /// Zigzag decode: slot = (slot >> 1) ^ -(slot & 1)
     ZigzagDecode { slot: Slot },
     /// Validate slot <= max_val, branch to error on failure.
-    ValidateMax { slot: Slot, max_val: u32, error: ErrorCode },
+    ValidateMax {
+        slot: Slot,
+        max_val: u32,
+        error: ErrorCode,
+    },
     /// Test bit 7 of slot; if set, branch to target label.
     TestBit7Branch { slot: Slot, target: usize },
     /// Unconditional branch to label.
@@ -63,18 +79,29 @@ pub enum Op {
     /// Bind a label at the current position.
     BindLabel { index: usize },
     /// Flush cursor, call intrinsic(ctx, out+field_offset), reload, check error.
-    CallIntrinsic { fn_ptr: *const u8, field_offset: u32 },
+    CallIntrinsic {
+        fn_ptr: *const u8,
+        field_offset: u32,
+    },
     /// Flush cursor, call intrinsic(ctx, sp+sp_offset), reload, check error.
     CallIntrinsicStackOut { fn_ptr: *const u8, sp_offset: u32 },
     /// dst = input_end - input_ptr (remaining bytes).
     ComputeRemaining { dst: Slot },
     /// If lhs < rhs (unsigned), branch to error target.
-    CmpBranchLo { lhs: Slot, rhs: Slot, on_fail: ErrorTarget },
+    CmpBranchLo {
+        lhs: Slot,
+        rhs: Slot,
+        on_fail: ErrorTarget,
+    },
     /// Save cursor pointer into slot.
     SaveCursor { dst: Slot },
     /// Flush cursor, call validate_alloc_copy(ctx, data_src, len_src).
     /// Returns buf pointer in return register (x0/rax).
-    CallValidateAllocCopy { fn_ptr: *const u8, data_src: Slot, len_src: Slot },
+    CallValidateAllocCopy {
+        fn_ptr: *const u8,
+        data_src: Slot,
+        len_src: Slot,
+    },
     /// Write String fields directly: ptr from return register, len/cap from slot.
     WriteMalumString {
         base_offset: u32,
@@ -85,9 +112,12 @@ pub enum Op {
     },
 
     // ── Encode-direction ops ──────────────────────────────────────────
-
     /// Load `width` bytes from input struct at offset into slot.
-    LoadFromInput { dst: Slot, offset: u32, width: Width },
+    LoadFromInput {
+        dst: Slot,
+        offset: u32,
+        width: Width,
+    },
     /// Store `width` bytes from slot to output buffer at current position, advancing output.
     StoreToOutput { src: Slot, width: Width },
     /// Write a literal byte to the output buffer, advancing by 1.
@@ -141,7 +171,11 @@ pub fn read_byte(offset: u32) -> Recipe {
     r.ops.extend([
         Op::BoundsCheck { count: 1 },
         Op::LoadByte { dst: Slot::A },
-        Op::StoreToOut { src: Slot::A, offset, width: Width::W1 },
+        Op::StoreToOut {
+            src: Slot::A,
+            offset,
+            width: Width::W1,
+        },
         Op::AdvanceCursor { count: 1 },
     ]);
     r
@@ -153,7 +187,10 @@ pub fn read_byte_to_stack(sp_offset: u32) -> Recipe {
     r.ops.extend([
         Op::BoundsCheck { count: 1 },
         Op::LoadByte { dst: Slot::A },
-        Op::StoreByteToStack { src: Slot::A, sp_offset },
+        Op::StoreByteToStack {
+            src: Slot::A,
+            sp_offset,
+        },
         Op::AdvanceCursor { count: 1 },
     ]);
     r
@@ -165,8 +202,16 @@ pub fn read_bool(offset: u32) -> Recipe {
     r.ops.extend([
         Op::BoundsCheck { count: 1 },
         Op::LoadByte { dst: Slot::A },
-        Op::ValidateMax { slot: Slot::A, max_val: 1, error: ErrorCode::InvalidBool },
-        Op::StoreToOut { src: Slot::A, offset, width: Width::W1 },
+        Op::ValidateMax {
+            slot: Slot::A,
+            max_val: 1,
+            error: ErrorCode::InvalidBool,
+        },
+        Op::StoreToOut {
+            src: Slot::A,
+            offset,
+            width: Width::W1,
+        },
         Op::AdvanceCursor { count: 1 },
     ]);
     r
@@ -177,8 +222,15 @@ pub fn read_f32(offset: u32) -> Recipe {
     let mut r = Recipe::new();
     r.ops.extend([
         Op::BoundsCheck { count: 4 },
-        Op::LoadFromCursor { dst: Slot::A, width: Width::W4 },
-        Op::StoreToOut { src: Slot::A, offset, width: Width::W4 },
+        Op::LoadFromCursor {
+            dst: Slot::A,
+            width: Width::W4,
+        },
+        Op::StoreToOut {
+            src: Slot::A,
+            offset,
+            width: Width::W4,
+        },
         Op::AdvanceCursor { count: 4 },
     ]);
     r
@@ -189,8 +241,15 @@ pub fn read_f64(offset: u32) -> Recipe {
     let mut r = Recipe::new();
     r.ops.extend([
         Op::BoundsCheck { count: 8 },
-        Op::LoadFromCursor { dst: Slot::A, width: Width::W8 },
-        Op::StoreToOut { src: Slot::A, offset, width: Width::W8 },
+        Op::LoadFromCursor {
+            dst: Slot::A,
+            width: Width::W8,
+        },
+        Op::StoreToOut {
+            src: Slot::A,
+            offset,
+            width: Width::W8,
+        },
         Op::AdvanceCursor { count: 8 },
     ]);
     r
@@ -212,17 +271,27 @@ pub fn varint_fast_path(
     r.ops.extend([
         Op::BoundsCheck { count: 1 },
         Op::LoadByte { dst: Slot::A },
-        Op::TestBit7Branch { slot: Slot::A, target: slow_path },
+        Op::TestBit7Branch {
+            slot: Slot::A,
+            target: slow_path,
+        },
         Op::AdvanceCursor { count: 1 },
     ]);
     if zigzag {
         r.ops.push(Op::ZigzagDecode { slot: Slot::A });
     }
     r.ops.extend([
-        Op::StoreToOut { src: Slot::A, offset, width: store_width },
+        Op::StoreToOut {
+            src: Slot::A,
+            offset,
+            width: store_width,
+        },
         Op::Branch { target: done },
         Op::BindLabel { index: slow_path },
-        Op::CallIntrinsic { fn_ptr: intrinsic, field_offset: offset },
+        Op::CallIntrinsic {
+            fn_ptr: intrinsic,
+            field_offset: offset,
+        },
         Op::BindLabel { index: done },
     ]);
     r
@@ -247,24 +316,44 @@ pub fn postcard_string_malum(
     r.ops.extend([
         Op::BoundsCheck { count: 1 },
         Op::LoadByte { dst: Slot::A },
-        Op::TestBit7Branch { slot: Slot::A, target: varint_slow },
+        Op::TestBit7Branch {
+            slot: Slot::A,
+            target: varint_slow,
+        },
         Op::AdvanceCursor { count: 1 },
-        Op::Branch { target: have_length },
+        Op::Branch {
+            target: have_length,
+        },
         // Slow path: multi-byte varint
         Op::BindLabel { index: varint_slow },
-        Op::CallIntrinsicStackOut { fn_ptr: slow_varint_intrinsic, sp_offset: 48 },
-        Op::LoadFromStack { dst: Slot::A, sp_offset: 48, width: Width::W4 },
+        Op::CallIntrinsicStackOut {
+            fn_ptr: slow_varint_intrinsic,
+            sp_offset: 48,
+        },
+        Op::LoadFromStack {
+            dst: Slot::A,
+            sp_offset: 48,
+            width: Width::W4,
+        },
     ]);
 
     // Step 2: Bounds check + validate_alloc_copy + write fields
     r.ops.extend([
         Op::BindLabel { index: have_length },
         // Save length to stack (survives call)
-        Op::StoreToStack { src: Slot::A, sp_offset: 48, width: Width::W4 },
+        Op::StoreToStack {
+            src: Slot::A,
+            sp_offset: 48,
+            width: Width::W4,
+        },
         // remaining = end - ptr
         Op::ComputeRemaining { dst: Slot::B },
         // if remaining < length → EOF
-        Op::CmpBranchLo { lhs: Slot::B, rhs: Slot::A, on_fail: ErrorTarget::Eof },
+        Op::CmpBranchLo {
+            lhs: Slot::B,
+            rhs: Slot::A,
+            on_fail: ErrorTarget::Eof,
+        },
         // Save cursor as data_ptr
         Op::SaveCursor { dst: Slot::B },
         // Call validate_alloc_copy(ctx, data_ptr, len) → buf in rax/x0
@@ -274,7 +363,11 @@ pub fn postcard_string_malum(
             len_src: Slot::A,
         },
         // Reload length from stack
-        Op::LoadFromStack { dst: Slot::A, sp_offset: 48, width: Width::W4 },
+        Op::LoadFromStack {
+            dst: Slot::A,
+            sp_offset: 48,
+            width: Width::W4,
+        },
         // Write (ptr, len, cap) at discovered offsets
         Op::WriteMalumString {
             base_offset: offset,
@@ -305,8 +398,15 @@ pub fn encode_raw(offset: u32, width: Width) -> Recipe {
     let mut r = Recipe::new();
     r.ops.extend([
         Op::OutputBoundsCheck { count: byte_count },
-        Op::LoadFromInput { dst: Slot::A, offset, width },
-        Op::StoreToOutput { src: Slot::A, width },
+        Op::LoadFromInput {
+            dst: Slot::A,
+            offset,
+            width,
+        },
+        Op::StoreToOutput {
+            src: Slot::A,
+            width,
+        },
     ]);
     r
 }
@@ -319,17 +419,30 @@ pub fn encode_varint(offset: u32, width: Width, zigzag: bool) -> Recipe {
     let max_bytes = if wide { 10 } else { 5 };
     let mut r = Recipe::new();
     r.ops.push(Op::OutputBoundsCheck { count: max_bytes });
-    r.ops.push(Op::LoadFromInput { dst: Slot::A, offset, width });
+    r.ops.push(Op::LoadFromInput {
+        dst: Slot::A,
+        offset,
+        width,
+    });
     if zigzag {
         // Sign-extend narrow values before zigzag encoding.
         // W1 and W2 loads are zero-extended by LoadFromInput, but zigzag
         // needs the sign bit to be in the right position.
         if matches!(width, Width::W1 | Width::W2) {
-            r.ops.push(Op::SignExtend { slot: Slot::A, from: width });
+            r.ops.push(Op::SignExtend {
+                slot: Slot::A,
+                from: width,
+            });
         }
-        r.ops.push(Op::ZigzagEncode { slot: Slot::A, wide });
+        r.ops.push(Op::ZigzagEncode {
+            slot: Slot::A,
+            wide,
+        });
     }
-    r.ops.push(Op::EncodeVarint { slot: Slot::A, wide });
+    r.ops.push(Op::EncodeVarint {
+        slot: Slot::A,
+        wide,
+    });
     r
 }
 
@@ -337,7 +450,9 @@ pub fn encode_varint(offset: u32, width: Width, zigzag: bool) -> Recipe {
 /// Emits a single bounds check followed by one WriteByte per byte.
 pub fn write_literal(bytes: &[u8]) -> Recipe {
     let mut r = Recipe::new();
-    r.ops.push(Op::OutputBoundsCheck { count: bytes.len() as u32 });
+    r.ops.push(Op::OutputBoundsCheck {
+        count: bytes.len() as u32,
+    });
     for &b in bytes {
         r.ops.push(Op::WriteByte { value: b });
     }

@@ -37,7 +37,9 @@ static INPUT: &[u8] = br#"{"roster": {"alice": {"age": 25, "name": "Alice"}, "bo
 const ITERS: usize = 1000;
 
 fn main() {
-    let mode = std::env::args().nth(1).expect("usage: profile_map_struct <serde_json|fad>");
+    let mode = std::env::args()
+        .nth(1)
+        .expect("usage: profile_map_struct <serde_json|fad>");
 
     match mode.as_str() {
         "serde_json" => {

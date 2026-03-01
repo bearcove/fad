@@ -1,11 +1,11 @@
-use dynasmrt::{dynasm, DynasmApi, DynasmLabelApi, DynamicLabel, AssemblyOffset};
+use dynasmrt::{AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, dynasm};
 
 use crate::context::{
     CTX_ERROR_CODE, CTX_INPUT_END, CTX_INPUT_PTR, ENC_ERROR_CODE, ENC_OUTPUT_END, ENC_OUTPUT_PTR,
     ErrorCode,
 };
 use crate::jit_f64;
-use crate::recipe::{Op, Recipe, Slot, Width, ErrorTarget};
+use crate::recipe::{ErrorTarget, Op, Recipe, Slot, Width};
 
 pub type Assembler = dynasmrt::aarch64::Assembler;
 
@@ -341,7 +341,12 @@ impl EmitCtx {
     }
 
     /// Load a byte from sp + sp_offset, compare with byte_val, branch if equal.
-    pub fn emit_stack_byte_cmp_branch(&mut self, sp_offset: u32, byte_val: u8, label: DynamicLabel) {
+    pub fn emit_stack_byte_cmp_branch(
+        &mut self,
+        sp_offset: u32,
+        byte_val: u8,
+        label: DynamicLabel,
+    ) {
         let byte_val = byte_val as u32;
         dynasm!(self.ops
             ; .arch aarch64
@@ -459,7 +464,12 @@ impl EmitCtx {
             8 => Width::W8,
             _ => panic!("unsupported varint store width: {store_width}"),
         };
-        self.emit_recipe(&crate::recipe::varint_fast_path(offset, width, zigzag, intrinsic_fn_ptr));
+        self.emit_recipe(&crate::recipe::varint_fast_path(
+            offset,
+            width,
+            zigzag,
+            intrinsic_fn_ptr,
+        ));
     }
 
     // ── Inline string reads (recipe-based) ──────────────────────────────
@@ -1047,7 +1057,12 @@ impl EmitCtx {
 
     /// Test a single bit at `bit_index` in the u64 at `[sp + stack_offset]`.
     /// Branch to `label` if the bit is CLEAR (zero) — i.e., the field was NOT seen.
-    pub fn emit_test_bit_branch_zero(&mut self, stack_offset: u32, bit_index: u32, label: DynamicLabel) {
+    pub fn emit_test_bit_branch_zero(
+        &mut self,
+        stack_offset: u32,
+        bit_index: u32,
+        label: DynamicLabel,
+    ) {
         dynasm!(self.ops
             ; .arch aarch64
             ; ldr x9, [sp, #stack_offset]
@@ -1090,10 +1105,10 @@ impl EmitCtx {
         let err_code = error_code as u32;
         let expected = expected as u32;
 
-        let ws_loop  = self.ops.new_dynamic_label();
-        let non_ws   = self.ops.new_dynamic_label();
-        let done     = self.ops.new_dynamic_label();
-        let err_lbl  = self.ops.new_dynamic_label();
+        let ws_loop = self.ops.new_dynamic_label();
+        let non_ws = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let err_lbl = self.ops.new_dynamic_label();
 
         dynasm!(self.ops ; .arch aarch64
             // ── whitespace-skip loop ────────────────────────────────────
@@ -1153,7 +1168,12 @@ impl EmitCtx {
 
     /// Call fad_option_init_none(init_none_fn, out + offset).
     /// Does not touch ctx or the cursor.
-    pub fn emit_call_option_init_none(&mut self, wrapper_fn: *const u8, init_none_fn: *const u8, offset: u32) {
+    pub fn emit_call_option_init_none(
+        &mut self,
+        wrapper_fn: *const u8,
+        init_none_fn: *const u8,
+        offset: u32,
+    ) {
         load_imm64!(self.ops, x0, init_none_fn as u64);
         dynasm!(self.ops ; .arch aarch64 ; add x1, x21, #offset);
         self.emit_call_fn_ptr(wrapper_fn);
@@ -1209,12 +1229,7 @@ impl EmitCtx {
     /// **Important**: w9 is caller-saved and will be clobbered by the call.
     /// The count is saved to `count_slot` on the stack before the call so
     /// it survives across the function call boundary.
-    pub fn emit_call_vec_alloc(
-        &mut self,
-        alloc_fn: *const u8,
-        elem_size: u32,
-        elem_align: u32,
-    ) {
+    pub fn emit_call_vec_alloc(&mut self, alloc_fn: *const u8, elem_size: u32, elem_align: u32) {
         self.emit_flush_input_cursor();
         dynasm!(self.ops
             ; .arch aarch64
@@ -1536,8 +1551,8 @@ impl EmitCtx {
         base_offset: u32,
         saved_out_slot: u32,
         buf_slot: u32,
-        len_slot: u32,    // stack slot holding len (or count for postcard)
-        cap_slot: u32,    // stack slot holding cap (or count for postcard)
+        len_slot: u32, // stack slot holding len (or count for postcard)
+        cap_slot: u32, // stack slot holding cap (or count for postcard)
         offsets: &crate::malum::VecOffsets,
     ) {
         let ptr_off = base_offset + offsets.ptr_offset;
@@ -1763,14 +1778,30 @@ impl EmitCtx {
                 Op::StoreToOut { src, offset, width } => {
                     let offset = *offset;
                     match (src, width) {
-                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w9, [x21, #offset]),
-                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x21, #offset]),
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w9, [x21, #offset]),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x9, [x21, #offset]),
-                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w10, [x21, #offset]),
-                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w10, [x21, #offset]),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w10, [x21, #offset]),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x10, [x21, #offset]),
+                        (Slot::A, Width::W1) => {
+                            dynasm!(self.ops ; .arch aarch64 ; strb w9, [x21, #offset])
+                        }
+                        (Slot::A, Width::W2) => {
+                            dynasm!(self.ops ; .arch aarch64 ; strh w9, [x21, #offset])
+                        }
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str w9, [x21, #offset])
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str x9, [x21, #offset])
+                        }
+                        (Slot::B, Width::W1) => {
+                            dynasm!(self.ops ; .arch aarch64 ; strb w10, [x21, #offset])
+                        }
+                        (Slot::B, Width::W2) => {
+                            dynasm!(self.ops ; .arch aarch64 ; strh w10, [x21, #offset])
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str w10, [x21, #offset])
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str x10, [x21, #offset])
+                        }
                     }
                 }
                 Op::StoreByteToStack { src, sp_offset } => {
@@ -1780,23 +1811,47 @@ impl EmitCtx {
                         Slot::B => dynasm!(self.ops ; .arch aarch64 ; strb w10, [sp, #sp_offset]),
                     }
                 }
-                Op::StoreToStack { src, sp_offset, width } => {
+                Op::StoreToStack {
+                    src,
+                    sp_offset,
+                    width,
+                } => {
                     let sp_offset = *sp_offset;
                     match (src, width) {
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w9, [sp, #sp_offset]),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x9, [sp, #sp_offset]),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w10, [sp, #sp_offset]),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x10, [sp, #sp_offset]),
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str w9, [sp, #sp_offset])
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str x9, [sp, #sp_offset])
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str w10, [sp, #sp_offset])
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; str x10, [sp, #sp_offset])
+                        }
                         _ => panic!("unsupported StoreToStack width"),
                     }
                 }
-                Op::LoadFromStack { dst, sp_offset, width } => {
+                Op::LoadFromStack {
+                    dst,
+                    sp_offset,
+                    width,
+                } => {
                     let sp_offset = *sp_offset;
                     match (dst, width) {
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w9, [sp, #sp_offset]),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x9, [sp, #sp_offset]),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w10, [sp, #sp_offset]),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x10, [sp, #sp_offset]),
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr w9, [sp, #sp_offset])
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr x9, [sp, #sp_offset])
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr w10, [sp, #sp_offset])
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr x10, [sp, #sp_offset])
+                        }
                         _ => panic!("unsupported LoadFromStack width"),
                     }
                 }
@@ -1824,7 +1879,11 @@ impl EmitCtx {
                         ; eor w10, w11, w9
                     ),
                 },
-                Op::ValidateMax { slot, max_val, error } => {
+                Op::ValidateMax {
+                    slot,
+                    max_val,
+                    error,
+                } => {
                     let max_val = *max_val;
                     let error_code = *error as u32;
                     let invalid_label = self.ops.new_dynamic_label();
@@ -1866,7 +1925,10 @@ impl EmitCtx {
                     let label = labels[*index];
                     dynasm!(self.ops ; .arch aarch64 ; =>label);
                 }
-                Op::CallIntrinsic { fn_ptr, field_offset } => {
+                Op::CallIntrinsic {
+                    fn_ptr,
+                    field_offset,
+                } => {
                     let field_offset = *field_offset;
                     self.emit_flush_input_cursor();
                     dynasm!(self.ops
@@ -1915,7 +1977,11 @@ impl EmitCtx {
                     Slot::A => dynasm!(self.ops ; .arch aarch64 ; mov x9, x19),
                     Slot::B => dynasm!(self.ops ; .arch aarch64 ; mov x10, x19),
                 },
-                Op::CallValidateAllocCopy { fn_ptr, data_src, len_src } => {
+                Op::CallValidateAllocCopy {
+                    fn_ptr,
+                    data_src,
+                    len_src,
+                } => {
                     self.emit_flush_input_cursor();
                     dynasm!(self.ops ; .arch aarch64 ; mov x0, x22);
                     match data_src {
@@ -1929,7 +1995,13 @@ impl EmitCtx {
                     self.emit_call_fn_ptr(*fn_ptr);
                     self.emit_check_error();
                 }
-                Op::WriteMalumString { base_offset, ptr_off, len_off, cap_off, len_slot } => {
+                Op::WriteMalumString {
+                    base_offset,
+                    ptr_off,
+                    len_off,
+                    cap_off,
+                    len_slot,
+                } => {
                     let ptr_offset = *base_offset + *ptr_off;
                     let len_offset = *base_offset + *len_off;
                     let cap_offset = *base_offset + *cap_off;
@@ -1960,32 +2032,61 @@ impl EmitCtx {
                 //   x20 = output_end
                 //   x21 = input struct pointer
                 //   x22 = EncodeContext pointer
-
                 Op::LoadFromInput { dst, offset, width } => {
                     let offset = *offset;
                     match (dst, width) {
-                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; ldrb w9, [x21, #offset]),
-                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; ldrh w9, [x21, #offset]),
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w9, [x21, #offset]),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x9, [x21, #offset]),
-                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; ldrb w10, [x21, #offset]),
-                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; ldrh w10, [x21, #offset]),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; ldr w10, [x21, #offset]),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; ldr x10, [x21, #offset]),
+                        (Slot::A, Width::W1) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldrb w9, [x21, #offset])
+                        }
+                        (Slot::A, Width::W2) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldrh w9, [x21, #offset])
+                        }
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr w9, [x21, #offset])
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr x9, [x21, #offset])
+                        }
+                        (Slot::B, Width::W1) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldrb w10, [x21, #offset])
+                        }
+                        (Slot::B, Width::W2) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldrh w10, [x21, #offset])
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr w10, [x21, #offset])
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch aarch64 ; ldr x10, [x21, #offset])
+                        }
                     }
                 }
-                Op::StoreToOutput { src, width } => {
-                    match (src, width) {
-                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w9, [x19] ; add x19, x19, #1),
-                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w9, [x19] ; add x19, x19, #2),
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w9, [x19] ; add x19, x19, #4),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x9, [x19] ; add x19, x19, #8),
-                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch aarch64 ; strb w10, [x19] ; add x19, x19, #1),
-                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch aarch64 ; strh w10, [x19] ; add x19, x19, #2),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch aarch64 ; str w10, [x19] ; add x19, x19, #4),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch aarch64 ; str x10, [x19] ; add x19, x19, #8),
+                Op::StoreToOutput { src, width } => match (src, width) {
+                    (Slot::A, Width::W1) => {
+                        dynasm!(self.ops ; .arch aarch64 ; strb w9, [x19] ; add x19, x19, #1)
                     }
-                }
+                    (Slot::A, Width::W2) => {
+                        dynasm!(self.ops ; .arch aarch64 ; strh w9, [x19] ; add x19, x19, #2)
+                    }
+                    (Slot::A, Width::W4) => {
+                        dynasm!(self.ops ; .arch aarch64 ; str w9, [x19] ; add x19, x19, #4)
+                    }
+                    (Slot::A, Width::W8) => {
+                        dynasm!(self.ops ; .arch aarch64 ; str x9, [x19] ; add x19, x19, #8)
+                    }
+                    (Slot::B, Width::W1) => {
+                        dynasm!(self.ops ; .arch aarch64 ; strb w10, [x19] ; add x19, x19, #1)
+                    }
+                    (Slot::B, Width::W2) => {
+                        dynasm!(self.ops ; .arch aarch64 ; strh w10, [x19] ; add x19, x19, #2)
+                    }
+                    (Slot::B, Width::W4) => {
+                        dynasm!(self.ops ; .arch aarch64 ; str w10, [x19] ; add x19, x19, #4)
+                    }
+                    (Slot::B, Width::W8) => {
+                        dynasm!(self.ops ; .arch aarch64 ; str x10, [x19] ; add x19, x19, #8)
+                    }
+                },
                 Op::WriteByte { value } => {
                     let value = *value as u32;
                     dynasm!(self.ops

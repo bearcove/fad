@@ -547,6 +547,41 @@ pub unsafe extern "C" fn fad_option_init_some(
     unsafe { (init_some_fn)(ptr_uninit, ptr_mut) };
 }
 
+/// IR-callable wrapper for Option::None init.
+///
+/// ABI shape matches linear IR side-effect intrinsic calls:
+/// `fn(ctx, arg0, out)`.
+///
+/// # Safety
+///
+/// Same requirements as [`fad_option_init_none`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_option_init_none_ctx(
+    _ctx: *mut DeserContext,
+    init_none_fn: facet::OptionInitNoneFn,
+    out: *mut u8,
+) {
+    unsafe { fad_option_init_none(init_none_fn, out) };
+}
+
+/// IR-callable wrapper for Option::Some init.
+///
+/// ABI shape matches linear IR side-effect intrinsic calls:
+/// `fn(ctx, arg0, arg1, out)`.
+///
+/// # Safety
+///
+/// Same requirements as [`fad_option_init_some`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_option_init_some_ctx(
+    _ctx: *mut DeserContext,
+    init_some_fn: facet::OptionInitSomeFn,
+    value_ptr: *mut u8,
+    out: *mut u8,
+) {
+    unsafe { fad_option_init_some(init_some_fn, out, value_ptr) };
+}
+
 // r[impl deser.pointer.new-into]
 
 /// Wrap an already-deserialized T into a smart pointer (Box, Arc, Rc) using the
@@ -796,10 +831,7 @@ pub unsafe extern "C" fn fad_vec_free(
 /// - `out` must point to uninitialized memory of the correct size/alignment for the type
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
-pub unsafe extern "C" fn fad_field_default_trait(
-    default_fn: unsafe fn(*mut ()),
-    out: *mut u8,
-) {
+pub unsafe extern "C" fn fad_field_default_trait(default_fn: unsafe fn(*mut ()), out: *mut u8) {
     unsafe { default_fn(out as *mut ()) };
 }
 
@@ -964,10 +996,7 @@ unsafe fn ensure_capacity(ctx: &mut EncodeContext, needed: usize) {
 ///
 /// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
 /// - `field_ptr` must point to a valid, initialized String/&str/Cow<str> value
-pub unsafe extern "C" fn fad_encode_postcard_string(
-    ctx: *mut EncodeContext,
-    field_ptr: *const u8,
-) {
+pub unsafe extern "C" fn fad_encode_postcard_string(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let offsets = crate::malum::discover_string_offsets();
 

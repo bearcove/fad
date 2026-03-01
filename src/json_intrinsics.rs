@@ -1863,7 +1863,7 @@ unsafe fn json_escape_bytes_to_ctx(ctx: &mut EncodeContext, bytes: &[u8]) {
             0x08 => Some(b'b'),
             0x0C => Some(b'f'),
             0x00..=0x1F => None, // control chars needing \uXXXX
-            _ => continue,      // printable, no escape needed
+            _ => continue,       // printable, no escape needed
         };
 
         // Flush unescaped prefix

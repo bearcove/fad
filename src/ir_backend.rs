@@ -42,6 +42,13 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
         current_func: Option<FunctionCtx>,
     }
 
+    #[derive(Clone, Copy)]
+    enum IntrinsicArg {
+        VReg(crate::ir::VReg),
+        OutField(u32),
+        OutStack(u32),
+    }
+
     impl Lowerer {
         fn new(ir: &LinearIr) -> Self {
             let slot_base = BASE_FRAME;
@@ -253,6 +260,195 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
             self.ectx.emit_branch(self.label(default));
         }
 
+        fn emit_load_intrinsic_arg_rsi(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov rsi, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rsi, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rsi, [rsp + off]);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_rdx(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov rdx, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rdx, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rdx, [rsp + off]);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_rcx(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov rcx, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rcx, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rcx, [rsp + off]);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_r8(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov r8, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea r8, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea r8, [rsp + off]);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_r9(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov r9, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea r9, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea r9, [rsp + off]);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_r10(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov r10, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea r10, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea r10, [rsp + off]);
+                }
+            }
+        }
+
+        fn emit_call_intrinsic_with_args(&mut self, fn_ptr: *const u8, args: &[IntrinsicArg]) {
+            use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR};
+
+            let error_exit = self
+                .current_func
+                .as_ref()
+                .expect("CallIntrinsic outside function")
+                .error_exit;
+
+            // Flush cursor before call.
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            );
+
+            #[cfg(not(windows))]
+            {
+                if args.len() > 5 {
+                    panic!(
+                        "unsupported CallIntrinsic arity in linear backend adapter: {} args (+ctx)",
+                        args.len()
+                    );
+                }
+                dynasm!(self.ectx.ops ; .arch x64 ; mov rdi, r15);
+                if let Some(arg) = args.first().copied() {
+                    self.emit_load_intrinsic_arg_rsi(arg);
+                }
+                if let Some(arg) = args.get(1).copied() {
+                    self.emit_load_intrinsic_arg_rdx(arg);
+                }
+                if let Some(arg) = args.get(2).copied() {
+                    self.emit_load_intrinsic_arg_rcx(arg);
+                }
+                if let Some(arg) = args.get(3).copied() {
+                    self.emit_load_intrinsic_arg_r8(arg);
+                }
+                if let Some(arg) = args.get(4).copied() {
+                    self.emit_load_intrinsic_arg_r9(arg);
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                if args.len() > 5 {
+                    panic!(
+                        "unsupported CallIntrinsic arity in linear backend adapter: {} args (+ctx)",
+                        args.len()
+                    );
+                }
+                dynasm!(self.ectx.ops ; .arch x64 ; mov rcx, r15);
+                if let Some(arg) = args.first().copied() {
+                    self.emit_load_intrinsic_arg_rdx(arg);
+                }
+                if let Some(arg) = args.get(1).copied() {
+                    self.emit_load_intrinsic_arg_r8(arg);
+                }
+                if let Some(arg) = args.get(2).copied() {
+                    self.emit_load_intrinsic_arg_r9(arg);
+                }
+                if let Some(arg) = args.get(3).copied() {
+                    self.emit_load_intrinsic_arg_r10(arg);
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + 32], r10);
+                }
+                if let Some(arg) = args.get(4).copied() {
+                    self.emit_load_intrinsic_arg_r10(arg);
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + 40], r10);
+                }
+            }
+
+            let ptr_val = fn_ptr as i64;
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov rax, QWORD ptr_val
+                ; call rax
+            );
+
+            // Reload cursor and branch to error exit if needed.
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+                ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+                ; test r10d, r10d
+                ; jnz =>error_exit
+            );
+        }
+
+        // r[impl ir.intrinsics]
         fn emit_call_intrinsic(
             &mut self,
             func: crate::ir::IntrinsicFn,
@@ -261,27 +457,34 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
             field_offset: u32,
         ) {
             let fn_ptr = func.0 as *const u8;
-            if !args.is_empty() {
-                panic!(
-                    "unsupported CallIntrinsic with args in linear backend adapter: {} args",
-                    args.len()
-                );
-            }
-
             match dst {
                 Some(dst) => {
-                    let out_offset = self.vreg_off(dst);
-                    self.ectx.emit_store_imm64_to_stack(out_offset, 0);
-                    self.emit_recipe_ops(vec![Op::CallIntrinsicStackOut {
-                        fn_ptr,
-                        sp_offset: out_offset,
-                    }]);
+                    if args.is_empty() {
+                        // Legacy stack-out intrinsic ABI: fn(ctx, &mut out)
+                        let out_offset = self.vreg_off(dst);
+                        self.ectx.emit_store_imm64_to_stack(out_offset, 0);
+                        self.emit_call_intrinsic_with_args(
+                            fn_ptr,
+                            &[IntrinsicArg::OutStack(out_offset)],
+                        );
+                    } else {
+                        // Return-value intrinsic ABI: fn(ctx, args...) -> value
+                        let call_args: Vec<IntrinsicArg> =
+                            args.iter().copied().map(IntrinsicArg::VReg).collect();
+                        self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
+                        let out_offset = self.vreg_off(dst) as i32;
+                        dynasm!(self.ectx.ops
+                            ; .arch x64
+                            ; mov [rsp + out_offset], rax
+                        );
+                    }
                 }
                 None => {
-                    self.emit_recipe_ops(vec![Op::CallIntrinsic {
-                        fn_ptr,
-                        field_offset,
-                    }]);
+                    let mut call_args: Vec<IntrinsicArg> =
+                        args.iter().copied().map(IntrinsicArg::VReg).collect();
+                    // Side-effect intrinsic ABI: fn(ctx, args..., out+field_offset)
+                    call_args.push(IntrinsicArg::OutField(field_offset));
+                    self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
                 }
             }
         }
@@ -460,6 +663,13 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         vreg_base: u32,
         entry: Option<AssemblyOffset>,
         current_func: Option<FunctionCtx>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum IntrinsicArg {
+        VReg(crate::ir::VReg),
+        OutField(u32),
+        OutStack(u32),
     }
 
     impl Lowerer {
@@ -666,6 +876,183 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             self.ectx.emit_branch(self.label(default));
         }
 
+        fn emit_load_intrinsic_arg_x1(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x1, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x1, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x1, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_x2(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x2, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x2, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x2, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_x3(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x3, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x3, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x3, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_x4(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x4, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x4, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x4, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_x5(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x5, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x5, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x5, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_x6(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x6, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x6, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x6, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_load_intrinsic_arg_x7(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x7, [sp, #off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x7, x21, #offset);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x7, sp, #offset);
+                }
+            }
+        }
+
+        fn emit_call_intrinsic_with_args(&mut self, fn_ptr: *const u8, args: &[IntrinsicArg]) {
+            use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR};
+
+            if args.len() > 7 {
+                panic!(
+                    "unsupported CallIntrinsic arity in linear backend adapter: {} args (+ctx)",
+                    args.len()
+                );
+            }
+
+            let error_exit = self
+                .current_func
+                .as_ref()
+                .expect("CallIntrinsic outside function")
+                .error_exit;
+
+            // Flush cursor before call.
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; str x19, [x22, #CTX_INPUT_PTR]
+                ; mov x0, x22
+            );
+
+            if let Some(arg) = args.first().copied() {
+                self.emit_load_intrinsic_arg_x1(arg);
+            }
+            if let Some(arg) = args.get(1).copied() {
+                self.emit_load_intrinsic_arg_x2(arg);
+            }
+            if let Some(arg) = args.get(2).copied() {
+                self.emit_load_intrinsic_arg_x3(arg);
+            }
+            if let Some(arg) = args.get(3).copied() {
+                self.emit_load_intrinsic_arg_x4(arg);
+            }
+            if let Some(arg) = args.get(4).copied() {
+                self.emit_load_intrinsic_arg_x5(arg);
+            }
+            if let Some(arg) = args.get(5).copied() {
+                self.emit_load_intrinsic_arg_x6(arg);
+            }
+            if let Some(arg) = args.get(6).copied() {
+                self.emit_load_intrinsic_arg_x7(arg);
+            }
+
+            let ptr = fn_ptr as u64;
+            let p0 = (ptr & 0xFFFF) as u32;
+            let p1 = ((ptr >> 16) & 0xFFFF) as u32;
+            let p2 = ((ptr >> 32) & 0xFFFF) as u32;
+            let p3 = ((ptr >> 48) & 0xFFFF) as u32;
+            dynasm!(self.ectx.ops ; .arch aarch64 ; movz x16, #p0);
+            if p1 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x16, #p1, LSL #16);
+            }
+            if p2 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x16, #p2, LSL #32);
+            }
+            if p3 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x16, #p3, LSL #48);
+            }
+            dynasm!(self.ectx.ops ; .arch aarch64 ; blr x16);
+
+            // Reload cursor and branch to error exit if needed.
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; ldr x19, [x22, #CTX_INPUT_PTR]
+                ; ldr w9, [x22, #CTX_ERROR_CODE]
+                ; cbnz w9, =>error_exit
+            );
+        }
+
+        // r[impl ir.intrinsics]
         fn emit_call_intrinsic(
             &mut self,
             func: crate::ir::IntrinsicFn,
@@ -674,27 +1061,34 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             field_offset: u32,
         ) {
             let fn_ptr = func.0 as *const u8;
-            if !args.is_empty() {
-                panic!(
-                    "unsupported CallIntrinsic with args in linear backend adapter: {} args",
-                    args.len()
-                );
-            }
-
             match dst {
                 Some(dst) => {
-                    let out_offset = self.vreg_off(dst);
-                    self.ectx.emit_store_imm64_to_stack(out_offset, 0);
-                    self.emit_recipe_ops(vec![Op::CallIntrinsicStackOut {
-                        fn_ptr,
-                        sp_offset: out_offset,
-                    }]);
+                    if args.is_empty() {
+                        // Legacy stack-out intrinsic ABI: fn(ctx, &mut out)
+                        let out_offset = self.vreg_off(dst);
+                        self.ectx.emit_store_imm64_to_stack(out_offset, 0);
+                        self.emit_call_intrinsic_with_args(
+                            fn_ptr,
+                            &[IntrinsicArg::OutStack(out_offset)],
+                        );
+                    } else {
+                        // Return-value intrinsic ABI: fn(ctx, args...) -> value
+                        let call_args: Vec<IntrinsicArg> =
+                            args.iter().copied().map(IntrinsicArg::VReg).collect();
+                        self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
+                        let out_offset = self.vreg_off(dst);
+                        dynasm!(self.ectx.ops
+                            ; .arch aarch64
+                            ; str x0, [sp, #out_offset]
+                        );
+                    }
                 }
                 None => {
-                    self.emit_recipe_ops(vec![Op::CallIntrinsic {
-                        fn_ptr,
-                        field_offset,
-                    }]);
+                    let mut call_args: Vec<IntrinsicArg> =
+                        args.iter().copied().map(IntrinsicArg::VReg).collect();
+                    // Side-effect intrinsic ABI: fn(ctx, args..., out+field_offset)
+                    call_args.push(IntrinsicArg::OutField(field_offset));
+                    self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
                 }
             }
         }
@@ -870,6 +1264,16 @@ mod tests {
         }
     }
 
+    fn run_u64_decoder(ir: &LinearIr, input: &[u8]) -> (u64, DeserContext) {
+        let deser = compiler::compile_linear_ir_decoder(ir, false);
+        let mut out = core::mem::MaybeUninit::<u64>::uninit();
+        let mut ctx = DeserContext::from_bytes(input);
+        unsafe {
+            (deser.func())(out.as_mut_ptr() as *mut u8, &mut ctx);
+            (out.assume_init(), ctx)
+        }
+    }
+
     #[test]
     fn linear_backend_reads_u32_from_cursor() {
         let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
@@ -981,5 +1385,70 @@ mod tests {
 
         assert_eq!(ctx.error.code, 0);
         assert_eq!(value, 333);
+    }
+
+    #[test]
+    fn linear_backend_call_intrinsic_with_args_return_value() {
+        unsafe extern "C" fn add3(
+            _ctx: *mut crate::context::DeserContext,
+            a: u64,
+            b: u64,
+            c: u64,
+        ) -> u64 {
+            a + b + c
+        }
+
+        let mut builder = IrBuilder::new(<u64 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let a = rb.const_val(11);
+            let b = rb.const_val(7);
+            let c = rb.const_val(5);
+            let out = rb
+                .call_intrinsic(IntrinsicFn(add3 as *const () as usize), &[a, b, c], 0, true)
+                .expect("return-value intrinsic should produce output");
+            rb.write_to_field(out, 0, Width::W8);
+            rb.set_results(&[]);
+        }
+
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let (value, ctx) = run_u64_decoder(&lin, &[]);
+
+        assert_eq!(ctx.error.code, 0);
+        assert_eq!(value, 23);
+    }
+
+    #[test]
+    fn linear_backend_call_intrinsic_with_args_and_out_ptr() {
+        unsafe extern "C" fn write_scaled_sum(
+            _ctx: *mut crate::context::DeserContext,
+            x: u64,
+            y: u64,
+            out: *mut u64,
+        ) {
+            unsafe { *out = x * 10 + y };
+        }
+
+        let mut builder = IrBuilder::new(<u64 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let x = rb.const_val(9);
+            let y = rb.const_val(4);
+            rb.call_intrinsic(
+                IntrinsicFn(write_scaled_sum as *const () as usize),
+                &[x, y],
+                0,
+                false,
+            );
+            rb.set_results(&[]);
+        }
+
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let (value, ctx) = run_u64_decoder(&lin, &[]);
+
+        assert_eq!(ctx.error.code, 0);
+        assert_eq!(value, 94);
     }
 }

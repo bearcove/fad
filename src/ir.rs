@@ -360,9 +360,7 @@ pub enum NodeKind {
     },
 
     /// A function call to a lambda.
-    Apply {
-        target: LambdaId,
-    },
+    Apply { target: LambdaId },
 }
 
 // ─── IrOp ───────────────────────────────────────────────────────────────────
@@ -377,7 +375,6 @@ pub enum NodeKind {
 pub enum IrOp {
     // ── Cursor ops ──────────────────────────────────────────────────
     // r[impl ir.ops.cursor]
-
     /// Read N bytes from cursor. Advances cursor.
     /// Inputs: [StateCursor]. Outputs: [Data, StateCursor].
     ReadBytes { count: u32 },
@@ -408,7 +405,6 @@ pub enum IrOp {
 
     // ── Output ops ──────────────────────────────────────────────────
     // r[impl ir.ops.output]
-
     /// Write src to out+offset.
     /// Inputs: [Data, StateOutput]. Outputs: [StateOutput].
     WriteToField { offset: u32, width: Width },
@@ -419,7 +415,6 @@ pub enum IrOp {
 
     // ── Stack ops ───────────────────────────────────────────────────
     // r[impl ir.ops.stack]
-
     /// Write to an abstract stack slot.
     /// Inputs: [Data]. Outputs: [].
     WriteToSlot { slot: SlotId },
@@ -430,7 +425,6 @@ pub enum IrOp {
 
     // ── Arithmetic (pure) ───────────────────────────────────────────
     // r[impl ir.ops.arithmetic]
-
     /// Load an immediate constant.
     /// Inputs: []. Outputs: [Data].
     Const { value: u64 },
@@ -473,7 +467,6 @@ pub enum IrOp {
 
     // ── Call ops ─────────────────────────────────────────────────────
     // r[impl ir.ops.call]
-
     /// Call an `extern "C"` intrinsic. Full barrier.
     /// Inputs: [Data * arg_count, StateCursor, StateOutput].
     /// Outputs: [Data (if has_result), StateCursor, StateOutput].
@@ -491,14 +484,12 @@ pub enum IrOp {
 
     // ── Error ops ───────────────────────────────────────────────────
     // r[impl ir.ops.error]
-
     /// Set error code and abort the containing region.
     /// Inputs: [StateCursor]. Outputs: [].
     ErrorExit { code: ErrorCode },
 
     // ── SIMD ops ────────────────────────────────────────────────────
     // r[impl ir.ops.simd]
-
     /// Vectorized scan for `"` or `\` in a string.
     /// Inputs: [StateCursor].
     /// Outputs: [Data (position), Data (kind: quote vs escape), StateCursor].
@@ -1728,10 +1719,7 @@ mod tests {
     fn effect_classification() {
         assert_eq!(IrOp::Const { value: 0 }.effect(), Effect::Pure);
         assert_eq!(IrOp::Add.effect(), Effect::Pure);
-        assert_eq!(
-            IrOp::ZigzagDecode { wide: false }.effect(),
-            Effect::Pure
-        );
+        assert_eq!(IrOp::ZigzagDecode { wide: false }.effect(), Effect::Pure);
         assert_eq!(
             IrOp::CallPure {
                 func: IntrinsicFn(0),
@@ -1789,22 +1777,20 @@ mod tests {
             // Gamma: branch on tag.
             // Branch 0: read 4 bytes, write to field 0.
             // Branch 1: read 8 bytes, write to field 0.
-            let _results = rb.gamma(tag, &[], 2, |branch_idx, branch| {
-                match branch_idx {
-                    0 => {
-                        branch.bounds_check(4);
-                        let val = branch.read_bytes(4);
-                        branch.write_to_field(val, 0, Width::W4);
-                        branch.set_results(&[]);
-                    }
-                    1 => {
-                        branch.bounds_check(8);
-                        let val = branch.read_bytes(8);
-                        branch.write_to_field(val, 0, Width::W8);
-                        branch.set_results(&[]);
-                    }
-                    _ => unreachable!(),
+            let _results = rb.gamma(tag, &[], 2, |branch_idx, branch| match branch_idx {
+                0 => {
+                    branch.bounds_check(4);
+                    let val = branch.read_bytes(4);
+                    branch.write_to_field(val, 0, Width::W4);
+                    branch.set_results(&[]);
                 }
+                1 => {
+                    branch.bounds_check(8);
+                    let val = branch.read_bytes(8);
+                    branch.write_to_field(val, 0, Width::W8);
+                    branch.set_results(&[]);
+                }
+                _ => unreachable!(),
             });
 
             rb.set_results(&[]);

@@ -147,7 +147,11 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
         let mut ret_count = 0u32;
 
         while offset + 4 <= code.len() {
-            let prefix = if marker_offset == Some(offset) { "> " } else { "  " };
+            let prefix = if marker_offset == Some(offset) {
+                "> "
+            } else {
+                "  "
+            };
             match decoder.decode(&mut reader) {
                 Ok(inst) => {
                     let text = normalize_inst(&format!("{inst}"));
@@ -178,7 +182,11 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
         let mut ret_count = 0u32;
 
         while offset < code.len() {
-            let prefix = if marker_offset == Some(offset) { "> " } else { "  " };
+            let prefix = if marker_offset == Some(offset) {
+                "> "
+            } else {
+                "  "
+            };
             match decoder.decode(&mut reader) {
                 Ok(inst) => {
                     let len = inst.len().to_const() as usize;

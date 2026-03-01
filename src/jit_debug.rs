@@ -247,24 +247,24 @@ fn build_elf(text_addr: u64, text_len: usize, symbols: &[JitSymbolEntry]) -> Vec
     let mut elf = Vec::with_capacity(total_size);
 
     // ----- ELF header (64 bytes) -----
-    elf.extend_from_slice(&ELFMAG);           // e_ident[0..4]
-    elf.push(ELFCLASS64);                     // e_ident[4]
-    elf.push(ELFDATA2LSB);                    // e_ident[5]
-    elf.push(EV_CURRENT);                     // e_ident[6]
-    elf.extend_from_slice(&[0u8; 9]);         // e_ident[7..16] padding
-    elf.extend_from_slice(&ET_EXEC.to_le_bytes());         // e_type
-    elf.extend_from_slice(&EM_MACHINE.to_le_bytes());      // e_machine
-    elf.extend_from_slice(&1u32.to_le_bytes());            // e_version
-    elf.extend_from_slice(&0u64.to_le_bytes());            // e_entry
-    elf.extend_from_slice(&0u64.to_le_bytes());            // e_phoff
+    elf.extend_from_slice(&ELFMAG); // e_ident[0..4]
+    elf.push(ELFCLASS64); // e_ident[4]
+    elf.push(ELFDATA2LSB); // e_ident[5]
+    elf.push(EV_CURRENT); // e_ident[6]
+    elf.extend_from_slice(&[0u8; 9]); // e_ident[7..16] padding
+    elf.extend_from_slice(&ET_EXEC.to_le_bytes()); // e_type
+    elf.extend_from_slice(&EM_MACHINE.to_le_bytes()); // e_machine
+    elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+    elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+    elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
     elf.extend_from_slice(&(shdr_offset as u64).to_le_bytes()); // e_shoff
-    elf.extend_from_slice(&0u32.to_le_bytes());            // e_flags
-    elf.extend_from_slice(&(EHDR_SIZE as u16).to_le_bytes());   // e_ehsize
-    elf.extend_from_slice(&0u16.to_le_bytes());            // e_phentsize
-    elf.extend_from_slice(&0u16.to_le_bytes());            // e_phnum
-    elf.extend_from_slice(&(SHDR_SIZE as u16).to_le_bytes());   // e_shentsize
+    elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+    elf.extend_from_slice(&(EHDR_SIZE as u16).to_le_bytes()); // e_ehsize
+    elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+    elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+    elf.extend_from_slice(&(SHDR_SIZE as u16).to_le_bytes()); // e_shentsize
     elf.extend_from_slice(&(NUM_SECTIONS as u16).to_le_bytes()); // e_shnum
-    elf.extend_from_slice(&4u16.to_le_bytes());            // e_shstrndx (index of .shstrtab)
+    elf.extend_from_slice(&4u16.to_le_bytes()); // e_shstrndx (index of .shstrtab)
     debug_assert_eq!(elf.len(), EHDR_SIZE);
 
     // ----- Section headers -----
@@ -279,7 +279,7 @@ fn build_elf(text_addr: u64, text_len: usize, symbols: &[JitSymbolEntry]) -> Vec
         SHT_PROGBITS,
         SHF_ALLOC | SHF_EXECINSTR,
         text_addr,
-        0,                // sh_offset: no data in file
+        0, // sh_offset: no data in file
         text_len as u64,
         0,
         0,
@@ -296,8 +296,8 @@ fn build_elf(text_addr: u64, text_len: usize, symbols: &[JitSymbolEntry]) -> Vec
         0,
         symtab_off as u64,
         symtab.len() as u64,
-        3,              // sh_link = .strtab section index
-        1,              // sh_info = index of first non-local symbol
+        3, // sh_link = .strtab section index
+        1, // sh_info = index of first non-local symbol
         8,
         SYM_SIZE as u64,
     );

@@ -28,7 +28,11 @@ fn main() {
     let entry = deser.entry_offset();
 
     println!("=== fad JSON HashMap<String, FriendFacet> ===");
-    println!("code buffer: {} bytes ({:#x}), entry: {entry:#x}", code.len(), code.len());
+    println!(
+        "code buffer: {} bytes ({:#x}), entry: {entry:#x}",
+        code.len(),
+        code.len()
+    );
     println!();
 
     println!("=== symbol table ===");
@@ -45,16 +49,14 @@ fn main() {
 }
 
 fn build_symbol_table() -> HashMap<u64, &'static str> {
-    use fad::intrinsics::{
-        fad_map_build, fad_vec_alloc, fad_vec_free, fad_vec_grow,
-    };
+    use fad::intrinsics::{fad_map_build, fad_vec_alloc, fad_vec_free, fad_vec_grow};
     use fad::json_intrinsics::{
         fad_json_comma_or_end_array, fad_json_comma_or_end_object, fad_json_expect_colon,
         fad_json_expect_object_start, fad_json_key_equals, fad_json_peek_after_ws,
-        fad_json_read_bool, fad_json_read_f32, fad_json_read_f64, fad_json_read_i16,
-        fad_json_read_i32, fad_json_read_i64, fad_json_read_i8, fad_json_read_key,
-        fad_json_read_string_value, fad_json_read_u16, fad_json_read_u32, fad_json_read_u64,
-        fad_json_read_u8, fad_json_skip_value,
+        fad_json_read_bool, fad_json_read_f32, fad_json_read_f64, fad_json_read_i8,
+        fad_json_read_i16, fad_json_read_i32, fad_json_read_i64, fad_json_read_key,
+        fad_json_read_string_value, fad_json_read_u8, fad_json_read_u16, fad_json_read_u32,
+        fad_json_read_u64, fad_json_skip_value,
     };
 
     let mut m = HashMap::new();
@@ -224,10 +226,7 @@ fn annotate_blr(
         if let (Some(cur), Some((imm_str, shift_str))) =
             (x8_val.as_mut(), rest.split_once(", lsl #"))
         {
-            if let (Ok(imm), Ok(shift)) = (
-                parse_hex_or_dec(imm_str),
-                shift_str.parse::<u64>(),
-            ) {
+            if let (Ok(imm), Ok(shift)) = (parse_hex_or_dec(imm_str), shift_str.parse::<u64>()) {
                 let mask = !(0xffffu64 << shift);
                 *cur = (*cur & mask) | (imm << shift);
             } else {

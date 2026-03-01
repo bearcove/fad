@@ -1,9 +1,11 @@
-use dynasmrt::{dynasm, DynasmApi, DynasmLabelApi, DynamicLabel, AssemblyOffset};
+use dynasmrt::{AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, dynasm};
 
-use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR, CTX_INPUT_END, ErrorCode,
-    ENC_ERROR_CODE, ENC_OUTPUT_PTR, ENC_OUTPUT_END};
+use crate::context::{
+    CTX_ERROR_CODE, CTX_INPUT_END, CTX_INPUT_PTR, ENC_ERROR_CODE, ENC_OUTPUT_END, ENC_OUTPUT_PTR,
+    ErrorCode,
+};
 use crate::jit_f64;
-use crate::recipe::{Op, Recipe, Slot, Width, ErrorTarget};
+use crate::recipe::{ErrorTarget, Op, Recipe, Slot, Width};
 
 pub type Assembler = dynasmrt::x64::Assembler;
 
@@ -426,7 +428,12 @@ impl EmitCtx {
     }
 
     /// Load a byte from rsp + sp_offset, compare with byte_val, branch if equal.
-    pub fn emit_stack_byte_cmp_branch(&mut self, sp_offset: u32, byte_val: u8, label: DynamicLabel) {
+    pub fn emit_stack_byte_cmp_branch(
+        &mut self,
+        sp_offset: u32,
+        byte_val: u8,
+        label: DynamicLabel,
+    ) {
         let byte_val = byte_val as i32;
         dynasm!(self.ops
             ; .arch x64
@@ -508,7 +515,12 @@ impl EmitCtx {
             8 => Width::W8,
             _ => panic!("unsupported varint store width: {store_width}"),
         };
-        self.emit_recipe(&crate::recipe::varint_fast_path(offset, width, zigzag, intrinsic_fn_ptr));
+        self.emit_recipe(&crate::recipe::varint_fast_path(
+            offset,
+            width,
+            zigzag,
+            intrinsic_fn_ptr,
+        ));
     }
 
     // ── Inline string reads (recipe-based) ──────────────────────────────
@@ -1090,7 +1102,12 @@ impl EmitCtx {
 
     /// Test a single bit at `bit_index` in the u64 at `[rsp + stack_offset]`.
     /// Branch to `label` if the bit is CLEAR (zero) — i.e., the field was NOT seen.
-    pub fn emit_test_bit_branch_zero(&mut self, stack_offset: u32, bit_index: u32, label: DynamicLabel) {
+    pub fn emit_test_bit_branch_zero(
+        &mut self,
+        stack_offset: u32,
+        bit_index: u32,
+        label: DynamicLabel,
+    ) {
         let mask = (1u64 << bit_index) as i64;
         dynasm!(self.ops
             ; .arch x64
@@ -1134,8 +1151,8 @@ impl EmitCtx {
 
         let ws_loop = self.ops.new_dynamic_label();
         let ws_next = self.ops.new_dynamic_label();
-        let non_ws  = self.ops.new_dynamic_label();
-        let done    = self.ops.new_dynamic_label();
+        let non_ws = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
         let err_lbl = self.ops.new_dynamic_label();
 
         dynasm!(self.ops ; .arch x64
@@ -1193,7 +1210,12 @@ impl EmitCtx {
 
     /// Call fad_option_init_none(init_none_fn, out + offset).
     /// Does not touch ctx or the cursor.
-    pub fn emit_call_option_init_none(&mut self, wrapper_fn: *const u8, init_none_fn: *const u8, offset: u32) {
+    pub fn emit_call_option_init_none(
+        &mut self,
+        wrapper_fn: *const u8,
+        init_none_fn: *const u8,
+        offset: u32,
+    ) {
         let init_none_val = init_none_fn as i64;
 
         // arg0: init_none_fn pointer, arg1: out + offset
@@ -1343,12 +1365,7 @@ impl EmitCtx {
     ///
     /// **Important**: r10 is caller-saved and will be clobbered by the call.
     /// The count must be saved to a stack slot before calling this.
-    pub fn emit_call_vec_alloc(
-        &mut self,
-        alloc_fn: *const u8,
-        elem_size: u32,
-        elem_align: u32,
-    ) {
+    pub fn emit_call_vec_alloc(&mut self, alloc_fn: *const u8, elem_size: u32, elem_align: u32) {
         self.emit_flush_input_cursor();
         // args: ctx, count(r10), elem_size, elem_align
         #[cfg(not(windows))]
@@ -1903,14 +1920,30 @@ impl EmitCtx {
                 Op::StoreToOut { src, offset, width } => {
                     let offset = *offset as i32;
                     match (src, width) {
-                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch x64 ; mov BYTE [r14 + offset], r10b),
-                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset], r10w),
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset], r10d),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset], r10),
-                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch x64 ; mov BYTE [r14 + offset], r11b),
-                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset], r11w),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset], r11d),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset], r11),
+                        (Slot::A, Width::W1) => {
+                            dynasm!(self.ops ; .arch x64 ; mov BYTE [r14 + offset], r10b)
+                        }
+                        (Slot::A, Width::W2) => {
+                            dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset], r10w)
+                        }
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset], r10d)
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset], r10)
+                        }
+                        (Slot::B, Width::W1) => {
+                            dynasm!(self.ops ; .arch x64 ; mov BYTE [r14 + offset], r11b)
+                        }
+                        (Slot::B, Width::W2) => {
+                            dynasm!(self.ops ; .arch x64 ; mov WORD [r14 + offset], r11w)
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov DWORD [r14 + offset], r11d)
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov QWORD [r14 + offset], r11)
+                        }
                     }
                 }
                 Op::StoreByteToStack { src, sp_offset } => {
@@ -1920,23 +1953,47 @@ impl EmitCtx {
                         Slot::B => dynasm!(self.ops ; .arch x64 ; mov BYTE [rsp + sp_offset], r11b),
                     }
                 }
-                Op::StoreToStack { src, sp_offset, width } => {
+                Op::StoreToStack {
+                    src,
+                    sp_offset,
+                    width,
+                } => {
                     let sp_offset = *sp_offset as i32;
                     match (src, width) {
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [rsp + sp_offset], r10d),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [rsp + sp_offset], r10),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov DWORD [rsp + sp_offset], r11d),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov QWORD [rsp + sp_offset], r11),
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov DWORD [rsp + sp_offset], r10d)
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov QWORD [rsp + sp_offset], r10)
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov DWORD [rsp + sp_offset], r11d)
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov QWORD [rsp + sp_offset], r11)
+                        }
                         _ => panic!("unsupported StoreToStack width"),
                     }
                 }
-                Op::LoadFromStack { dst, sp_offset, width } => {
+                Op::LoadFromStack {
+                    dst,
+                    sp_offset,
+                    width,
+                } => {
                     let sp_offset = *sp_offset as i32;
                     match (dst, width) {
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r10d, DWORD [rsp + sp_offset]),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r10, QWORD [rsp + sp_offset]),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r11d, DWORD [rsp + sp_offset]),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r11, QWORD [rsp + sp_offset]),
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r10d, DWORD [rsp + sp_offset])
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r10, QWORD [rsp + sp_offset])
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r11d, DWORD [rsp + sp_offset])
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r11, QWORD [rsp + sp_offset])
+                        }
                         _ => panic!("unsupported LoadFromStack width"),
                     }
                 }
@@ -1966,7 +2023,11 @@ impl EmitCtx {
                         ; xor r11d, r10d
                     ),
                 },
-                Op::ValidateMax { slot, max_val, error } => {
+                Op::ValidateMax {
+                    slot,
+                    max_val,
+                    error,
+                } => {
                     let max_val = *max_val as i32;
                     let error_code = *error as i32;
                     let invalid_label = self.ops.new_dynamic_label();
@@ -2015,7 +2076,10 @@ impl EmitCtx {
                     let label = labels[*index];
                     dynasm!(self.ops ; .arch x64 ; =>label);
                 }
-                Op::CallIntrinsic { fn_ptr, field_offset } => {
+                Op::CallIntrinsic {
+                    fn_ptr,
+                    field_offset,
+                } => {
                     let field_offset = *field_offset as i32;
                     self.emit_flush_input_cursor();
                     #[cfg(not(windows))]
@@ -2070,7 +2134,11 @@ impl EmitCtx {
                     Slot::A => dynasm!(self.ops ; .arch x64 ; mov r10, r12),
                     Slot::B => dynasm!(self.ops ; .arch x64 ; mov r11, r12),
                 },
-                Op::CallValidateAllocCopy { fn_ptr, data_src, len_src } => {
+                Op::CallValidateAllocCopy {
+                    fn_ptr,
+                    data_src,
+                    len_src,
+                } => {
                     // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
                     // Returns buf pointer in rax
                     // arg0 = ctx, arg1 = data_ptr (slot), arg2 = data_len (slot)
@@ -2108,7 +2176,13 @@ impl EmitCtx {
                         ; jnz =>error_exit
                     );
                 }
-                Op::WriteMalumString { base_offset, ptr_off, len_off, cap_off, len_slot } => {
+                Op::WriteMalumString {
+                    base_offset,
+                    ptr_off,
+                    len_off,
+                    cap_off,
+                    len_slot,
+                } => {
                     let ptr_offset = (*base_offset + *ptr_off) as i32;
                     let len_offset = (*base_offset + *len_off) as i32;
                     let cap_offset = (*base_offset + *cap_off) as i32;
@@ -2141,32 +2215,61 @@ impl EmitCtx {
                 //   r15 = EncodeContext pointer
                 //
                 // Slot::A → r10/r10d, Slot::B → r11/r11d (same as decode)
-
                 Op::LoadFromInput { dst, offset, width } => {
                     let offset = *offset as i32;
                     match (dst, width) {
-                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch x64 ; movzx r10d, BYTE [r14 + offset]),
-                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch x64 ; movzx r10d, WORD [r14 + offset]),
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r10d, DWORD [r14 + offset]),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r10, QWORD [r14 + offset]),
-                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch x64 ; movzx r11d, BYTE [r14 + offset]),
-                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch x64 ; movzx r11d, WORD [r14 + offset]),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov r11d, DWORD [r14 + offset]),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov r11, QWORD [r14 + offset]),
+                        (Slot::A, Width::W1) => {
+                            dynasm!(self.ops ; .arch x64 ; movzx r10d, BYTE [r14 + offset])
+                        }
+                        (Slot::A, Width::W2) => {
+                            dynasm!(self.ops ; .arch x64 ; movzx r10d, WORD [r14 + offset])
+                        }
+                        (Slot::A, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r10d, DWORD [r14 + offset])
+                        }
+                        (Slot::A, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r10, QWORD [r14 + offset])
+                        }
+                        (Slot::B, Width::W1) => {
+                            dynasm!(self.ops ; .arch x64 ; movzx r11d, BYTE [r14 + offset])
+                        }
+                        (Slot::B, Width::W2) => {
+                            dynasm!(self.ops ; .arch x64 ; movzx r11d, WORD [r14 + offset])
+                        }
+                        (Slot::B, Width::W4) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r11d, DWORD [r14 + offset])
+                        }
+                        (Slot::B, Width::W8) => {
+                            dynasm!(self.ops ; .arch x64 ; mov r11, QWORD [r14 + offset])
+                        }
                     }
                 }
-                Op::StoreToOutput { src, width } => {
-                    match (src, width) {
-                        (Slot::A, Width::W1) => dynasm!(self.ops ; .arch x64 ; mov [r12], r10b ; add r12, 1),
-                        (Slot::A, Width::W2) => dynasm!(self.ops ; .arch x64 ; mov [r12], r10w ; add r12, 2),
-                        (Slot::A, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov [r12], r10d ; add r12, 4),
-                        (Slot::A, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov [r12], r10 ; add r12, 8),
-                        (Slot::B, Width::W1) => dynasm!(self.ops ; .arch x64 ; mov [r12], r11b ; add r12, 1),
-                        (Slot::B, Width::W2) => dynasm!(self.ops ; .arch x64 ; mov [r12], r11w ; add r12, 2),
-                        (Slot::B, Width::W4) => dynasm!(self.ops ; .arch x64 ; mov [r12], r11d ; add r12, 4),
-                        (Slot::B, Width::W8) => dynasm!(self.ops ; .arch x64 ; mov [r12], r11 ; add r12, 8),
+                Op::StoreToOutput { src, width } => match (src, width) {
+                    (Slot::A, Width::W1) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r10b ; add r12, 1)
                     }
-                }
+                    (Slot::A, Width::W2) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r10w ; add r12, 2)
+                    }
+                    (Slot::A, Width::W4) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r10d ; add r12, 4)
+                    }
+                    (Slot::A, Width::W8) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r10 ; add r12, 8)
+                    }
+                    (Slot::B, Width::W1) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r11b ; add r12, 1)
+                    }
+                    (Slot::B, Width::W2) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r11w ; add r12, 2)
+                    }
+                    (Slot::B, Width::W4) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r11d ; add r12, 4)
+                    }
+                    (Slot::B, Width::W8) => {
+                        dynasm!(self.ops ; .arch x64 ; mov [r12], r11 ; add r12, 8)
+                    }
+                },
                 Op::WriteByte { value } => {
                     let value = *value as i8;
                     dynasm!(self.ops
@@ -3082,19 +3185,31 @@ impl EmitCtx {
             let mut offset = 0u32;
             let mut remaining = count;
             while remaining >= 8 {
-                let val = i64::from_le_bytes(bytes[offset as usize..offset as usize + 8].try_into().unwrap());
+                let val = i64::from_le_bytes(
+                    bytes[offset as usize..offset as usize + 8]
+                        .try_into()
+                        .unwrap(),
+                );
                 dynasm!(self.ops ; .arch x64 ; mov rax, QWORD val ; mov [r12 + offset as i32], rax);
                 offset += 8;
                 remaining -= 8;
             }
             if remaining >= 4 {
-                let val = i32::from_le_bytes(bytes[offset as usize..offset as usize + 4].try_into().unwrap());
+                let val = i32::from_le_bytes(
+                    bytes[offset as usize..offset as usize + 4]
+                        .try_into()
+                        .unwrap(),
+                );
                 dynasm!(self.ops ; .arch x64 ; mov DWORD [r12 + offset as i32], val);
                 offset += 4;
                 remaining -= 4;
             }
             if remaining >= 2 {
-                let val = i16::from_le_bytes(bytes[offset as usize..offset as usize + 2].try_into().unwrap());
+                let val = i16::from_le_bytes(
+                    bytes[offset as usize..offset as usize + 2]
+                        .try_into()
+                        .unwrap(),
+                );
                 dynasm!(self.ops ; .arch x64 ; mov WORD [r12 + offset as i32], val);
                 offset += 2;
                 remaining -= 2;

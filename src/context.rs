@@ -116,10 +116,7 @@ impl DeserContext {
         DeserContext {
             input_ptr: ptr,
             input_end: unsafe { ptr.add(input.len()) },
-            error: ErrorSlot {
-                code: 0,
-                offset: 0,
-            },
+            error: ErrorSlot { code: 0, offset: 0 },
             key_scratch_ptr: core::ptr::null_mut(),
             key_scratch_cap: 0,
             trusted_utf8,
@@ -150,8 +147,7 @@ impl DeserContext {
         // Free old scratch if any
         if self.key_scratch_cap > 0 {
             unsafe {
-                let layout =
-                    std::alloc::Layout::from_size_align_unchecked(self.key_scratch_cap, 1);
+                let layout = std::alloc::Layout::from_size_align_unchecked(self.key_scratch_cap, 1);
                 std::alloc::dealloc(self.key_scratch_ptr, layout);
             }
         }
@@ -169,8 +165,7 @@ impl Drop for DeserContext {
     fn drop(&mut self) {
         if self.key_scratch_cap > 0 {
             unsafe {
-                let layout =
-                    std::alloc::Layout::from_size_align_unchecked(self.key_scratch_cap, 1);
+                let layout = std::alloc::Layout::from_size_align_unchecked(self.key_scratch_cap, 1);
                 std::alloc::dealloc(self.key_scratch_ptr, layout);
             }
         }
@@ -228,10 +223,7 @@ impl EncodeContext {
         EncodeContext {
             output_ptr: ptr,
             output_end: unsafe { ptr.add(cap) },
-            error: ErrorSlot {
-                code: 0,
-                offset: 0,
-            },
+            error: ErrorSlot { code: 0, offset: 0 },
             output_start: ptr,
         }
     }

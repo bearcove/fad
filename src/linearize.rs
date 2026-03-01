@@ -55,28 +55,72 @@ use crate::ir::IntrinsicFn;
 #[derive(Debug, Clone)]
 pub enum LinearOp {
     // ── Values ──
-    Const { dst: VReg, value: u64 },
-    BinOp { op: BinOpKind, dst: VReg, lhs: VReg, rhs: VReg },
-    UnaryOp { op: UnaryOpKind, dst: VReg, src: VReg },
+    Const {
+        dst: VReg,
+        value: u64,
+    },
+    BinOp {
+        op: BinOpKind,
+        dst: VReg,
+        lhs: VReg,
+        rhs: VReg,
+    },
+    UnaryOp {
+        op: UnaryOpKind,
+        dst: VReg,
+        src: VReg,
+    },
     /// Copy a value between virtual registers (for gamma merge / theta feedback).
-    Copy { dst: VReg, src: VReg },
+    Copy {
+        dst: VReg,
+        src: VReg,
+    },
 
     // ── Cursor ──
-    BoundsCheck { count: u32 },
-    ReadBytes { dst: VReg, count: u32 },
-    PeekByte { dst: VReg },
-    AdvanceCursor { count: u32 },
-    AdvanceCursorBy { src: VReg },
-    SaveCursor { dst: VReg },
-    RestoreCursor { src: VReg },
+    BoundsCheck {
+        count: u32,
+    },
+    ReadBytes {
+        dst: VReg,
+        count: u32,
+    },
+    PeekByte {
+        dst: VReg,
+    },
+    AdvanceCursor {
+        count: u32,
+    },
+    AdvanceCursorBy {
+        src: VReg,
+    },
+    SaveCursor {
+        dst: VReg,
+    },
+    RestoreCursor {
+        src: VReg,
+    },
 
     // ── Output ──
-    WriteToField { src: VReg, offset: u32, width: Width },
-    ReadFromField { dst: VReg, offset: u32, width: Width },
+    WriteToField {
+        src: VReg,
+        offset: u32,
+        width: Width,
+    },
+    ReadFromField {
+        dst: VReg,
+        offset: u32,
+        width: Width,
+    },
 
     // ── Stack ──
-    WriteToSlot { slot: SlotId, src: VReg },
-    ReadFromSlot { dst: VReg, slot: SlotId },
+    WriteToSlot {
+        slot: SlotId,
+        src: VReg,
+    },
+    ReadFromSlot {
+        dst: VReg,
+        slot: SlotId,
+    },
 
     // ── Calls ──
     CallIntrinsic {
@@ -95,9 +139,15 @@ pub enum LinearOp {
     Label(LabelId),
     Branch(LabelId),
     /// Branch if condition is nonzero.
-    BranchIf { cond: VReg, target: LabelId },
+    BranchIf {
+        cond: VReg,
+        target: LabelId,
+    },
     /// Branch if condition is zero.
-    BranchIfZero { cond: VReg, target: LabelId },
+    BranchIfZero {
+        cond: VReg,
+        target: LabelId,
+    },
     /// Jump table: jump to `labels[predicate]`, or to `default` if out of range.
     JumpTable {
         predicate: VReg,
@@ -106,10 +156,15 @@ pub enum LinearOp {
     },
 
     // ── Error ──
-    ErrorExit { code: ErrorCode },
+    ErrorExit {
+        code: ErrorCode,
+    },
 
     // ── SIMD ──
-    SimdStringScan { pos: VReg, kind: VReg },
+    SimdStringScan {
+        pos: VReg,
+        kind: VReg,
+    },
     SimdWhitespaceSkip,
 
     // ── Function structure ──
@@ -197,8 +252,7 @@ impl<'a> Linearizer<'a> {
         // Build in-degree count for each node in this region.
         // A node's in-degree = number of its inputs that come from other nodes
         // in the same region.
-        let node_set: std::collections::HashSet<NodeId> =
-            region.nodes.iter().copied().collect();
+        let node_set: std::collections::HashSet<NodeId> = region.nodes.iter().copied().collect();
 
         // Map NodeId -> position in region.nodes for O(1) lookup.
         let mut node_pos: std::collections::HashMap<NodeId, usize> =
@@ -273,7 +327,11 @@ impl<'a> Linearizer<'a> {
             NodeKindRef::Simple(op) => self.linearize_simple(node_id, op),
             NodeKindRef::Gamma { regions } => self.linearize_gamma(node_id, &regions),
             NodeKindRef::Theta { body } => self.linearize_theta(node_id, body),
-            NodeKindRef::Lambda { body, shape, lambda_id } => {
+            NodeKindRef::Lambda {
+                body,
+                shape,
+                lambda_id,
+            } => {
                 self.linearize_lambda(body, shape, lambda_id);
             }
             NodeKindRef::Apply { target } => self.linearize_apply(node_id, target),
@@ -284,11 +342,8 @@ impl<'a> Linearizer<'a> {
         let node = &self.func.nodes[node_id];
 
         // Helper: get the VReg of data output at index.
-        let data_dst = |idx: usize| -> VReg {
-            node.outputs[idx]
-                .vreg
-                .expect("data output must have vreg")
-        };
+        let data_dst =
+            |idx: usize| -> VReg { node.outputs[idx].vreg.expect("data output must have vreg") };
 
         // Helper: resolve data input at index.
         let data_in = |idx: usize| -> VReg {
@@ -300,7 +355,10 @@ impl<'a> Linearizer<'a> {
         match op {
             // ── Constants ──
             IrOp::Const { value } => {
-                self.emit(LinearOp::Const { dst: data_dst(0), value: *value });
+                self.emit(LinearOp::Const {
+                    dst: data_dst(0),
+                    value: *value,
+                });
             }
 
             // ── Binary arithmetic ──
@@ -322,7 +380,9 @@ impl<'a> Linearizer<'a> {
             }
             IrOp::SignExtend { from_width } => {
                 self.emit(LinearOp::UnaryOp {
-                    op: UnaryOpKind::SignExtend { from_width: *from_width },
+                    op: UnaryOpKind::SignExtend {
+                        from_width: *from_width,
+                    },
                     dst: data_dst(0),
                     src: data_in(0),
                 });
@@ -333,7 +393,10 @@ impl<'a> Linearizer<'a> {
                 self.emit(LinearOp::BoundsCheck { count: *count });
             }
             IrOp::ReadBytes { count } => {
-                self.emit(LinearOp::ReadBytes { dst: data_dst(0), count: *count });
+                self.emit(LinearOp::ReadBytes {
+                    dst: data_dst(0),
+                    count: *count,
+                });
             }
             IrOp::PeekByte => {
                 self.emit(LinearOp::PeekByte { dst: data_dst(0) });
@@ -369,17 +432,26 @@ impl<'a> Linearizer<'a> {
 
             // ── Stack ops ──
             IrOp::WriteToSlot { slot } => {
-                self.emit(LinearOp::WriteToSlot { slot: *slot, src: data_in(0) });
+                self.emit(LinearOp::WriteToSlot {
+                    slot: *slot,
+                    src: data_in(0),
+                });
             }
             IrOp::ReadFromSlot { slot } => {
-                self.emit(LinearOp::ReadFromSlot { dst: data_dst(0), slot: *slot });
+                self.emit(LinearOp::ReadFromSlot {
+                    dst: data_dst(0),
+                    slot: *slot,
+                });
             }
 
             // ── Call ops ──
-            IrOp::CallIntrinsic { func, arg_count, has_result, field_offset } => {
-                let args: Vec<VReg> = (0..*arg_count as usize)
-                    .map(&data_in)
-                    .collect();
+            IrOp::CallIntrinsic {
+                func,
+                arg_count,
+                has_result,
+                field_offset,
+            } => {
+                let args: Vec<VReg> = (0..*arg_count as usize).map(&data_in).collect();
                 let dst = if *has_result { Some(data_dst(0)) } else { None };
                 self.emit(LinearOp::CallIntrinsic {
                     func: *func,
@@ -389,9 +461,7 @@ impl<'a> Linearizer<'a> {
                 });
             }
             IrOp::CallPure { func, arg_count } => {
-                let args: Vec<VReg> = (0..*arg_count as usize)
-                    .map(&data_in)
-                    .collect();
+                let args: Vec<VReg> = (0..*arg_count as usize).map(&data_in).collect();
                 self.emit(LinearOp::CallPure {
                     func: *func,
                     args,
@@ -434,9 +504,7 @@ impl<'a> Linearizer<'a> {
         let predicate = self.resolve_vreg(node.inputs[0].source);
 
         // Allocate labels: one per branch + merge label.
-        let branch_labels: Vec<LabelId> = (0..branch_count)
-            .map(|_| self.fresh_label())
-            .collect();
+        let branch_labels: Vec<LabelId> = (0..branch_count).map(|_| self.fresh_label()).collect();
         let merge_label = self.fresh_label();
 
         // Emit JumpTable if > 2 branches, or BranchIfZero for 2-branch case.
@@ -457,7 +525,9 @@ impl<'a> Linearizer<'a> {
         }
 
         // Determine the data output count from the gamma node.
-        let data_output_count = node.outputs.iter()
+        let data_output_count = node
+            .outputs
+            .iter()
             .filter(|o| o.kind == PortKind::Data)
             .count();
 
@@ -498,7 +568,10 @@ impl<'a> Linearizer<'a> {
                 if let Some(dst_vreg) = region.args[i].vreg
                     && src_vreg != dst_vreg
                 {
-                    self.emit(LinearOp::Copy { dst: dst_vreg, src: src_vreg });
+                    self.emit(LinearOp::Copy {
+                        dst: dst_vreg,
+                        src: src_vreg,
+                    });
                 }
             }
         }
@@ -523,7 +596,10 @@ impl<'a> Linearizer<'a> {
                     .vreg
                     .expect("gamma data output must have vreg");
                 if src_vreg != dst_vreg {
-                    self.emit(LinearOp::Copy { dst: dst_vreg, src: src_vreg });
+                    self.emit(LinearOp::Copy {
+                        dst: dst_vreg,
+                        src: src_vreg,
+                    });
                 }
             }
         }
@@ -551,7 +627,10 @@ impl<'a> Linearizer<'a> {
                 if let Some(dst_vreg) = body_region.args[i].vreg
                     && src_vreg != dst_vreg
                 {
-                    self.emit(LinearOp::Copy { dst: dst_vreg, src: src_vreg });
+                    self.emit(LinearOp::Copy {
+                        dst: dst_vreg,
+                        src: src_vreg,
+                    });
                 }
             }
         }
@@ -578,7 +657,10 @@ impl<'a> Linearizer<'a> {
                 if let Some(dst_vreg) = body_region.args[i].vreg
                     && src_vreg != dst_vreg
                 {
-                    self.emit(LinearOp::Copy { dst: dst_vreg, src: src_vreg });
+                    self.emit(LinearOp::Copy {
+                        dst: dst_vreg,
+                        src: src_vreg,
+                    });
                 }
             }
         }
@@ -600,7 +682,10 @@ impl<'a> Linearizer<'a> {
                 && let Some(dst_vreg) = node.outputs[i].vreg
                 && src_vreg != dst_vreg
             {
-                self.emit(LinearOp::Copy { dst: dst_vreg, src: src_vreg });
+                self.emit(LinearOp::Copy {
+                    dst: dst_vreg,
+                    src: src_vreg,
+                });
             }
         }
     }
@@ -622,15 +707,23 @@ impl<'a> Linearizer<'a> {
 
     fn linearize_apply(&mut self, node_id: NodeId, target: LambdaId) {
         let node = &self.func.nodes[node_id];
-        let args: Vec<VReg> = node.inputs.iter()
+        let args: Vec<VReg> = node
+            .inputs
+            .iter()
             .filter(|i| i.kind == PortKind::Data)
             .map(|i| self.resolve_vreg(i.source))
             .collect();
-        let results: Vec<VReg> = node.outputs.iter()
+        let results: Vec<VReg> = node
+            .outputs
+            .iter()
             .filter(|o| o.kind == PortKind::Data)
             .filter_map(|o| o.vreg)
             .collect();
-        self.emit(LinearOp::CallLambda { target, args, results });
+        self.emit(LinearOp::CallLambda {
+            target,
+            args,
+            results,
+        });
     }
 }
 
@@ -638,14 +731,20 @@ impl<'a> Linearizer<'a> {
 /// for linearization (avoids borrow issues with self.func).
 enum NodeKindRef<'a> {
     Simple(&'a IrOp),
-    Gamma { regions: Vec<RegionId> },
-    Theta { body: RegionId },
+    Gamma {
+        regions: Vec<RegionId>,
+    },
+    Theta {
+        body: RegionId,
+    },
     Lambda {
         body: RegionId,
         shape: &'static facet::Shape,
         lambda_id: LambdaId,
     },
-    Apply { target: LambdaId },
+    Apply {
+        target: LambdaId,
+    },
 }
 
 impl NodeKind {
@@ -735,7 +834,12 @@ impl fmt::Display for LinearIr {
                     writeln!(f, "L{}:", label.index())?;
                 }
                 LinearOp::FuncStart { lambda_id, shape } => {
-                    writeln!(f, "func λ{} ({}):", lambda_id.index(), shape.type_identifier)?;
+                    writeln!(
+                        f,
+                        "func λ{} ({}):",
+                        lambda_id.index(),
+                        shape.type_identifier
+                    )?;
                 }
                 LinearOp::FuncEnd => {
                     writeln!(f, "end")?;
@@ -816,14 +920,21 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &LinearOp) -> fmt::Result {
             fmt_vreg(f, *dst)?;
             write!(f, " = slot[{}]", slot.index())
         }
-        LinearOp::CallIntrinsic { func, args, dst, field_offset } => {
+        LinearOp::CallIntrinsic {
+            func,
+            args,
+            dst,
+            field_offset,
+        } => {
             if let Some(d) = dst {
                 fmt_vreg(f, *d)?;
                 write!(f, " = ")?;
             }
             write!(f, "call_intrinsic {func}(")?;
             for (i, a) in args.iter().enumerate() {
-                if i > 0 { write!(f, ", ")?; }
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
                 fmt_vreg(f, *a)?;
             }
             write!(f, ") @{field_offset}")
@@ -832,7 +943,9 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &LinearOp) -> fmt::Result {
             fmt_vreg(f, *dst)?;
             write!(f, " = call_pure {func}(")?;
             for (i, a) in args.iter().enumerate() {
-                if i > 0 { write!(f, ", ")?; }
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
                 fmt_vreg(f, *a)?;
             }
             write!(f, ")")
@@ -848,12 +961,18 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &LinearOp) -> fmt::Result {
             fmt_vreg(f, *cond)?;
             write!(f, " L{}", target.index())
         }
-        LinearOp::JumpTable { predicate, labels, default } => {
+        LinearOp::JumpTable {
+            predicate,
+            labels,
+            default,
+        } => {
             write!(f, "jump_table ")?;
             fmt_vreg(f, *predicate)?;
             write!(f, " [")?;
             for (i, l) in labels.iter().enumerate() {
-                if i > 0 { write!(f, ", ")?; }
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
                 write!(f, "L{}", l.index())?;
             }
             write!(f, "] default L{}", default.index())
@@ -866,17 +985,25 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &LinearOp) -> fmt::Result {
             write!(f, " = simd_string_scan")
         }
         LinearOp::SimdWhitespaceSkip => write!(f, "simd_whitespace_skip"),
-        LinearOp::CallLambda { target, args, results } => {
+        LinearOp::CallLambda {
+            target,
+            args,
+            results,
+        } => {
             if !results.is_empty() {
                 for (i, r) in results.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     fmt_vreg(f, *r)?;
                 }
                 write!(f, " = ")?;
             }
             write!(f, "call λ{}(", target.index())?;
             for (i, a) in args.iter().enumerate() {
-                if i > 0 { write!(f, ", ")?; }
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
                 fmt_vreg(f, *a)?;
             }
             write!(f, ")")
@@ -891,8 +1018,11 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &LinearOp) -> fmt::Result {
 impl fmt::Debug for LinearIr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "LinearIr {{")?;
-        writeln!(f, "  labels: {}, vregs: {}, slots: {}",
-            self.label_count, self.vreg_count, self.slot_count)?;
+        writeln!(
+            f,
+            "  labels: {}, vregs: {}, slots: {}",
+            self.label_count, self.vreg_count, self.slot_count
+        )?;
         for op in &self.ops {
             writeln!(f, "  {op:?}")?;
         }
@@ -925,7 +1055,14 @@ mod tests {
         assert!(matches!(ir.ops[0], LinearOp::FuncStart { .. }));
         assert!(matches!(ir.ops[1], LinearOp::BoundsCheck { count: 4 }));
         assert!(matches!(ir.ops[2], LinearOp::ReadBytes { count: 4, .. }));
-        assert!(matches!(ir.ops[3], LinearOp::WriteToField { offset: 0, width: Width::W4, .. }));
+        assert!(matches!(
+            ir.ops[3],
+            LinearOp::WriteToField {
+                offset: 0,
+                width: Width::W4,
+                ..
+            }
+        ));
         assert!(matches!(ir.ops[4], LinearOp::FuncEnd));
         assert_eq!(ir.ops.len(), 5);
     }
@@ -957,9 +1094,18 @@ mod tests {
         // Verify structure: FuncStart, Const(pred), BranchIfZero, Branch,
         //   Label(0), Const(42), Copy, Branch(merge), Label(1), Const(99), Copy, Label(merge), ...
         let display = format!("{ir}");
-        assert!(display.contains("br_zero"), "should have BranchIfZero for 2-branch gamma:\n{display}");
-        assert!(display.contains("const 42"), "branch 0 should produce 42:\n{display}");
-        assert!(display.contains("const 99"), "branch 1 should produce 99:\n{display}");
+        assert!(
+            display.contains("br_zero"),
+            "should have BranchIfZero for 2-branch gamma:\n{display}"
+        );
+        assert!(
+            display.contains("const 42"),
+            "branch 0 should produce 42:\n{display}"
+        );
+        assert!(
+            display.contains("const 99"),
+            "branch 1 should produce 99:\n{display}"
+        );
     }
 
     #[test]
@@ -986,8 +1132,14 @@ mod tests {
         let ir = linearize(&mut func);
 
         let display = format!("{ir}");
-        assert!(display.contains("br_if"), "should have BranchIf back-edge:\n{display}");
-        assert!(display.contains("Sub"), "should have subtraction:\n{display}");
+        assert!(
+            display.contains("br_if"),
+            "should have BranchIf back-edge:\n{display}"
+        );
+        assert!(
+            display.contains("Sub"),
+            "should have subtraction:\n{display}"
+        );
     }
 
     #[test]
@@ -1010,7 +1162,10 @@ mod tests {
         let mut func = builder.finish();
         let ir = linearize(&mut func);
 
-        let has_call = ir.ops.iter().any(|op| matches!(op, LinearOp::CallIntrinsic { .. }));
+        let has_call = ir
+            .ops
+            .iter()
+            .any(|op| matches!(op, LinearOp::CallIntrinsic { .. }));
         assert!(has_call, "should contain CallIntrinsic");
     }
 
@@ -1028,10 +1183,25 @@ mod tests {
         let ir = linearize(&mut func);
 
         let display = format!("{ir}");
-        assert!(display.contains("func"), "display should start with func:\n{display}");
-        assert!(display.contains("bounds_check 4"), "display should contain bounds_check:\n{display}");
-        assert!(display.contains("read_bytes 4"), "display should contain read_bytes:\n{display}");
-        assert!(display.contains("store [0:W4]"), "display should contain store:\n{display}");
-        assert!(display.contains("end"), "display should end with end:\n{display}");
+        assert!(
+            display.contains("func"),
+            "display should start with func:\n{display}"
+        );
+        assert!(
+            display.contains("bounds_check 4"),
+            "display should contain bounds_check:\n{display}"
+        );
+        assert!(
+            display.contains("read_bytes 4"),
+            "display should contain read_bytes:\n{display}"
+        );
+        assert!(
+            display.contains("store [0:W4]"),
+            "display should contain store:\n{display}"
+        );
+        assert!(
+            display.contains("end"),
+            "display should end with end:\n{display}"
+        );
     }
 }

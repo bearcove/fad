@@ -3,7 +3,9 @@ use facet::{MapDef, ScalarType, Type, UserType};
 
 use crate::arch::{BASE_FRAME, EmitCtx};
 use crate::context::ErrorCode;
-use crate::format::{Encoder, FieldEmitInfo, FieldEncodeInfo, Decoder, VariantEmitInfo, VariantKind};
+use crate::format::{
+    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, VariantEmitInfo, VariantKind,
+};
 use crate::intrinsics;
 use crate::json_intrinsics;
 use crate::malum::VecOffsets;
@@ -49,9 +51,7 @@ fn emit_read_key_inline(ectx: &mut EmitCtx) {
     let done = ectx.new_label();
 
     // 1. Skip whitespace, expect and consume opening '"'
-    ectx.emit_json_expect_quote_after_ws(
-        json_intrinsics::fad_json_skip_ws as *const u8,
-    );
+    ectx.emit_json_expect_quote_after_ws(json_intrinsics::fad_json_skip_ws as *const u8);
 
     // 2. Save start position to KEY_PTR_OFFSET
     //    (for the fast path, this IS the key pointer — zero-copy)
@@ -197,19 +197,27 @@ impl Decoder for FadJson {
         emit_field: &mut dyn FnMut(&mut EmitCtx, &crate::format::FieldEmitInfo),
     ) {
         // Expect '['
-        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_array_start as *const u8);
+        ectx.emit_call_intrinsic_ctx_only(
+            json_intrinsics::fad_json_expect_array_start as *const u8,
+        );
 
         if fields.is_empty() {
-            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_array_end as *const u8);
+            ectx.emit_call_intrinsic_ctx_only(
+                json_intrinsics::fad_json_expect_array_end as *const u8,
+            );
             return;
         }
 
         for (i, field) in fields.iter().enumerate() {
             emit_field(ectx, field);
             if i + 1 < fields.len() {
-                ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_comma as *const u8);
+                ectx.emit_call_intrinsic_ctx_only(
+                    json_intrinsics::fad_json_expect_comma as *const u8,
+                );
             } else {
-                ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_array_end as *const u8);
+                ectx.emit_call_intrinsic_ctx_only(
+                    json_intrinsics::fad_json_expect_array_end as *const u8,
+                );
             }
         }
     }
@@ -613,9 +621,7 @@ impl Decoder for FadJson {
         let done = ectx.new_label();
 
         // 1. Skip whitespace, expect and consume opening '"'
-        ectx.emit_json_expect_quote_after_ws(
-            json_intrinsics::fad_json_skip_ws as *const u8,
-        );
+        ectx.emit_json_expect_quote_after_ws(json_intrinsics::fad_json_skip_ws as *const u8);
 
         // 2. Save start position to stack
         ectx.emit_save_cursor_to_stack(SAVED_CURSOR_OFFSET);

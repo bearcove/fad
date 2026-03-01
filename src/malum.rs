@@ -59,7 +59,10 @@ pub fn discover_vec_offsets(list_def: &ListDef, shape: &'static Shape) -> VecOff
     let len = unsafe { (list_def.vtable.len)(PtrConst::new_sized(base_ptr)) };
 
     assert_eq!(len, 0, "freshly created Vec should have len=0");
-    assert!(cap >= 7, "Vec::with_capacity(7) should have cap >= 7, got {cap}");
+    assert!(
+        cap >= 7,
+        "Vec::with_capacity(7) should have cap >= 7, got {cap}"
+    );
     assert_ne!(data_ptr, 0, "Vec data pointer should be non-null");
 
     // Read the raw bytes as three usize words.
@@ -141,7 +144,15 @@ pub fn discover_vec_offsets(list_def: &ListDef, shape: &'static Shape) -> VecOff
     };
 
     // Phase 2: Validation — create a second Vec and verify the offsets work.
-    validate_offsets(list_def, shape, &offsets, init_fn, capacity_fn, as_mut_ptr_fn, set_len_fn);
+    validate_offsets(
+        list_def,
+        shape,
+        &offsets,
+        init_fn,
+        capacity_fn,
+        as_mut_ptr_fn,
+        set_len_fn,
+    );
 
     offsets
 }
@@ -212,10 +223,7 @@ fn validate_offsets(
         new_cap >= 1000,
         "cap_offset should reflect reserve(): expected >= 1000, got {new_cap}"
     );
-    assert_ne!(
-        old_cap, new_cap,
-        "cap_offset should change after reserve()"
-    );
+    assert_ne!(old_cap, new_cap, "cap_offset should change after reserve()");
 
     // Also verify ptr may have changed (reallocation).
     let new_vtable_ptr = unsafe { (as_mut_ptr_fn)(vec_ptr) } as usize;
@@ -266,7 +274,10 @@ fn discover_string_offsets_inner() -> StringOffsets {
     let len = s.len();
 
     assert_eq!(len, 0);
-    assert!(cap >= 7, "String::with_capacity(7) should have cap >= 7, got {cap}");
+    assert!(
+        cap >= 7,
+        "String::with_capacity(7) should have cap >= 7, got {cap}"
+    );
     assert_ne!(data_ptr, 0, "String data pointer should be non-null");
 
     // Read the raw bytes as three usize words.
