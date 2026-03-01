@@ -897,6 +897,7 @@ fn compile_linear_ir_aarch64(
         const_vregs: Vec<Option<u64>>,
         edits_by_lambda: HashMap<u32, LambdaEditMap>,
         edge_edits_by_lambda: HashMap<u32, LambdaEdgeEditMap>,
+        forward_branch_labels_by_lambda: HashMap<u32, HashMap<LabelId, (usize, LabelId)>>,
         allocs_by_lambda: HashMap<u32, HashMap<usize, Vec<Allocation>>>,
         return_result_allocs_by_lambda: HashMap<u32, Vec<Allocation>>,
         edge_trampoline_labels: HashMap<(u32, usize, usize), DynamicLabel>,
@@ -912,6 +913,16 @@ fn compile_linear_ir_aarch64(
     }
 
     impl Lowerer {
+        fn normalize_edit_move(
+            from: Allocation,
+            to: Allocation,
+        ) -> Option<(Allocation, Allocation)> {
+            if from == to || from.is_none() || to.is_none() {
+                return None;
+            }
+            Some((from, to))
+        }
+
         fn regalloc_extra_saved_pairs(alloc: &crate::regalloc_engine::AllocatedProgram) -> u32 {
             let mut max_pair = None::<u32>;
             let mut observe = |a: Allocation| {
@@ -986,6 +997,49 @@ fn compile_linear_ir_aarch64(
             let lambda_labels: Vec<DynamicLabel> =
                 (0..=lambda_max).map(|_| ectx.new_label()).collect();
 
+            let mut forward_branch_labels_by_lambda =
+                HashMap::<u32, HashMap<LabelId, (usize, LabelId)>>::new();
+            let mut current_lambda_id = None::<u32>;
+            let mut current_linear_op_index = 0usize;
+            let mut pending_labels = Vec::<LabelId>::new();
+            for op in &ir.ops {
+                match op {
+                    LinearOp::FuncStart { lambda_id, .. } => {
+                        current_lambda_id = Some(lambda_id.index() as u32);
+                        current_linear_op_index = 0;
+                        pending_labels.clear();
+                    }
+                    LinearOp::FuncEnd => {
+                        current_lambda_id = None;
+                        pending_labels.clear();
+                    }
+                    _ => {
+                        let Some(lambda_id) = current_lambda_id else {
+                            continue;
+                        };
+                        match op {
+                            LinearOp::Label(label) => {
+                                pending_labels.push(*label);
+                            }
+                            LinearOp::Branch(target) => {
+                                if !pending_labels.is_empty() {
+                                    let by_lambda = forward_branch_labels_by_lambda
+                                        .entry(lambda_id)
+                                        .or_default();
+                                    for label in pending_labels.drain(..) {
+                                        by_lambda.insert(label, (current_linear_op_index, *target));
+                                    }
+                                }
+                            }
+                            _ => {
+                                pending_labels.clear();
+                            }
+                        }
+                        current_linear_op_index += 1;
+                    }
+                }
+            }
+
             let mut edits_by_lambda = HashMap::<u32, LambdaEditMap>::new();
             let mut edge_edits_by_lambda = HashMap::<u32, LambdaEdgeEditMap>::new();
             let mut allocs_by_lambda = HashMap::<u32, HashMap<usize, Vec<Allocation>>>::new();
@@ -1005,25 +1059,26 @@ fn compile_linear_ir_aarch64(
                         continue;
                     };
                     let Edit::Move { from, to } = edit;
+                    let Some((from, to)) = Self::normalize_edit_move(*from, *to) else {
+                        continue;
+                    };
                     let bucket = match prog_point.pos() {
                         InstPosition::Before => &mut lambda_entry.before,
                         InstPosition::After => &mut lambda_entry.after,
                     };
-                    bucket
-                        .entry(*linear_op_index)
-                        .or_default()
-                        .push((*from, *to));
+                    bucket.entry(*linear_op_index).or_default().push((from, to));
                 }
                 for edge_edit in &func.edge_edits {
+                    let Some((from, to)) = Self::normalize_edit_move(edge_edit.from, edge_edit.to)
+                    else {
+                        continue;
+                    };
                     let key = (edge_edit.from_linear_op_index, edge_edit.succ_index);
                     let bucket = match edge_edit.pos {
                         InstPosition::Before => &mut lambda_edge_entry.before,
                         InstPosition::After => &mut lambda_edge_entry.after,
                     };
-                    bucket
-                        .entry(key)
-                        .or_default()
-                        .push((edge_edit.from, edge_edit.to));
+                    bucket.entry(key).or_default().push((from, to));
                 }
                 for (inst_index, maybe_linear_op_index) in
                     func.inst_linear_op_indices.iter().copied().enumerate()
@@ -1048,6 +1103,7 @@ fn compile_linear_ir_aarch64(
                 const_vregs: vec![None; ir.vreg_count as usize],
                 edits_by_lambda,
                 edge_edits_by_lambda,
+                forward_branch_labels_by_lambda,
                 allocs_by_lambda,
                 return_result_allocs_by_lambda,
                 edge_trampoline_labels: HashMap::new(),
@@ -1218,19 +1274,77 @@ fn compile_linear_ir_aarch64(
                 || by_lambda.after.contains_key(&linear_op_index)
         }
 
-        fn has_edge_edits(&self, linear_op_index: usize, succ_index: usize) -> bool {
+        fn resolve_forwarded_label(&self, label: LabelId) -> LabelId {
             let Some(lambda_id) = self
                 .current_func
                 .as_ref()
                 .map(|f| f.lambda_id.index() as u32)
             else {
-                return false;
+                return label;
+            };
+            let Some(by_lambda) = self.forward_branch_labels_by_lambda.get(&lambda_id) else {
+                return label;
+            };
+            let mut resolved = label;
+            let mut hops = 0usize;
+            while hops < 64 {
+                let Some((branch_linear_op_index, next_label)) = by_lambda.get(&resolved).copied()
+                else {
+                    break;
+                };
+                if self.has_inst_edits(branch_linear_op_index)
+                    || self.has_edge_edits(branch_linear_op_index, 0)
+                    || next_label == resolved
+                {
+                    break;
+                }
+                resolved = next_label;
+                hops += 1;
+            }
+            resolved
+        }
+
+        fn edge_edit_moves(
+            &self,
+            linear_op_index: usize,
+            succ_index: usize,
+        ) -> Vec<(Allocation, Allocation)> {
+            let Some(lambda_id) = self
+                .current_func
+                .as_ref()
+                .map(|f| f.lambda_id.index() as u32)
+            else {
+                return Vec::new();
             };
             let Some(by_lambda) = self.edge_edits_by_lambda.get(&lambda_id) else {
-                return false;
+                return Vec::new();
             };
             let key = (linear_op_index, succ_index);
-            by_lambda.before.contains_key(&key) || by_lambda.after.contains_key(&key)
+            let mut moves = Vec::new();
+            if let Some(before) = by_lambda.before.get(&key) {
+                moves.extend(before.iter().copied());
+            }
+            if let Some(after) = by_lambda.after.get(&key) {
+                // Edge blocks only contain an unconditional branch; both before/after edits
+                // must execute before branching to the real CFG target.
+                moves.extend(after.iter().copied());
+            }
+            moves
+        }
+
+        fn apply_fallthrough_edge_edits(&mut self, linear_op_index: usize, succ_index: usize) {
+            let moves = self.edge_edit_moves(linear_op_index, succ_index);
+            if moves.is_empty() {
+                return;
+            }
+            self.flush_all_vregs();
+            for (from, to) in moves {
+                self.emit_edit_move(from, to);
+            }
+        }
+
+        fn has_edge_edits(&self, linear_op_index: usize, succ_index: usize) -> bool {
+            !self.edge_edit_moves(linear_op_index, succ_index).is_empty()
         }
 
         fn edge_target_label(
@@ -1261,15 +1375,7 @@ fn compile_linear_ir_aarch64(
                 return label;
             }
 
-            let mut moves = Vec::new();
-            if let Some(before) = by_lambda.before.get(&key) {
-                moves.extend(before.iter().copied());
-            }
-            if let Some(after) = by_lambda.after.get(&key) {
-                // Edge blocks only contain an unconditional branch; both before/after edits
-                // must execute before branching to the real CFG target.
-                moves.extend(after.iter().copied());
-            }
+            let moves = self.edge_edit_moves(linear_op_index, succ_index);
 
             let label = self.ectx.new_label();
             self.edge_trampoline_labels.insert(cache_key, label);
@@ -1947,7 +2053,8 @@ fn compile_linear_ir_aarch64(
                 panic!("unexpected none allocation for jumptable predicate");
             }
             for (index, label) in labels.iter().enumerate() {
-                let target = self.edge_target_label(linear_op_index, index, self.label(*label));
+                let resolved = self.resolve_forwarded_label(*label);
+                let target = self.edge_target_label(linear_op_index, index, self.label(resolved));
                 let idx = index as u32;
                 if let Some(r) = pred_reg {
                     self.emit_load_u32_w10(idx);
@@ -1972,8 +2079,12 @@ fn compile_linear_ir_aarch64(
                 }
             }
             let default_succ_index = labels.len();
-            let default_target =
-                self.edge_target_label(linear_op_index, default_succ_index, self.label(default));
+            let resolved_default = self.resolve_forwarded_label(default);
+            let default_target = self.edge_target_label(
+                linear_op_index,
+                default_succ_index,
+                self.label(resolved_default),
+            );
             self.ectx.emit_branch(default_target);
         }
 
@@ -2288,10 +2399,11 @@ fn compile_linear_ir_aarch64(
                         self.ectx.bind_label(self.label(*label));
                     }
                     LinearOp::Branch(target) => {
+                        let resolved_target = self.resolve_forwarded_label(*target);
                         let target_label = if let Some(lin_idx) = linear_op_index {
-                            self.edge_target_label(lin_idx, 0, self.label(*target))
+                            self.edge_target_label(lin_idx, 0, self.label(resolved_target))
                         } else {
-                            self.label(*target)
+                            self.label(resolved_target)
                         };
                         self.ectx.emit_branch(target_label);
                     }
@@ -2306,24 +2418,20 @@ fn compile_linear_ir_aarch64(
                         };
                         let lin_idx = linear_op_index
                             .expect("BranchIf should have linear op index inside function");
-                        let taken_target = self.edge_target_label(lin_idx, 0, self.label(*target));
+                        let resolved_target = self.resolve_forwarded_label(*target);
+                        let taken_target =
+                            self.edge_target_label(lin_idx, 0, self.label(resolved_target));
                         if self.has_edge_edits(lin_idx, 1) {
-                            let fallthrough_cont = self.ectx.new_label();
-                            let fallthrough_target =
-                                self.edge_target_label(lin_idx, 1, fallthrough_cont);
                             if use_cmp_flags {
                                 self.emit_branch_on_last_cmp_ne(taken_target, false);
                             } else {
                                 self.emit_branch_if(*cond, taken_target, false);
                             }
-                            self.ectx.emit_branch(fallthrough_target);
-                            self.ectx.bind_label(fallthrough_cont);
+                            self.apply_fallthrough_edge_edits(lin_idx, 1);
+                        } else if use_cmp_flags {
+                            self.emit_branch_on_last_cmp_ne(taken_target, false);
                         } else {
-                            if use_cmp_flags {
-                                self.emit_branch_on_last_cmp_ne(taken_target, false);
-                            } else {
-                                self.emit_branch_if(*cond, taken_target, false);
-                            }
+                            self.emit_branch_if(*cond, taken_target, false);
                         }
                     }
                     LinearOp::BranchIfZero { cond, target } => {
@@ -2337,24 +2445,20 @@ fn compile_linear_ir_aarch64(
                         };
                         let lin_idx = linear_op_index
                             .expect("BranchIfZero should have linear op index inside function");
-                        let taken_target = self.edge_target_label(lin_idx, 0, self.label(*target));
+                        let resolved_target = self.resolve_forwarded_label(*target);
+                        let taken_target =
+                            self.edge_target_label(lin_idx, 0, self.label(resolved_target));
                         if self.has_edge_edits(lin_idx, 1) {
-                            let fallthrough_cont = self.ectx.new_label();
-                            let fallthrough_target =
-                                self.edge_target_label(lin_idx, 1, fallthrough_cont);
                             if use_cmp_flags {
                                 self.emit_branch_on_last_cmp_ne(taken_target, true);
                             } else {
                                 self.emit_branch_if(*cond, taken_target, true);
                             }
-                            self.ectx.emit_branch(fallthrough_target);
-                            self.ectx.bind_label(fallthrough_cont);
+                            self.apply_fallthrough_edge_edits(lin_idx, 1);
+                        } else if use_cmp_flags {
+                            self.emit_branch_on_last_cmp_ne(taken_target, true);
                         } else {
-                            if use_cmp_flags {
-                                self.emit_branch_on_last_cmp_ne(taken_target, true);
-                            } else {
-                                self.emit_branch_if(*cond, taken_target, true);
-                            }
+                            self.emit_branch_if(*cond, taken_target, true);
                         }
                     }
                     LinearOp::JumpTable {
