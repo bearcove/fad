@@ -18,14 +18,71 @@ pub mod solver;
 
 use compiler::{CompiledDecoder, CompiledEncoder};
 use context::{DeserContext, ErrorCode};
+use std::sync::OnceLock;
 
 // r[impl api.compile]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecoderBackend {
+    Legacy,
+    Ir,
+}
+
+impl DecoderBackend {
+    fn parse_env(s: &str) -> Option<Self> {
+        if s.eq_ignore_ascii_case("legacy") {
+            Some(Self::Legacy)
+        } else if s.eq_ignore_ascii_case("ir") {
+            Some(Self::Ir)
+        } else {
+            None
+        }
+    }
+}
+
+static DECODER_BACKEND: OnceLock<DecoderBackend> = OnceLock::new();
+
+/// Returns the default backend used by [`compile_decoder`].
+///
+/// Read once from `FAD_DECODER_BACKEND` (`legacy` or `ir`), then cached.
+/// When unset, defaults to `legacy`.
+pub fn decoder_backend() -> DecoderBackend {
+    *DECODER_BACKEND.get_or_init(|| match std::env::var("FAD_DECODER_BACKEND") {
+        Ok(value) => DecoderBackend::parse_env(&value).unwrap_or_else(|| {
+            panic!("invalid FAD_DECODER_BACKEND={value:?}; expected \"legacy\" or \"ir\"")
+        }),
+        Err(std::env::VarError::NotPresent) => DecoderBackend::Legacy,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("FAD_DECODER_BACKEND must be valid UTF-8")
+        }
+    })
+}
+
 /// Compile a deserializer for the given shape and format.
 pub fn compile_decoder(
     shape: &'static facet::Shape,
     decoder: &dyn format::Decoder,
 ) -> CompiledDecoder {
-    compiler::compile_decoder(shape, decoder)
+    compile_decoder_with_backend(shape, decoder, decoder_backend())
+}
+
+/// Compile a deserializer with an explicit backend choice.
+pub fn compile_decoder_with_backend(
+    shape: &'static facet::Shape,
+    decoder: &dyn format::Decoder,
+    backend: DecoderBackend,
+) -> CompiledDecoder {
+    match backend {
+        DecoderBackend::Legacy => compile_decoder_legacy(shape, decoder),
+        DecoderBackend::Ir => {
+            let ir_decoder = decoder.as_ir_decoder().unwrap_or_else(|| {
+                panic!(
+                    "IR backend requested for format {:?}, but it does not implement IrDecoder",
+                    core::any::type_name_of_val(decoder)
+                )
+            });
+            compiler::compile_decoder_via_ir_dyn(shape, decoder, ir_decoder)
+        }
+    }
 }
 
 /// Compile a deserializer using the legacy direct dynasm emission path.
@@ -195,6 +252,29 @@ mod tests {
         let a: Friend = deserialize(&legacy, &input).unwrap();
         let b: Friend = deserialize(&via_ir, &input).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn postcard_compile_decoder_with_backend_routes_to_selected_path() {
+        let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
+
+        let legacy = compile_decoder_with_backend(
+            Friend::SHAPE,
+            &postcard::FadPostcard,
+            DecoderBackend::Legacy,
+        );
+        let via_ir =
+            compile_decoder_with_backend(Friend::SHAPE, &postcard::FadPostcard, DecoderBackend::Ir);
+
+        let a: Friend = deserialize(&legacy, &input).unwrap();
+        let b: Friend = deserialize(&via_ir, &input).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "IR backend requested")]
+    fn compile_decoder_with_backend_ir_panics_for_non_ir_format() {
+        let _ = compile_decoder_with_backend(Friend::SHAPE, &json::FadJson, DecoderBackend::Ir);
     }
 
     #[test]

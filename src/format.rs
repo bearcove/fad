@@ -115,6 +115,14 @@ pub trait Decoder {
         false
     }
 
+    /// Optional IR-lowering view of this decoder.
+    ///
+    /// Formats that implement [`IrDecoder`] should override this to return
+    /// `Some(self)`, allowing runtime backend selection without downcasting.
+    fn as_ir_decoder(&self) -> Option<&dyn IrDecoder> {
+        None
+    }
+
     /// Emit code to deserialize all fields of a struct.
     ///
     /// The format controls field ordering. For postcard, this just iterates
@@ -548,12 +556,7 @@ pub trait Encoder {
     }
 
     /// Emit code to encode a scalar value read from `input + offset`.
-    fn emit_encode_scalar(
-        &self,
-        _ectx: &mut EmitCtx,
-        _offset: usize,
-        _scalar_type: ScalarType,
-    ) {
+    fn emit_encode_scalar(&self, _ectx: &mut EmitCtx, _offset: usize, _scalar_type: ScalarType) {
         panic!("scalar serialization not supported by this format");
     }
 

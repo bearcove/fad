@@ -28,6 +28,10 @@ impl Decoder for FadPostcard {
         true
     }
 
+    fn as_ir_decoder(&self) -> Option<&dyn IrDecoder> {
+        Some(self)
+    }
+
     fn emit_struct_fields(
         &self,
         ectx: &mut EmitCtx,
@@ -727,12 +731,15 @@ impl IrDecoder for FadPostcard {
         &self,
         builder: &mut RegionBuilder<'_>,
         variants: &[crate::format::VariantLowerInfo],
-        lower_variant_body: &mut dyn FnMut(&mut RegionBuilder<'_>, &crate::format::VariantLowerInfo),
+        lower_variant_body: &mut dyn FnMut(
+            &mut RegionBuilder<'_>,
+            &crate::format::VariantLowerInfo,
+        ),
     ) {
         // Read varint discriminant.
-        let discriminant =
-            builder.call_intrinsic(ifn(intrinsics::fad_read_varint_u32 as _), &[], 0, true)
-                .expect("varint read should produce a result");
+        let discriminant = builder
+            .call_intrinsic(ifn(intrinsics::fad_read_varint_u32 as _), &[], 0, true)
+            .expect("varint read should produce a result");
 
         let n = variants.len();
 
@@ -926,12 +933,10 @@ mod ir_tests {
             },
         ];
 
-        let func = build_postcard_struct(&fields, &mut |builder, field| {
-            match field.name {
-                "x" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U32),
-                "y" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8),
-                _ => panic!("unexpected field"),
-            }
+        let func = build_postcard_struct(&fields, &mut |builder, field| match field.name {
+            "x" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U32),
+            "y" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8),
+            _ => panic!("unexpected field"),
         });
 
         // Two fields → two CallIntrinsic nodes.
@@ -986,7 +991,10 @@ mod ir_tests {
 
         match &func.nodes[nodes[0]].kind {
             NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. }) => {
-                assert_eq!(f.0, intrinsics::fad_read_postcard_string as *const () as usize);
+                assert_eq!(
+                    f.0,
+                    intrinsics::fad_read_postcard_string as *const () as usize
+                );
             }
             other => panic!("expected CallIntrinsic for string, got {:?}", other),
         }
@@ -1082,7 +1090,11 @@ mod ir_tests {
         let nodes = &func.regions[body].nodes;
 
         // Should have: BoundsCheck, ReadBytes, Gamma.
-        assert_eq!(nodes.len(), 3, "option should produce 3 nodes in root region");
+        assert_eq!(
+            nodes.len(),
+            3,
+            "option should produce 3 nodes in root region"
+        );
 
         match &func.nodes[nodes[0]].kind {
             NodeKind::Simple(IrOp::BoundsCheck { count: 1 }) => {}
@@ -1104,7 +1116,11 @@ mod ir_tests {
 
                 // Branch 1 (Some): should have a CallIntrinsic (read_u8) + Const + CallIntrinsic (init_some).
                 let some_nodes = &func.regions[regions[1]].nodes;
-                assert_eq!(some_nodes.len(), 3, "Some branch: read_u8 + const + call_intrinsic");
+                assert_eq!(
+                    some_nodes.len(),
+                    3,
+                    "Some branch: read_u8 + const + call_intrinsic"
+                );
             }
             other => panic!("expected Gamma, got {:?}", other),
         }
@@ -1158,7 +1174,11 @@ mod ir_tests {
         assert_eq!(nodes.len(), 2, "enum should produce 2 nodes in root region");
 
         match &func.nodes[nodes[0]].kind {
-            NodeKind::Simple(IrOp::CallIntrinsic { func: f, has_result: true, .. }) => {
+            NodeKind::Simple(IrOp::CallIntrinsic {
+                func: f,
+                has_result: true,
+                ..
+            }) => {
                 assert_eq!(f.0, intrinsics::fad_read_varint_u32 as *const () as usize);
             }
             other => panic!("expected CallIntrinsic(read_varint), got {:?}", other),
@@ -1171,13 +1191,15 @@ mod ir_tests {
 
                 // Branch 0 (variant A, unit): no nodes.
                 assert_eq!(
-                    func.regions[regions[0]].nodes.len(), 0,
+                    func.regions[regions[0]].nodes.len(),
+                    0,
                     "unit variant should have no nodes"
                 );
 
                 // Branch 1 (variant B, tuple with u8): one CallIntrinsic.
                 assert_eq!(
-                    func.regions[regions[1]].nodes.len(), 1,
+                    func.regions[regions[1]].nodes.len(),
+                    1,
                     "tuple variant should have 1 node"
                 );
 
@@ -1213,9 +1235,9 @@ mod ir_tests {
         let nodes = &func.regions[body].nodes;
 
         // Find the theta node — it should be the last structured node.
-        let has_theta = nodes.iter().any(|&nid| {
-            matches!(&func.nodes[nid].kind, NodeKind::Theta { .. })
-        });
+        let has_theta = nodes
+            .iter()
+            .any(|&nid| matches!(&func.nodes[nid].kind, NodeKind::Theta { .. }));
         assert!(has_theta, "vec lowering should produce a theta node");
 
         // Find the varint read (first CallIntrinsic with has_result=true).
@@ -1245,13 +1267,17 @@ mod ir_tests {
         assert!(has_alloc, "vec should call fad_vec_alloc");
 
         // Verify theta body has the element read.
-        let theta_node = nodes.iter().find(|&&nid| {
-            matches!(&func.nodes[nid].kind, NodeKind::Theta { .. })
-        }).unwrap();
+        let theta_node = nodes
+            .iter()
+            .find(|&&nid| matches!(&func.nodes[nid].kind, NodeKind::Theta { .. }))
+            .unwrap();
         if let NodeKind::Theta { body: theta_body } = &func.nodes[*theta_node].kind {
             let theta_nodes = &func.regions[*theta_body].nodes;
             // Should have: CallIntrinsic (read u8) + Const(1) + Sub + Const(elem_size) + Add.
-            assert!(theta_nodes.len() >= 3, "theta body should have element read + counter decrement + cursor advance");
+            assert!(
+                theta_nodes.len() >= 3,
+                "theta body should have element read + counter decrement + cursor advance"
+            );
         }
     }
 }

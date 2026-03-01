@@ -1583,7 +1583,7 @@ fn lower_variants_for_ir(
         .collect()
 }
 
-fn lower_shape_via_ir<F: IrDecoder>(
+fn lower_shape_via_ir<F: IrDecoder + ?Sized>(
     decoder: &F,
     rb: &mut RegionBuilder<'_>,
     shape: &'static Shape,
@@ -1711,10 +1711,20 @@ pub fn compile_decoder_via_ir<F: Decoder + IrDecoder>(
     shape: &'static Shape,
     decoder: &F,
 ) -> CompiledDecoder {
+    compile_decoder_via_ir_dyn(shape, decoder, decoder)
+}
+
+/// Compile a deserializer through RVSDG + linearization + backend adapter
+/// using separate trait-object views for legacy and IR decode traits.
+pub fn compile_decoder_via_ir_dyn(
+    shape: &'static Shape,
+    decoder: &dyn Decoder,
+    ir_decoder: &dyn IrDecoder,
+) -> CompiledDecoder {
     let mut builder = crate::ir::IrBuilder::new(shape);
     {
         let mut rb = builder.root_region();
-        lower_shape_via_ir(decoder, &mut rb, shape, 0);
+        lower_shape_via_ir(ir_decoder, &mut rb, shape, 0);
         rb.set_results(&[]);
     }
 
