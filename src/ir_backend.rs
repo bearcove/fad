@@ -923,6 +923,143 @@ fn compile_linear_ir_aarch64(
             Some((from, to))
         }
 
+        fn linear_op_uses_vreg(op: &LinearOp, v: crate::ir::VReg) -> bool {
+            match op {
+                LinearOp::Const { .. }
+                | LinearOp::BoundsCheck { .. }
+                | LinearOp::AdvanceCursor { .. }
+                | LinearOp::SlotAddr { .. }
+                | LinearOp::Label(_)
+                | LinearOp::Branch(_)
+                | LinearOp::ErrorExit { .. }
+                | LinearOp::SimdWhitespaceSkip
+                | LinearOp::FuncStart { .. }
+                | LinearOp::FuncEnd => false,
+                LinearOp::BinOp { lhs, rhs, .. } => *lhs == v || *rhs == v,
+                LinearOp::UnaryOp { src, .. }
+                | LinearOp::AdvanceCursorBy { src }
+                | LinearOp::RestoreCursor { src }
+                | LinearOp::SetOutPtr { src }
+                | LinearOp::WriteToSlot { src, .. } => *src == v,
+                LinearOp::Copy { src, .. } => *src == v,
+                LinearOp::ReadBytes { .. }
+                | LinearOp::PeekByte { .. }
+                | LinearOp::SaveCursor { .. }
+                | LinearOp::ReadFromField { .. }
+                | LinearOp::SaveOutPtr { .. }
+                | LinearOp::ReadFromSlot { .. } => false,
+                LinearOp::WriteToField { src, .. } => *src == v,
+                LinearOp::CallIntrinsic { args, .. } | LinearOp::CallPure { args, .. } => {
+                    args.contains(&v)
+                }
+                LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. } => *cond == v,
+                LinearOp::JumpTable { predicate, .. } => *predicate == v,
+                LinearOp::SimdStringScan { pos, kind } => *pos == v || *kind == v,
+                LinearOp::CallLambda { args, .. } => args.contains(&v),
+            }
+        }
+
+        fn linear_op_defs_vreg(op: &LinearOp, v: crate::ir::VReg) -> bool {
+            match op {
+                LinearOp::Const { dst, .. }
+                | LinearOp::UnaryOp { dst, .. }
+                | LinearOp::Copy { dst, .. }
+                | LinearOp::ReadBytes { dst, .. }
+                | LinearOp::PeekByte { dst }
+                | LinearOp::SaveCursor { dst }
+                | LinearOp::ReadFromField { dst, .. }
+                | LinearOp::SaveOutPtr { dst }
+                | LinearOp::SlotAddr { dst, .. }
+                | LinearOp::ReadFromSlot { dst, .. } => *dst == v,
+                LinearOp::BinOp { dst, .. } | LinearOp::CallPure { dst, .. } => *dst == v,
+                LinearOp::CallIntrinsic { dst, .. } => dst.is_some_and(|dst| dst == v),
+                LinearOp::CallLambda { results, .. } => results.contains(&v),
+                LinearOp::BoundsCheck { .. }
+                | LinearOp::AdvanceCursor { .. }
+                | LinearOp::AdvanceCursorBy { .. }
+                | LinearOp::RestoreCursor { .. }
+                | LinearOp::WriteToField { .. }
+                | LinearOp::SetOutPtr { .. }
+                | LinearOp::WriteToSlot { .. }
+                | LinearOp::Label(_)
+                | LinearOp::Branch(_)
+                | LinearOp::BranchIf { .. }
+                | LinearOp::BranchIfZero { .. }
+                | LinearOp::JumpTable { .. }
+                | LinearOp::ErrorExit { .. }
+                | LinearOp::SimdStringScan { .. }
+                | LinearOp::SimdWhitespaceSkip
+                | LinearOp::FuncStart { .. }
+                | LinearOp::FuncEnd => false,
+            }
+        }
+
+        fn linear_op_preserves_cmp_flags(op: &LinearOp) -> bool {
+            match op {
+                LinearOp::BinOp {
+                    op: BinOpKind::CmpNe,
+                    ..
+                } => false,
+                LinearOp::BoundsCheck { .. }
+                | LinearOp::ReadBytes { .. }
+                | LinearOp::PeekByte { .. }
+                | LinearOp::CallIntrinsic { .. }
+                | LinearOp::CallPure { .. }
+                | LinearOp::JumpTable { .. }
+                | LinearOp::ErrorExit { .. }
+                | LinearOp::CallLambda { .. }
+                | LinearOp::SimdStringScan { .. }
+                | LinearOp::SimdWhitespaceSkip => false,
+                _ => true,
+            }
+        }
+
+        fn find_cmpne_branch_use(
+            &self,
+            ir: &LinearIr,
+            cmp_op_index: usize,
+            cond_vreg: crate::ir::VReg,
+            cmp_linear_op_index: usize,
+        ) -> Option<usize> {
+            let mut scan_linear_op_index = cmp_linear_op_index + 1;
+            for scan_index in cmp_op_index + 1..ir.ops.len() {
+                let op = &ir.ops[scan_index];
+                match op {
+                    LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. }
+                        if *cond == cond_vreg =>
+                    {
+                        for lin in cmp_linear_op_index..=scan_linear_op_index {
+                            if self.has_inst_edits(lin) {
+                                return None;
+                            }
+                        }
+                        return Some(scan_index);
+                    }
+                    LinearOp::Label(_) => {
+                        scan_linear_op_index += 1;
+                        continue;
+                    }
+                    LinearOp::Branch(_)
+                    | LinearOp::BranchIf { .. }
+                    | LinearOp::BranchIfZero { .. }
+                    | LinearOp::JumpTable { .. }
+                    | LinearOp::ErrorExit { .. }
+                    | LinearOp::FuncStart { .. }
+                    | LinearOp::FuncEnd => return None,
+                    _ => {
+                        if Self::linear_op_uses_vreg(op, cond_vreg)
+                            || Self::linear_op_defs_vreg(op, cond_vreg)
+                            || !Self::linear_op_preserves_cmp_flags(op)
+                        {
+                            return None;
+                        }
+                    }
+                }
+                scan_linear_op_index += 1;
+            }
+            None
+        }
+
         fn regalloc_extra_saved_pairs(alloc: &crate::regalloc_engine::AllocatedProgram) -> u32 {
             let mut max_pair = None::<u32>;
             let mut observe = |a: Allocation| {
@@ -2307,19 +2444,27 @@ fn compile_linear_ir_aarch64(
         }
 
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
-            let mut fused_cmpne_cond = None::<crate::ir::VReg>;
+            let mut fused_cmpne_cond = None::<(usize, crate::ir::VReg)>;
             for (op_index, op) in ir.ops.iter().enumerate() {
-                if let Some(expected_cond) = fused_cmpne_cond
-                    && !matches!(
-                        op,
-                        LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. }
-                            if *cond == expected_cond
-                    )
-                {
-                    panic!(
-                        "fused CmpNe for vreg {:?} must be followed by BranchIf/BranchIfZero",
-                        expected_cond
-                    );
+                if let Some((expected_branch_op_index, expected_cond)) = fused_cmpne_cond {
+                    if op_index > expected_branch_op_index {
+                        panic!(
+                            "fused CmpNe for vreg {:?} expected branch op index {}, reached {}",
+                            expected_cond, expected_branch_op_index, op_index
+                        );
+                    }
+                    if op_index == expected_branch_op_index
+                        && !matches!(
+                            op,
+                            LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. }
+                                if *cond == expected_cond
+                        )
+                    {
+                        panic!(
+                            "fused CmpNe for vreg {:?} must target BranchIf/BranchIfZero",
+                            expected_cond
+                        );
+                    }
                 }
                 let linear_op_index = if self.current_func.is_some()
                     && !matches!(op, LinearOp::FuncStart { .. } | LinearOp::FuncEnd)
@@ -2328,26 +2473,15 @@ fn compile_linear_ir_aarch64(
                 } else {
                     None
                 };
-                let fuse_cmpne_to_next_branch = match op {
+                let fuse_cmpne_to_branch_op_index = match op {
                     LinearOp::BinOp {
                         op: BinOpKind::CmpNe,
                         dst,
                         ..
-                    } => match (linear_op_index, ir.ops.get(op_index + 1)) {
-                        (Some(lin_idx), Some(next_op)) => {
-                            let is_cmp_branch_pair = matches!(
-                                next_op,
-                                LinearOp::BranchIf { cond, .. }
-                                    | LinearOp::BranchIfZero { cond, .. }
-                                    if *cond == *dst
-                            );
-                            is_cmp_branch_pair
-                                && !self.has_inst_edits(lin_idx)
-                                && !self.has_inst_edits(lin_idx + 1)
-                        }
-                        _ => false,
-                    },
-                    _ => false,
+                    } => linear_op_index.and_then(|lin_idx| {
+                        self.find_cmpne_branch_use(ir, op_index, *dst, lin_idx)
+                    }),
+                    _ => None,
                 };
                 self.current_inst_allocs = linear_op_index.and_then(|lin_idx| {
                     let lambda_id = self.current_func.as_ref()?.lambda_id.index() as u32;
@@ -2405,16 +2539,42 @@ fn compile_linear_ir_aarch64(
                         } else {
                             self.label(resolved_target)
                         };
-                        self.ectx.emit_branch(target_label);
+                        let is_redundant_fallthrough = if let Some(lin_idx) = linear_op_index {
+                            if self.has_edge_edits(lin_idx, 0) {
+                                false
+                            } else if let Some(LinearOp::Label(next_label)) =
+                                ir.ops.get(op_index + 1)
+                            {
+                                let resolved_next = self.resolve_forwarded_label(*next_label);
+                                resolved_target == resolved_next
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if !is_redundant_fallthrough {
+                            self.ectx.emit_branch(target_label);
+                        }
                     }
                     LinearOp::BranchIf { cond, target } => {
-                        let use_cmp_flags = match fused_cmpne_cond.take() {
-                            Some(expected) if expected == *cond => true,
-                            Some(expected) => panic!(
-                                "fused CmpNe expected branch on {:?}, got {:?}",
-                                expected, cond
-                            ),
+                        let use_cmp_flags = match fused_cmpne_cond {
+                            Some((expected_op_index, expected))
+                                if expected_op_index == op_index && expected == *cond =>
+                            {
+                                fused_cmpne_cond = None;
+                                true
+                            }
+                            Some((expected_op_index, expected))
+                                if expected_op_index == op_index =>
+                            {
+                                panic!(
+                                    "fused CmpNe expected branch on {:?}, got {:?}",
+                                    expected, cond
+                                )
+                            }
                             None => false,
+                            Some(_) => false,
                         };
                         let lin_idx = linear_op_index
                             .expect("BranchIf should have linear op index inside function");
@@ -2440,13 +2600,23 @@ fn compile_linear_ir_aarch64(
                         }
                     }
                     LinearOp::BranchIfZero { cond, target } => {
-                        let use_cmp_flags = match fused_cmpne_cond.take() {
-                            Some(expected) if expected == *cond => true,
-                            Some(expected) => panic!(
-                                "fused CmpNe expected branch on {:?}, got {:?}",
-                                expected, cond
-                            ),
+                        let use_cmp_flags = match fused_cmpne_cond {
+                            Some((expected_op_index, expected))
+                                if expected_op_index == op_index && expected == *cond =>
+                            {
+                                fused_cmpne_cond = None;
+                                true
+                            }
+                            Some((expected_op_index, expected))
+                                if expected_op_index == op_index =>
+                            {
+                                panic!(
+                                    "fused CmpNe expected branch on {:?}, got {:?}",
+                                    expected, cond
+                                )
+                            }
                             None => false,
+                            Some(_) => false,
                         };
                         let lin_idx = linear_op_index
                             .expect("BranchIfZero should have linear op index inside function");
@@ -2493,9 +2663,15 @@ fn compile_linear_ir_aarch64(
                         self.set_const(*dst, self.const_of(*src));
                     }
                     LinearOp::BinOp { op, dst, lhs, rhs } => {
-                        self.emit_binop(*op, *dst, *lhs, *rhs, !fuse_cmpne_to_next_branch);
-                        if fuse_cmpne_to_next_branch {
-                            fused_cmpne_cond = Some(*dst);
+                        self.emit_binop(
+                            *op,
+                            *dst,
+                            *lhs,
+                            *rhs,
+                            fuse_cmpne_to_branch_op_index.is_none(),
+                        );
+                        if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
+                            fused_cmpne_cond = Some((branch_op_index, *dst));
                         }
                     }
                     LinearOp::UnaryOp { op, dst, src } => self.emit_unary(*op, *dst, *src),
