@@ -857,7 +857,7 @@ fn compile_linear_ir_aarch64(
     use regalloc2::{Allocation, Edit, InstPosition, PReg, RegClass};
     use std::collections::HashMap;
 
-    use crate::arch::{EmitCtx, REGALLOC_BASE_FRAME};
+    use crate::arch::{BASE_FRAME, EmitCtx};
     use crate::ir::Width;
     use crate::linearize::{BinOpKind, LabelId, LinearOp, UnaryOpKind};
     use crate::recipe::{Op, Recipe};
@@ -915,18 +915,63 @@ fn compile_linear_ir_aarch64(
     }
 
     impl Lowerer {
+        fn regalloc_extra_saved_pairs(alloc: &crate::regalloc_engine::AllocatedProgram) -> u32 {
+            let mut max_pair = None::<u32>;
+            let mut observe = |a: Allocation| {
+                let Some(reg) = a.as_reg() else {
+                    return;
+                };
+                if reg.class() != RegClass::Int {
+                    return;
+                }
+                let enc = reg.hw_enc() as u32;
+                let pair = match enc {
+                    23 | 24 => Some(0),
+                    25 | 26 => Some(1),
+                    27 | 28 => Some(2),
+                    _ => None,
+                };
+                if let Some(pair) = pair {
+                    max_pair = Some(max_pair.map_or(pair, |cur| cur.max(pair)));
+                }
+            };
+
+            for func in &alloc.functions {
+                for inst_allocs in &func.inst_allocs {
+                    for &a in inst_allocs {
+                        observe(a);
+                    }
+                }
+                for (_, edit) in &func.edits {
+                    let Edit::Move { from, to } = edit;
+                    observe(*from);
+                    observe(*to);
+                }
+                for edge in &func.edge_edits {
+                    observe(edge.from);
+                    observe(edge.to);
+                }
+                for &a in &func.return_result_allocs {
+                    observe(a);
+                }
+            }
+
+            max_pair.map_or(0, |p| p + 1)
+        }
+
         fn new(
             ir: &LinearIr,
             max_spillslots: usize,
             alloc: &crate::regalloc_engine::AllocatedProgram,
         ) -> Self {
-            let slot_base = REGALLOC_BASE_FRAME;
+            let extra_saved_pairs = Self::regalloc_extra_saved_pairs(alloc);
+            let slot_base = BASE_FRAME + extra_saved_pairs * 16;
             let slot_bytes = ir.slot_count * 8;
             let spill_base = slot_base + slot_bytes;
             let spill_bytes = max_spillslots as u32 * 8;
             let extra_stack = slot_bytes + spill_bytes + 8;
 
-            let mut ectx = EmitCtx::new_regalloc(extra_stack);
+            let mut ectx = EmitCtx::new_regalloc(extra_stack, extra_saved_pairs);
             let labels: Vec<DynamicLabel> = (0..ir.label_count).map(|_| ectx.new_label()).collect();
 
             let mut lambda_max = 0usize;

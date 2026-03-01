@@ -248,8 +248,6 @@ fn machine_env() -> MachineEnv {
         preg_int(24),
         preg_int(25),
         preg_int(26),
-        preg_int(27),
-        preg_int(28),
         preg_int(11),
         preg_int(12),
         preg_int(13),

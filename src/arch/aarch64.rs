@@ -25,7 +25,7 @@ macro_rules! load_imm64 {
 
 /// Base frame size for legacy lowering: 3 pairs of callee-saved registers = 48 bytes.
 pub const BASE_FRAME: u32 = 48;
-/// Base frame size for regalloc-aware lowering: 6 pairs of callee-saved registers = 96 bytes.
+/// Maximum base frame size for regalloc-aware lowering when saving x23..x28.
 pub const REGALLOC_BASE_FRAME: u32 = 96;
 
 /// Emission context — wraps the assembler plus bookkeeping labels.
@@ -56,10 +56,14 @@ impl EmitCtx {
         Self::new_with_base(extra_stack, BASE_FRAME)
     }
 
-    /// Create an EmitCtx for regalloc-driven lowering that keeps extra
-    /// callee-saved registers available as allocatable GPRs.
-    pub fn new_regalloc(extra_stack: u32) -> Self {
-        Self::new_with_base(extra_stack, REGALLOC_BASE_FRAME)
+    /// Create an EmitCtx for regalloc-driven lowering that saves extra
+    /// callee-saved register pairs (x23..x28) as needed.
+    pub fn new_regalloc(extra_stack: u32, extra_saved_pairs: u32) -> Self {
+        assert!(
+            extra_saved_pairs <= 3,
+            "aarch64 regalloc supports at most 3 extra callee-saved pairs, got {extra_saved_pairs}"
+        );
+        Self::new_with_base(extra_stack, BASE_FRAME + extra_saved_pairs * 16)
     }
 
     fn new_with_base(extra_stack: u32, base_frame: u32) -> Self {
@@ -152,44 +156,39 @@ impl EmitCtx {
         // We emit the prologue with sub sp + stp instead of the pre-index form,
         // because frame_size is dynamic and dynasm doesn't support runtime
         // immediates in pre-index stp.
-        if self.base_frame == REGALLOC_BASE_FRAME {
-            dynasm!(self.ops
-                ; .arch aarch64
-                ; sub sp, sp, #frame_size
-                ; stp x29, x30, [sp]
-                ; stp x19, x20, [sp, #16]
-                ; stp x21, x22, [sp, #32]
-                ; stp x23, x24, [sp, #48]
-                ; stp x25, x26, [sp, #64]
-                ; stp x27, x28, [sp, #80]
-                ; add x29, sp, #0
-
-                // Save arguments to callee-saved registers
-                ; mov x21, x0              // x21 = out
-                ; mov x22, x1              // x22 = ctx
-
-                // Cache input cursor from ctx
-                ; ldr x19, [x22, #CTX_INPUT_PTR]  // x19 = ctx.input_ptr
-                ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
-            );
-        } else {
-            dynasm!(self.ops
-                ; .arch aarch64
-                ; sub sp, sp, #frame_size
-                ; stp x29, x30, [sp]
-                ; stp x19, x20, [sp, #16]
-                ; stp x21, x22, [sp, #32]
-                ; add x29, sp, #0
-
-                // Save arguments to callee-saved registers
-                ; mov x21, x0              // x21 = out
-                ; mov x22, x1              // x22 = ctx
-
-                // Cache input cursor from ctx
-                ; ldr x19, [x22, #CTX_INPUT_PTR]  // x19 = ctx.input_ptr
-                ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
-            );
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; sub sp, sp, #frame_size
+            ; stp x29, x30, [sp]
+            ; stp x19, x20, [sp, #16]
+            ; stp x21, x22, [sp, #32]
+        );
+        let extra_pairs = ((self.base_frame - BASE_FRAME) / 16) as usize;
+        assert!(
+            extra_pairs <= 3,
+            "unsupported extra callee-saved pair count"
+        );
+        if extra_pairs >= 1 {
+            dynasm!(self.ops ; .arch aarch64 ; stp x23, x24, [sp, #48]);
         }
+        if extra_pairs >= 2 {
+            dynasm!(self.ops ; .arch aarch64 ; stp x25, x26, [sp, #64]);
+        }
+        if extra_pairs >= 3 {
+            dynasm!(self.ops ; .arch aarch64 ; stp x27, x28, [sp, #80]);
+        }
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; add x29, sp, #0
+
+            // Save arguments to callee-saved registers
+            ; mov x21, x0              // x21 = out
+            ; mov x22, x1              // x22 = ctx
+
+            // Cache input cursor from ctx
+            ; ldr x19, [x22, #CTX_INPUT_PTR]  // x19 = ctx.input_ptr
+            ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
+        );
 
         self.error_exit = error_exit;
         (entry, error_exit)
@@ -201,51 +200,54 @@ impl EmitCtx {
     pub fn end_func(&mut self, error_exit: DynamicLabel) {
         let frame_size = self.frame_size;
 
-        if self.base_frame == REGALLOC_BASE_FRAME {
-            dynasm!(self.ops
-                ; .arch aarch64
-                // Success path: flush cursor, restore registers, return
-                ; str x19, [x22, #CTX_INPUT_PTR]
-                ; ldp x27, x28, [sp, #80]
-                ; ldp x25, x26, [sp, #64]
-                ; ldp x23, x24, [sp, #48]
-                ; ldp x21, x22, [sp, #32]
-                ; ldp x19, x20, [sp, #16]
-                ; ldp x29, x30, [sp]
-                ; add sp, sp, #frame_size
-                ; ret
+        let extra_pairs = ((self.base_frame - BASE_FRAME) / 16) as usize;
+        assert!(
+            extra_pairs <= 3,
+            "unsupported extra callee-saved pair count"
+        );
 
-                // Error exit: just restore and return (error is already in ctx.error)
-                ; =>error_exit
-                ; ldp x27, x28, [sp, #80]
-                ; ldp x25, x26, [sp, #64]
-                ; ldp x23, x24, [sp, #48]
-                ; ldp x21, x22, [sp, #32]
-                ; ldp x19, x20, [sp, #16]
-                ; ldp x29, x30, [sp]
-                ; add sp, sp, #frame_size
-                ; ret
-            );
-        } else {
-            dynasm!(self.ops
-                ; .arch aarch64
-                // Success path: flush cursor, restore registers, return
-                ; str x19, [x22, #CTX_INPUT_PTR]
-                ; ldp x21, x22, [sp, #32]
-                ; ldp x19, x20, [sp, #16]
-                ; ldp x29, x30, [sp]
-                ; add sp, sp, #frame_size
-                ; ret
-
-                // Error exit: just restore and return (error is already in ctx.error)
-                ; =>error_exit
-                ; ldp x21, x22, [sp, #32]
-                ; ldp x19, x20, [sp, #16]
-                ; ldp x29, x30, [sp]
-                ; add sp, sp, #frame_size
-                ; ret
-            );
+        dynasm!(self.ops
+            ; .arch aarch64
+            // Success path: flush cursor, restore registers, return
+            ; str x19, [x22, #CTX_INPUT_PTR]
+        );
+        if extra_pairs >= 3 {
+            dynasm!(self.ops ; .arch aarch64 ; ldp x27, x28, [sp, #80]);
         }
+        if extra_pairs >= 2 {
+            dynasm!(self.ops ; .arch aarch64 ; ldp x25, x26, [sp, #64]);
+        }
+        if extra_pairs >= 1 {
+            dynasm!(self.ops ; .arch aarch64 ; ldp x23, x24, [sp, #48]);
+        }
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldp x21, x22, [sp, #32]
+            ; ldp x19, x20, [sp, #16]
+            ; ldp x29, x30, [sp]
+            ; add sp, sp, #frame_size
+            ; ret
+
+            // Error exit: just restore and return (error is already in ctx.error)
+            ; =>error_exit
+        );
+        if extra_pairs >= 3 {
+            dynasm!(self.ops ; .arch aarch64 ; ldp x27, x28, [sp, #80]);
+        }
+        if extra_pairs >= 2 {
+            dynasm!(self.ops ; .arch aarch64 ; ldp x25, x26, [sp, #64]);
+        }
+        if extra_pairs >= 1 {
+            dynasm!(self.ops ; .arch aarch64 ; ldp x23, x24, [sp, #48]);
+        }
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; ldp x21, x22, [sp, #32]
+            ; ldp x19, x20, [sp, #16]
+            ; ldp x29, x30, [sp]
+            ; add sp, sp, #frame_size
+            ; ret
+        );
     }
 
     /// Emit a call to another emitted function.
