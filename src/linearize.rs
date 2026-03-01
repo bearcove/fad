@@ -834,8 +834,15 @@ pub fn linearize(func: &mut IrFunc) -> LinearIr {
     assign_vregs(func);
 
     // Pass 2: walk the RVSDG and emit linear ops.
+    let lambda_nodes = func.lambdas.clone();
     let mut lin = Linearizer::new(func);
-    lin.linearize_node(func.root);
+    for (i, node) in lambda_nodes.iter().enumerate() {
+        if i == 0 {
+            lin.linearize_node(func.root);
+        } else {
+            lin.linearize_node(*node);
+        }
+    }
 
     LinearIr {
         ops: lin.ops,

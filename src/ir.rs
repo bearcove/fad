@@ -644,6 +644,15 @@ impl IrFunc {
             _ => unreachable!("root node must be a lambda"),
         }
     }
+
+    /// Get the body region for a lambda by ID.
+    pub fn lambda_body(&self, id: LambdaId) -> RegionId {
+        let node = self.lambda_node(id);
+        match &self.nodes[node].kind {
+            NodeKind::Lambda { body, .. } => *body,
+            _ => unreachable!("lambda registry must point to lambda nodes"),
+        }
+    }
 }
 
 // ─── Builder API ────────────────────────────────────────────────────────────
@@ -705,7 +714,43 @@ impl IrBuilder {
 
     /// Get a [`RegionBuilder`] for the root lambda's body.
     pub fn root_region(&mut self) -> RegionBuilder<'_> {
-        let body = self.func.root_body();
+        self.lambda_region(LambdaId::new(0))
+    }
+
+    /// Create a new lambda and return its ID.
+    pub fn create_lambda(&mut self, shape: &'static facet::Shape) -> LambdaId {
+        let lambda_id = LambdaId::new(self.func.lambdas.len() as u32);
+        let body = self.func.regions.push(Region {
+            args: vec![
+                RegionArg {
+                    kind: PortKind::StateCursor,
+                    vreg: None,
+                },
+                RegionArg {
+                    kind: PortKind::StateOutput,
+                    vreg: None,
+                },
+            ],
+            results: Vec::new(),
+            nodes: Vec::new(),
+        });
+        let node = self.func.nodes.push(Node {
+            region: ROOT_REGION,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            kind: NodeKind::Lambda {
+                body,
+                shape,
+                lambda_id,
+            },
+        });
+        self.func.lambdas.push(node);
+        lambda_id
+    }
+
+    /// Get a [`RegionBuilder`] for a lambda's body.
+    pub fn lambda_region(&mut self, id: LambdaId) -> RegionBuilder<'_> {
+        let body = self.func.lambda_body(id);
         let cursor_state = PortSource::RegionArg(RegionArgRef {
             region: body,
             index: 0,
@@ -1386,6 +1431,68 @@ impl<'a> RegionBuilder<'a> {
             }));
         }
         data_outputs
+    }
+
+    /// Add an apply node (lambda call).
+    ///
+    /// `args`: data arguments to pass to the callee.
+    /// `result_count`: number of data results returned by the callee.
+    /// Cursor/output state are threaded automatically.
+    pub fn apply(
+        &mut self,
+        target: LambdaId,
+        args: &[PortSource],
+        result_count: usize,
+    ) -> Vec<PortSource> {
+        let mut inputs = Vec::with_capacity(args.len() + 2);
+        for &arg in args {
+            inputs.push(InputPort {
+                kind: PortKind::Data,
+                source: arg,
+            });
+        }
+        inputs.push(InputPort {
+            kind: PortKind::StateCursor,
+            source: self.cursor_state,
+        });
+        inputs.push(InputPort {
+            kind: PortKind::StateOutput,
+            source: self.output_state,
+        });
+
+        let mut outputs = Vec::with_capacity(result_count + 2);
+        for _ in 0..result_count {
+            outputs.push(self.data_output());
+        }
+        let cursor_out_idx = outputs.len() as u16;
+        outputs.push(Self::cursor_output());
+        let output_out_idx = outputs.len() as u16;
+        outputs.push(Self::output_output());
+
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs,
+            outputs,
+            kind: NodeKind::Apply { target },
+        });
+
+        self.cursor_state = PortSource::Node(OutputRef {
+            node,
+            index: cursor_out_idx,
+        });
+        self.output_state = PortSource::Node(OutputRef {
+            node,
+            index: output_out_idx,
+        });
+
+        (0..result_count)
+            .map(|i| {
+                PortSource::Node(OutputRef {
+                    node,
+                    index: i as u16,
+                })
+            })
+            .collect()
     }
 
     /// Set the region's results. Call at the end of building a region.

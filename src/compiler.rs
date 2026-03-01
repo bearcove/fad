@@ -11,7 +11,7 @@ use crate::format::{
     Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, FieldLowerInfo, IrDecoder, SkippedFieldInfo,
     VariantEmitInfo, VariantEncodeInfo, VariantKind, VariantLowerInfo,
 };
-use crate::ir::{RegionBuilder, Width as IrWidth};
+use crate::ir::{LambdaId, RegionBuilder, Width as IrWidth};
 use crate::malum::StringOffsets;
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
@@ -1583,145 +1583,308 @@ fn lower_variants_for_ir(
         .collect()
 }
 
-fn lower_shape_via_ir<F: IrDecoder + ?Sized>(
-    decoder: &F,
-    rb: &mut RegionBuilder<'_>,
-    shape: &'static Shape,
-    base_offset: usize,
-) {
+fn ir_shape_needs_lambda(shape: &'static Shape) -> bool {
     if is_unit(shape) {
+        return false;
+    }
+
+    if shape.is_transparent() || get_option_def(shape).is_some() {
+        return true;
+    }
+
+    if matches!(&shape.def, Def::List(_) | Def::Map(_) | Def::Array(_)) {
+        return true;
+    }
+
+    if get_pointer_def(shape).is_some() {
+        return true;
+    }
+
+    matches!(
+        &shape.ty,
+        Type::User(UserType::Struct(_) | UserType::Enum(_))
+    )
+}
+
+fn collect_ir_lambda_shapes(
+    shape: &'static Shape,
+    seen: &mut std::collections::HashSet<*const Shape>,
+    out: &mut Vec<&'static Shape>,
+) {
+    if !ir_shape_needs_lambda(shape) {
         return;
     }
 
+    let key = shape as *const Shape;
+    if !seen.insert(key) {
+        return;
+    }
+    out.push(shape);
+
     if shape.is_transparent() {
-        let (fields, skipped) = lower_fields_for_ir(shape, base_offset);
-        if !skipped.is_empty() {
-            panic!(
-                "IR path does not support transparent wrappers with skipped/defaulted fields: {}",
-                shape.type_identifier
-            );
+        let (fields, _) = collect_fields(shape);
+        for field in &fields {
+            collect_ir_lambda_shapes(field.shape, seen, out);
         }
-        if fields.len() != 1 {
-            panic!(
-                "transparent wrapper must lower to exactly one field: {}",
-                shape.type_identifier
-            );
-        }
-        lower_shape_via_ir(decoder, rb, fields[0].shape, fields[0].offset);
         return;
     }
 
     if let Some(opt_def) = get_option_def(shape) {
-        let init_none_fn = opt_def.vtable.init_none as *const u8;
-        let init_some_fn = opt_def.vtable.init_some as *const u8;
-        let inner_layout = opt_def
-            .t
-            .layout
-            .sized_layout()
-            .expect("Option inner type must be Sized");
-        let bytes = inner_layout.size().max(1);
-        let slots = bytes.div_ceil(8);
-        let scratch_slot = rb.alloc_slot();
-        for _ in 1..slots {
-            let _ = rb.alloc_slot();
-        }
-        decoder.lower_option(
-            rb,
-            base_offset,
-            init_none_fn,
-            init_some_fn,
-            scratch_slot,
-            &mut |inner_rb| {
-                lower_shape_via_ir(decoder, inner_rb, opt_def.t, 0);
-            },
-        );
+        collect_ir_lambda_shapes(opt_def.t, seen, out);
         return;
     }
 
-    if get_pointer_def(shape).is_some() {
-        panic!(
-            "IR path does not support pointer lowering yet: {}",
-            shape.type_identifier
-        );
-    }
-
-    if let Def::List(list_def) = &shape.def {
-        let vec_offsets = crate::malum::discover_vec_offsets(list_def, shape);
-
-        decoder.lower_vec(rb, base_offset, list_def.t, &vec_offsets, &mut |inner_rb| {
-            lower_shape_via_ir(decoder, inner_rb, list_def.t, 0);
-        });
-        return;
-    }
-
-    if let Def::Map(map_def) = &shape.def {
-        let _ = (rb, map_def, base_offset);
-        panic!(
-            "IR path does not support Map lowering yet: {}",
-            shape.type_identifier
-        );
-    }
-
-    if let Def::Array(array_def) = &shape.def {
-        let elem_layout = array_def
-            .t
-            .layout
-            .sized_layout()
-            .expect("array element must be Sized");
-        let stride = elem_layout.size();
-        for i in 0..array_def.n {
-            lower_shape_via_ir(decoder, rb, array_def.t, base_offset + i * stride);
+    if let Some(ptr_def) = get_pointer_def(shape) {
+        if let Some(pointee) = ptr_def.pointee {
+            collect_ir_lambda_shapes(pointee, seen, out);
         }
         return;
+    }
+
+    match &shape.def {
+        Def::List(list_def) => {
+            collect_ir_lambda_shapes(list_def.t, seen, out);
+            return;
+        }
+        Def::Map(map_def) => {
+            collect_ir_lambda_shapes(map_def.k, seen, out);
+            collect_ir_lambda_shapes(map_def.v, seen, out);
+            return;
+        }
+        Def::Array(array_def) => {
+            collect_ir_lambda_shapes(array_def.t, seen, out);
+            return;
+        }
+        _ => {}
     }
 
     match &shape.ty {
-        Type::User(UserType::Struct(st)) => {
-            let (fields, skipped) = lower_fields_for_ir(shape, base_offset);
-            if !skipped.is_empty() {
-                panic!(
-                    "IR path does not support skipped/defaulted fields yet: {}",
-                    shape.type_identifier
-                );
-            }
-            let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
-            let is_positional = matches!(st.kind, StructKind::Tuple | StructKind::TupleStruct);
-            if is_positional {
-                decoder.lower_positional_fields(rb, &fields, &mut |inner_rb, field| {
-                    lower_shape_via_ir(decoder, inner_rb, field.shape, field.offset);
-                });
-            } else {
-                decoder.lower_struct_fields(
-                    rb,
-                    &fields,
-                    deny_unknown_fields,
-                    &mut |inner_rb, field| {
-                        lower_shape_via_ir(decoder, inner_rb, field.shape, field.offset);
-                    },
-                );
+        Type::User(UserType::Struct(_)) => {
+            let (fields, _) = collect_fields(shape);
+            for field in &fields {
+                collect_ir_lambda_shapes(field.shape, seen, out);
             }
         }
         Type::User(UserType::Enum(enum_type)) => {
-            let disc_size = discriminant_size(enum_type.enum_repr);
-            let disc_width = ir_width_from_disc_size(disc_size);
-            let variants = lower_variants_for_ir(enum_type, base_offset);
-            decoder.lower_enum(rb, &variants, &mut |inner_rb, variant| {
-                let disc = inner_rb.const_val(variant.rust_discriminant as u64);
-                inner_rb.write_to_field(disc, base_offset as u32, disc_width);
+            let variants = collect_variants(enum_type);
+            for variant in &variants {
                 for field in &variant.fields {
-                    lower_shape_via_ir(decoder, inner_rb, field.shape, field.offset);
+                    collect_ir_lambda_shapes(field.shape, seen, out);
                 }
-            });
+            }
         }
-        _ => match shape.scalar_type() {
+        _ => {}
+    }
+}
+
+struct IrShapeLowerer<'a> {
+    decoder: &'a dyn IrDecoder,
+    lambda_by_shape: HashMap<*const Shape, LambdaId>,
+}
+
+impl<'a> IrShapeLowerer<'a> {
+    fn new(decoder: &'a dyn IrDecoder, lambda_by_shape: HashMap<*const Shape, LambdaId>) -> Self {
+        Self {
+            decoder,
+            lambda_by_shape,
+        }
+    }
+
+    fn lambda_for_shape(&self, shape: &'static Shape) -> LambdaId {
+        *self
+            .lambda_by_shape
+            .get(&(shape as *const Shape))
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing lambda for composite shape in IR lowering: {}",
+                    shape.type_identifier
+                )
+            })
+    }
+
+    fn emit_apply_with_offset(
+        &self,
+        rb: &mut RegionBuilder<'_>,
+        shape: &'static Shape,
+        offset: usize,
+    ) {
+        let lambda = self.lambda_for_shape(shape);
+        if offset == 0 {
+            let _ = rb.apply(lambda, &[], 0);
+            return;
+        }
+
+        let saved_out = rb.save_out_ptr();
+        let off = rb.const_val(offset as u64);
+        let adjusted_out = rb.binop(crate::ir::IrOp::Add, saved_out, off);
+        rb.set_out_ptr(adjusted_out);
+        let _ = rb.apply(lambda, &[], 0);
+        rb.set_out_ptr(saved_out);
+    }
+
+    fn lower_value(&self, rb: &mut RegionBuilder<'_>, shape: &'static Shape, offset: usize) {
+        if is_unit(shape) {
+            return;
+        }
+
+        if ir_shape_needs_lambda(shape) {
+            self.emit_apply_with_offset(rb, shape, offset);
+            return;
+        }
+
+        match shape.scalar_type() {
             Some(st) if is_string_like_scalar(st) => {
-                decoder.lower_read_string(rb, base_offset, st);
+                self.decoder.lower_read_string(rb, offset, st);
             }
             Some(st) => {
-                decoder.lower_read_scalar(rb, base_offset, st);
+                self.decoder.lower_read_scalar(rb, offset, st);
             }
             None => panic!("unsupported IR-lowered shape: {}", shape.type_identifier),
-        },
+        }
+    }
+
+    fn lower_shape_body(
+        &self,
+        rb: &mut RegionBuilder<'_>,
+        shape: &'static Shape,
+        base_offset: usize,
+    ) {
+        if is_unit(shape) {
+            return;
+        }
+
+        if shape.is_transparent() {
+            let (fields, skipped) = lower_fields_for_ir(shape, base_offset);
+            if !skipped.is_empty() {
+                panic!(
+                    "IR path does not support transparent wrappers with skipped/defaulted fields: {}",
+                    shape.type_identifier
+                );
+            }
+            if fields.len() != 1 {
+                panic!(
+                    "transparent wrapper must lower to exactly one field: {}",
+                    shape.type_identifier
+                );
+            }
+            self.lower_value(rb, fields[0].shape, fields[0].offset);
+            return;
+        }
+
+        if let Some(opt_def) = get_option_def(shape) {
+            let init_none_fn = opt_def.vtable.init_none as *const u8;
+            let init_some_fn = opt_def.vtable.init_some as *const u8;
+            let inner_layout = opt_def
+                .t
+                .layout
+                .sized_layout()
+                .expect("Option inner type must be Sized");
+            let bytes = inner_layout.size().max(1);
+            let slots = bytes.div_ceil(8);
+            let scratch_slot = rb.alloc_slot();
+            for _ in 1..slots {
+                let _ = rb.alloc_slot();
+            }
+            self.decoder.lower_option(
+                rb,
+                base_offset,
+                init_none_fn,
+                init_some_fn,
+                scratch_slot,
+                &mut |inner_rb| {
+                    self.lower_value(inner_rb, opt_def.t, 0);
+                },
+            );
+            return;
+        }
+
+        if get_pointer_def(shape).is_some() {
+            panic!(
+                "IR path does not support pointer lowering yet: {}",
+                shape.type_identifier
+            );
+        }
+
+        if let Def::List(list_def) = &shape.def {
+            let vec_offsets = crate::malum::discover_vec_offsets(list_def, shape);
+            self.decoder
+                .lower_vec(rb, base_offset, list_def.t, &vec_offsets, &mut |inner_rb| {
+                    self.lower_value(inner_rb, list_def.t, 0);
+                });
+            return;
+        }
+
+        if let Def::Map(map_def) = &shape.def {
+            let _ = (rb, map_def, base_offset);
+            panic!(
+                "IR path does not support Map lowering yet: {}",
+                shape.type_identifier
+            );
+        }
+
+        if let Def::Array(array_def) = &shape.def {
+            let elem_layout = array_def
+                .t
+                .layout
+                .sized_layout()
+                .expect("array element must be Sized");
+            let stride = elem_layout.size();
+            for i in 0..array_def.n {
+                self.lower_value(rb, array_def.t, base_offset + i * stride);
+            }
+            return;
+        }
+
+        match &shape.ty {
+            Type::User(UserType::Struct(st)) => {
+                let (fields, skipped) = lower_fields_for_ir(shape, base_offset);
+                if !skipped.is_empty() {
+                    panic!(
+                        "IR path does not support skipped/defaulted fields yet: {}",
+                        shape.type_identifier
+                    );
+                }
+                let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
+                let is_positional = matches!(st.kind, StructKind::Tuple | StructKind::TupleStruct);
+                if is_positional {
+                    self.decoder
+                        .lower_positional_fields(rb, &fields, &mut |inner_rb, field| {
+                            self.lower_value(inner_rb, field.shape, field.offset);
+                        });
+                } else {
+                    self.decoder.lower_struct_fields(
+                        rb,
+                        &fields,
+                        deny_unknown_fields,
+                        &mut |inner_rb, field| {
+                            self.lower_value(inner_rb, field.shape, field.offset);
+                        },
+                    );
+                }
+            }
+            Type::User(UserType::Enum(enum_type)) => {
+                let disc_size = discriminant_size(enum_type.enum_repr);
+                let disc_width = ir_width_from_disc_size(disc_size);
+                let variants = lower_variants_for_ir(enum_type, base_offset);
+                self.decoder
+                    .lower_enum(rb, &variants, &mut |inner_rb, variant| {
+                        let disc = inner_rb.const_val(variant.rust_discriminant as u64);
+                        inner_rb.write_to_field(disc, base_offset as u32, disc_width);
+                        for field in &variant.fields {
+                            self.lower_value(inner_rb, field.shape, field.offset);
+                        }
+                    });
+            }
+            _ => match shape.scalar_type() {
+                Some(st) if is_string_like_scalar(st) => {
+                    self.decoder.lower_read_string(rb, base_offset, st);
+                }
+                Some(st) => {
+                    self.decoder.lower_read_scalar(rb, base_offset, st);
+                }
+                None => panic!("unsupported IR-lowered shape: {}", shape.type_identifier),
+            },
+        }
     }
 }
 
@@ -1742,16 +1905,46 @@ pub fn compile_decoder_via_ir_dyn(
     decoder: &dyn Decoder,
     ir_decoder: &dyn IrDecoder,
 ) -> CompiledDecoder {
+    let mut func = build_decoder_ir(shape, ir_decoder);
+    let linear = crate::linearize::linearize(&mut func);
+    compile_linear_ir_decoder(&linear, decoder.supports_trusted_utf8_input())
+}
+
+pub(crate) fn build_decoder_ir(
+    shape: &'static Shape,
+    ir_decoder: &dyn IrDecoder,
+) -> crate::ir::IrFunc {
     let mut builder = crate::ir::IrBuilder::new(shape);
+    let mut lambda_shapes = Vec::new();
+    collect_ir_lambda_shapes(
+        shape,
+        &mut std::collections::HashSet::new(),
+        &mut lambda_shapes,
+    );
+
+    let mut lambda_by_shape = HashMap::new();
+    lambda_by_shape.insert(shape as *const Shape, LambdaId::new(0));
+    for lambda_shape in lambda_shapes.iter().copied().skip(1) {
+        let lambda = builder.create_lambda(lambda_shape);
+        lambda_by_shape.insert(lambda_shape as *const Shape, lambda);
+    }
+
+    let ir_lowerer = IrShapeLowerer::new(ir_decoder, lambda_by_shape);
+
     {
         let mut rb = builder.root_region();
-        lower_shape_via_ir(ir_decoder, &mut rb, shape, 0);
+        ir_lowerer.lower_shape_body(&mut rb, shape, 0);
         rb.set_results(&[]);
     }
 
-    let mut func = builder.finish();
-    let linear = crate::linearize::linearize(&mut func);
-    compile_linear_ir_decoder(&linear, decoder.supports_trusted_utf8_input())
+    for lambda_shape in lambda_shapes.iter().copied().skip(1) {
+        let lambda_id = ir_lowerer.lambda_for_shape(lambda_shape);
+        let mut rb = builder.lambda_region(lambda_id);
+        ir_lowerer.lower_shape_body(&mut rb, lambda_shape, 0);
+        rb.set_results(&[]);
+    }
+
+    builder.finish()
 }
 
 /// Compile a deserializer from already-linearized IR.

@@ -244,6 +244,75 @@ mod tests {
     }
 
     #[test]
+    fn postcard_nested_struct_ir_uses_apply_nodes() {
+        #[derive(Facet)]
+        struct Inner {
+            x: u32,
+        }
+
+        #[derive(Facet)]
+        struct Outer {
+            inner: Inner,
+            y: u32,
+        }
+
+        let func = crate::compiler::build_decoder_ir(Outer::SHAPE, &postcard::FadPostcard);
+        assert!(
+            func.lambdas.len() >= 2,
+            "expected at least root + nested lambda"
+        );
+        let apply_count = func
+            .nodes
+            .iter()
+            .filter(|(_, n)| matches!(&n.kind, crate::ir::NodeKind::Apply { .. }))
+            .count();
+        assert!(
+            apply_count >= 1,
+            "expected at least one apply node for nested shape"
+        );
+    }
+
+    #[test]
+    fn postcard_nested_struct_via_ir() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Inner {
+            x: u32,
+        }
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct Outer {
+            inner: Inner,
+            y: u32,
+        }
+
+        #[derive(serde::Serialize)]
+        struct InnerSerde {
+            x: u32,
+        }
+
+        #[derive(serde::Serialize)]
+        struct OuterSerde {
+            inner: InnerSerde,
+            y: u32,
+        }
+
+        let source = OuterSerde {
+            inner: InnerSerde { x: 7 },
+            y: 99,
+        };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_decoder_via_ir(Outer::SHAPE, &postcard::FadPostcard);
+        let result: Outer = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(
+            result,
+            Outer {
+                inner: Inner { x: 7 },
+                y: 99,
+            }
+        );
+    }
+
+    #[test]
     fn postcard_legacy_and_ir_match() {
         let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
         let legacy = compile_decoder_legacy(Friend::SHAPE, &postcard::FadPostcard);

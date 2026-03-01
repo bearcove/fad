@@ -658,8 +658,20 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
                         panic!("unsupported SIMD op in linear backend adapter");
                     }
 
-                    LinearOp::CallLambda { .. } => {
-                        panic!("unsupported CallLambda in linear backend adapter");
+                    LinearOp::CallLambda {
+                        target,
+                        args,
+                        results,
+                    } => {
+                        if !args.is_empty() || !results.is_empty() {
+                            panic!(
+                                "CallLambda with data args/results is not supported yet: args={}, results={}",
+                                args.len(),
+                                results.len()
+                            );
+                        }
+                        let label = self.lambda_labels[target.index() as usize];
+                        self.ectx.emit_call_emitted_func(label, 0);
                     }
                 }
             }
@@ -1297,8 +1309,20 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         panic!("unsupported SIMD op in linear backend adapter");
                     }
 
-                    LinearOp::CallLambda { .. } => {
-                        panic!("unsupported CallLambda in linear backend adapter");
+                    LinearOp::CallLambda {
+                        target,
+                        args,
+                        results,
+                    } => {
+                        if !args.is_empty() || !results.is_empty() {
+                            panic!(
+                                "CallLambda with data args/results is not supported yet: args={}, results={}",
+                                args.len(),
+                                results.len()
+                            );
+                        }
+                        let label = self.lambda_labels[target.index() as usize];
+                        self.ectx.emit_call_emitted_func(label, 0);
                     }
                 }
             }
