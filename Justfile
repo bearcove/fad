@@ -6,19 +6,19 @@ list:
 
 # Build the x86_64 Docker test image
 docker-build:
-    docker build --platform {{docker_platform}} -t {{image_name}} .
+    docker build --platform {{ docker_platform }} -t {{ image_name }} .
 
 # Run tests in x86_64 Docker container
 docker-test: docker-build
-    docker run --platform {{docker_platform}} --rm -v {{justfile_directory()}}:/workspace -w /workspace {{image_name}} cargo nextest run
+    docker run --platform {{ docker_platform }} --rm -v {{ justfile_directory() }}:/workspace -w /workspace {{ image_name }} cargo nextest run
 
 # Run a shell in the x86_64 Docker container
 docker-shell: docker-build
-    docker run --platform {{docker_platform}} --rm -it -v {{justfile_directory()}}:/workspace -w /workspace {{image_name}} bash
+    docker run --platform {{ docker_platform }} --rm -it -v {{ justfile_directory() }}:/workspace -w /workspace {{ image_name }} bash
 
 # Run benchmarks in x86_64 Docker container
 docker-bench: docker-build
-    docker run --platform {{docker_platform}} --rm -v {{justfile_directory()}}:/workspace -w /workspace {{image_name}} cargo bench
+    docker run --platform {{ docker_platform }} --rm -v {{ justfile_directory() }}:/workspace -w /workspace {{ image_name }} cargo bench
 
 # Run tests natively
 test:
@@ -30,18 +30,18 @@ snapshots-native:
 
 # Refresh disassembly snapshots for x86_64 via Docker
 snapshots-x86_64: docker-build
-    docker run --platform {{docker_platform}} --rm -v {{justfile_directory()}}:/workspace -w /workspace {{image_name}} cargo insta test --accept --test-runner nextest -- disasm_
+    docker run --platform {{ docker_platform }} --rm -v {{ justfile_directory() }}:/workspace -w /workspace {{ image_name }} cargo insta test --accept --test-runner nextest -- disasm_
 
 # Refresh disassembly snapshots for both supported architectures
 snapshots-all: snapshots-native snapshots-x86_64
 
 # Run benchmarks natively
-bench:
-    cargo bench
+bench *args:
+    cargo bench {{ args }}
 
 # Run all benchmarks and generate bench_report/index.html
-bench-report:
-    cargo bench 2>/dev/null | cargo run --example bench_report
+bench-report *args:
+    cargo bench {{ args }} 2>/dev/null | cargo run --example bench_report
 
 # Check + clippy
 check:
