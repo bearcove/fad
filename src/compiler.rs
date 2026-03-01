@@ -1957,9 +1957,14 @@ pub fn compile_linear_ir_decoder(
 ) -> CompiledDecoder {
     // r[impl ir.regalloc.ra-mir]
     // Build allocator-oriented CFG IR before machine emission.
-    // The current backend still emits directly from LinearIr; regalloc integration
-    // will consume this in a follow-up step.
-    let _ra_mir = crate::regalloc_mir::lower_linear_ir(ir);
+    let ra_mir = crate::regalloc_mir::lower_linear_ir(ir);
+
+    // r[impl ir.regalloc.engine]
+    // Optional: run regalloc2 over RA-MIR for integration validation.
+    if std::env::var_os("FAD_REGALLOC2_VALIDATE").is_some() {
+        let _alloc = crate::regalloc_engine::allocate_program(&ra_mir)
+            .unwrap_or_else(|err| panic!("regalloc2 allocation failed: {err}"));
+    }
 
     let crate::ir_backend::LinearBackendResult { buf, entry } =
         crate::ir_backend::compile_linear_ir(ir);
