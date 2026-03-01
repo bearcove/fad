@@ -1680,7 +1680,7 @@ mod tests {
             index: 1,
         });
 
-        {
+        let (read_node, after_check_cs) = {
             let mut rb = builder.root_region();
 
             // Check initial state.
@@ -1698,14 +1698,11 @@ mod tests {
             let after_read_cs = rb.cursor_state();
             assert_ne!(after_read_cs, after_check_cs);
 
-            // Verify the read_bytes node's cursor input is the bounds_check output.
-            if let PortSource::Node(OutputRef { node: read_node, .. }) = data {
-                let read_input = &builder.func.nodes[read_node].inputs[0];
-                assert_eq!(read_input.kind, PortKind::StateCursor);
-                assert_eq!(read_input.source, after_check_cs);
-            } else {
-                panic!("expected Node source");
-            }
+            // Save the read node ID for inspection after the builder is dropped.
+            let read_node = match data {
+                PortSource::Node(OutputRef { node, .. }) => node,
+                _ => panic!("expected Node source"),
+            };
 
             // write_to_field
             rb.write_to_field(data, 0, Width::W4);
@@ -1713,9 +1710,16 @@ mod tests {
             assert_ne!(rb.output_state(), initial_os); // output updated
 
             rb.set_results(&[]);
-        }
+            (read_node, after_check_cs)
+        };
 
         let func = builder.finish();
+
+        // Verify the read_bytes node's cursor input is the bounds_check output.
+        let read_input = &func.nodes[read_node].inputs[0];
+        assert_eq!(read_input.kind, PortKind::StateCursor);
+        assert_eq!(read_input.source, after_check_cs);
+
         // 3 nodes in the root region.
         assert_eq!(func.regions[func.root_body()].nodes.len(), 3);
     }

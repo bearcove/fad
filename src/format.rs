@@ -313,6 +313,85 @@ pub trait Decoder {
 }
 
 // =============================================================================
+// IR decoder — RVSDG lowering (coexists with Decoder during migration)
+// =============================================================================
+
+use crate::ir::RegionBuilder;
+
+/// Information about a struct field needed during IR lowering.
+///
+/// IR-side equivalent of [`FieldEmitInfo`]. No function pointers — defaults
+/// are represented as IR nodes rather than raw trampolines.
+pub struct FieldLowerInfo {
+    /// Byte offset of this field within the output struct.
+    pub offset: usize,
+    /// The facet shape of this field.
+    pub shape: &'static facet::Shape,
+    /// The field name (for formats that use named fields).
+    pub name: &'static str,
+    /// Index of this field for required-field bitset tracking.
+    pub required_index: usize,
+    /// Whether this field has a default value (details resolved during lowering).
+    pub has_default: bool,
+}
+
+// r[impl ir.format-trait]
+// r[impl ir.format-trait.stateless]
+
+/// A wire format that knows how to lower deserialization logic into RVSDG nodes.
+///
+/// This trait coexists with [`Decoder`] during the migration period. Formats
+/// implement `IrDecoder` to produce IR instead of machine code. The compiler
+/// will eventually have a `compile_decoder_via_ir()` path that uses this trait,
+/// and once all formats are migrated and benchmarked, `Decoder` is removed.
+///
+/// Implementations are stateless at JIT-compile time: they produce IR nodes
+/// but hold no mutable state between calls. Runtime state lives in the
+/// `format_state` pointer inside `DeserContext`.
+pub trait IrDecoder {
+    // r[impl ir.format-trait.lower]
+
+    /// Lower struct field iteration into RVSDG nodes.
+    ///
+    /// The format controls field ordering. Positional formats (postcard)
+    /// emit sequential reads. Keyed formats (JSON) emit a theta node
+    /// containing key dispatch.
+    ///
+    /// `lower_field` is called for each field — the format decides traversal
+    /// order but the compiler decides how to lower each field's value.
+    fn lower_struct_fields(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        fields: &[FieldLowerInfo],
+        deny_unknown_fields: bool,
+        lower_field: &mut dyn FnMut(&mut RegionBuilder<'_>, &FieldLowerInfo),
+    );
+
+    /// Lower a scalar read into RVSDG nodes.
+    ///
+    /// Produces nodes that read a scalar value from the input and write it
+    /// to `out + offset`. The format determines the wire encoding (varint,
+    /// fixed-width, text number, etc.).
+    fn lower_read_scalar(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        offset: usize,
+        scalar_type: ScalarType,
+    );
+
+    /// Lower a string read into RVSDG nodes.
+    ///
+    /// Produces nodes that read a string from the input, allocate it, and
+    /// write it to `out + offset`.
+    fn lower_read_string(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        offset: usize,
+        scalar_type: ScalarType,
+    );
+}
+
+// =============================================================================
 // Encoder — serialization direction
 // =============================================================================
 
