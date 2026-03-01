@@ -4,7 +4,7 @@
 //! topologically sorts each region's nodes, and emits a flat `Vec<LinearOp>`
 //! with explicit labels and branches for control flow (gamma/theta).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use crate::context::ErrorCode;
@@ -771,6 +771,381 @@ impl<'a> Linearizer<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct LinearBlock {
+    start: usize,
+    end: usize,
+    succs: Vec<usize>,
+}
+
+fn is_block_terminator(op: &LinearOp) -> bool {
+    matches!(
+        op,
+        LinearOp::Branch(_)
+            | LinearOp::BranchIf { .. }
+            | LinearOp::BranchIfZero { .. }
+            | LinearOp::JumpTable { .. }
+            | LinearOp::ErrorExit { .. }
+            | LinearOp::FuncEnd
+    )
+}
+
+fn op_uses(op: &LinearOp, func_end_uses: Option<&[VReg]>) -> Vec<VReg> {
+    match op {
+        LinearOp::BinOp { lhs, rhs, .. } => vec![*lhs, *rhs],
+        LinearOp::UnaryOp { src, .. } => vec![*src],
+        LinearOp::Copy { src, .. } => vec![*src],
+        LinearOp::AdvanceCursorBy { src } => vec![*src],
+        LinearOp::RestoreCursor { src } => vec![*src],
+        LinearOp::WriteToField { src, .. } => vec![*src],
+        LinearOp::SetOutPtr { src } => vec![*src],
+        LinearOp::WriteToSlot { src, .. } => vec![*src],
+        LinearOp::CallIntrinsic { args, .. } => args.clone(),
+        LinearOp::CallPure { args, .. } => args.clone(),
+        LinearOp::BranchIf { cond, .. } => vec![*cond],
+        LinearOp::BranchIfZero { cond, .. } => vec![*cond],
+        LinearOp::JumpTable { predicate, .. } => vec![*predicate],
+        LinearOp::SimdStringScan { pos, kind } => vec![*pos, *kind],
+        LinearOp::CallLambda { args, .. } => args.clone(),
+        LinearOp::FuncEnd => func_end_uses.unwrap_or_default().to_vec(),
+        LinearOp::Const { .. }
+        | LinearOp::BoundsCheck { .. }
+        | LinearOp::ReadBytes { .. }
+        | LinearOp::PeekByte { .. }
+        | LinearOp::AdvanceCursor { .. }
+        | LinearOp::SaveCursor { .. }
+        | LinearOp::ReadFromField { .. }
+        | LinearOp::SaveOutPtr { .. }
+        | LinearOp::SlotAddr { .. }
+        | LinearOp::ReadFromSlot { .. }
+        | LinearOp::Label(_)
+        | LinearOp::Branch(_)
+        | LinearOp::ErrorExit { .. }
+        | LinearOp::SimdWhitespaceSkip
+        | LinearOp::FuncStart { .. } => Vec::new(),
+    }
+}
+
+fn op_defs(op: &LinearOp) -> Vec<VReg> {
+    match op {
+        LinearOp::Const { dst, .. } => vec![*dst],
+        LinearOp::BinOp { dst, .. } => vec![*dst],
+        LinearOp::UnaryOp { dst, .. } => vec![*dst],
+        LinearOp::Copy { dst, .. } => vec![*dst],
+        LinearOp::ReadBytes { dst, .. } => vec![*dst],
+        LinearOp::PeekByte { dst } => vec![*dst],
+        LinearOp::SaveCursor { dst } => vec![*dst],
+        LinearOp::ReadFromField { dst, .. } => vec![*dst],
+        LinearOp::SaveOutPtr { dst } => vec![*dst],
+        LinearOp::SlotAddr { dst, .. } => vec![*dst],
+        LinearOp::ReadFromSlot { dst, .. } => vec![*dst],
+        LinearOp::CallIntrinsic { dst, .. } => dst.iter().copied().collect(),
+        LinearOp::CallPure { dst, .. } => vec![*dst],
+        LinearOp::SimdStringScan { pos, kind } => vec![*pos, *kind],
+        LinearOp::FuncStart { data_args, .. } => data_args.clone(),
+        LinearOp::CallLambda { results, .. } => results.clone(),
+        LinearOp::BoundsCheck { .. }
+        | LinearOp::AdvanceCursor { .. }
+        | LinearOp::AdvanceCursorBy { .. }
+        | LinearOp::RestoreCursor { .. }
+        | LinearOp::WriteToField { .. }
+        | LinearOp::SetOutPtr { .. }
+        | LinearOp::WriteToSlot { .. }
+        | LinearOp::Label(_)
+        | LinearOp::Branch(_)
+        | LinearOp::BranchIf { .. }
+        | LinearOp::BranchIfZero { .. }
+        | LinearOp::JumpTable { .. }
+        | LinearOp::ErrorExit { .. }
+        | LinearOp::SimdWhitespaceSkip
+        | LinearOp::FuncEnd => Vec::new(),
+    }
+}
+
+fn collect_func_end_uses(ops: &[LinearOp]) -> HashMap<usize, Vec<VReg>> {
+    let mut out = HashMap::new();
+    let mut current_results: Option<Vec<VReg>> = None;
+    for (i, op) in ops.iter().enumerate() {
+        match op {
+            LinearOp::FuncStart { data_results, .. } => {
+                current_results = Some(data_results.clone());
+            }
+            LinearOp::FuncEnd => {
+                out.insert(i, current_results.clone().unwrap_or_default());
+                current_results = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn rewrite_op_uses(op: &mut LinearOp, mut resolve: impl FnMut(VReg) -> VReg) {
+    let rewrite = |v: &mut VReg, resolve: &mut dyn FnMut(VReg) -> VReg| {
+        *v = resolve(*v);
+    };
+    match op {
+        LinearOp::BinOp { lhs, rhs, .. } => {
+            rewrite(lhs, &mut resolve);
+            rewrite(rhs, &mut resolve);
+        }
+        LinearOp::UnaryOp { src, .. } => rewrite(src, &mut resolve),
+        LinearOp::Copy { src, .. } => rewrite(src, &mut resolve),
+        LinearOp::AdvanceCursorBy { src } => rewrite(src, &mut resolve),
+        LinearOp::RestoreCursor { src } => rewrite(src, &mut resolve),
+        LinearOp::WriteToField { src, .. } => rewrite(src, &mut resolve),
+        LinearOp::SetOutPtr { src } => rewrite(src, &mut resolve),
+        LinearOp::WriteToSlot { src, .. } => rewrite(src, &mut resolve),
+        LinearOp::CallIntrinsic { args, .. }
+        | LinearOp::CallPure { args, .. }
+        | LinearOp::CallLambda { args, .. } => {
+            for arg in args {
+                rewrite(arg, &mut resolve);
+            }
+        }
+        LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. } => {
+            rewrite(cond, &mut resolve);
+        }
+        LinearOp::JumpTable { predicate, .. } => rewrite(predicate, &mut resolve),
+        LinearOp::SimdStringScan { pos, kind } => {
+            rewrite(pos, &mut resolve);
+            rewrite(kind, &mut resolve);
+        }
+        LinearOp::Const { .. }
+        | LinearOp::BoundsCheck { .. }
+        | LinearOp::ReadBytes { .. }
+        | LinearOp::PeekByte { .. }
+        | LinearOp::AdvanceCursor { .. }
+        | LinearOp::SaveCursor { .. }
+        | LinearOp::ReadFromField { .. }
+        | LinearOp::SaveOutPtr { .. }
+        | LinearOp::SlotAddr { .. }
+        | LinearOp::ReadFromSlot { .. }
+        | LinearOp::Label(_)
+        | LinearOp::Branch(_)
+        | LinearOp::ErrorExit { .. }
+        | LinearOp::SimdWhitespaceSkip
+        | LinearOp::FuncStart { .. }
+        | LinearOp::FuncEnd => {}
+    }
+}
+
+fn build_blocks(ops: &[LinearOp]) -> Vec<LinearBlock> {
+    if ops.is_empty() {
+        return Vec::new();
+    }
+    let mut starts = vec![0usize];
+    for (i, op) in ops.iter().enumerate() {
+        if matches!(op, LinearOp::Label(_)) {
+            starts.push(i);
+        }
+        if is_block_terminator(op) && i + 1 < ops.len() {
+            starts.push(i + 1);
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+
+    let mut blocks = Vec::new();
+    for idx in 0..starts.len() {
+        let start = starts[idx];
+        let end = starts.get(idx + 1).copied().unwrap_or(ops.len());
+        if start < end {
+            blocks.push(LinearBlock {
+                start,
+                end,
+                succs: Vec::new(),
+            });
+        }
+    }
+
+    let mut label_to_block = HashMap::<LabelId, usize>::new();
+    for (bi, block) in blocks.iter().enumerate() {
+        if let LinearOp::Label(label) = ops[block.start] {
+            label_to_block.insert(label, bi);
+        }
+    }
+
+    for bi in 0..blocks.len() {
+        let mut succs = Vec::new();
+        let term = &ops[blocks[bi].end - 1];
+        match term {
+            LinearOp::Branch(label) => {
+                succs.push(
+                    *label_to_block
+                        .get(label)
+                        .expect("branch target label must be block entry"),
+                );
+            }
+            LinearOp::BranchIf { target, .. } | LinearOp::BranchIfZero { target, .. } => {
+                succs.push(
+                    *label_to_block
+                        .get(target)
+                        .expect("branch target label must be block entry"),
+                );
+                if bi + 1 < blocks.len() {
+                    succs.push(bi + 1);
+                }
+            }
+            LinearOp::JumpTable {
+                labels, default, ..
+            } => {
+                for label in labels {
+                    succs.push(
+                        *label_to_block
+                            .get(label)
+                            .expect("jumptable label must be block entry"),
+                    );
+                }
+                succs.push(
+                    *label_to_block
+                        .get(default)
+                        .expect("jumptable default label must be block entry"),
+                );
+            }
+            LinearOp::ErrorExit { .. } | LinearOp::FuncEnd => {}
+            _ => {
+                if bi + 1 < blocks.len() {
+                    succs.push(bi + 1);
+                }
+            }
+        }
+        succs.sort_unstable();
+        succs.dedup();
+        blocks[bi].succs = succs;
+    }
+
+    blocks
+}
+
+fn kill_alias(alias: &mut HashMap<VReg, VReg>, defined: VReg) {
+    alias.remove(&defined);
+    alias.retain(|_, src| *src != defined);
+}
+
+fn resolve_alias(alias: &HashMap<VReg, VReg>, mut v: VReg) -> VReg {
+    let mut seen = HashSet::new();
+    while seen.insert(v) {
+        let Some(&next) = alias.get(&v) else { break };
+        if next == v {
+            break;
+        }
+        v = next;
+    }
+    v
+}
+
+fn optimize_linear_ops(ops: &mut Vec<LinearOp>) {
+    let blocks = build_blocks(ops);
+    if blocks.is_empty() {
+        return;
+    }
+
+    let mut remove = vec![false; ops.len()];
+
+    for block in &blocks {
+        let mut alias = HashMap::<VReg, VReg>::new();
+        for i in block.start..block.end {
+            rewrite_op_uses(&mut ops[i], |v| resolve_alias(&alias, v));
+
+            if let LinearOp::Copy { dst, src } = ops[i] {
+                if dst == src {
+                    remove[i] = true;
+                    continue;
+                }
+                kill_alias(&mut alias, dst);
+                alias.insert(dst, src);
+                continue;
+            }
+
+            for d in op_defs(&ops[i]) {
+                kill_alias(&mut alias, d);
+            }
+        }
+    }
+
+    let func_end_uses = collect_func_end_uses(ops);
+    let mut block_uses = vec![HashSet::<VReg>::new(); blocks.len()];
+    let mut block_defs = vec![HashSet::<VReg>::new(); blocks.len()];
+    for (bi, block) in blocks.iter().enumerate() {
+        let mut uses = HashSet::new();
+        let mut defs = HashSet::new();
+        for i in block.start..block.end {
+            let op_uses = op_uses(&ops[i], func_end_uses.get(&i).map(Vec::as_slice));
+            for u in op_uses {
+                if !defs.contains(&u) {
+                    uses.insert(u);
+                }
+            }
+            for d in op_defs(&ops[i]) {
+                defs.insert(d);
+            }
+        }
+        block_uses[bi] = uses;
+        block_defs[bi] = defs;
+    }
+
+    let mut live_in = vec![HashSet::<VReg>::new(); blocks.len()];
+    let mut live_out = vec![HashSet::<VReg>::new(); blocks.len()];
+    loop {
+        let mut changed = false;
+        for bi in (0..blocks.len()).rev() {
+            let mut out = HashSet::new();
+            for &succ in &blocks[bi].succs {
+                out.extend(live_in[succ].iter().copied());
+            }
+            let mut in_set = block_uses[bi].clone();
+            let mut out_minus_defs = out.clone();
+            for d in &block_defs[bi] {
+                out_minus_defs.remove(d);
+            }
+            in_set.extend(out_minus_defs);
+
+            if out != live_out[bi] {
+                live_out[bi] = out;
+                changed = true;
+            }
+            if in_set != live_in[bi] {
+                live_in[bi] = in_set;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for (bi, block) in blocks.iter().enumerate() {
+        let mut live = live_out[bi].clone();
+        for i in (block.start..block.end).rev() {
+            if remove[i] {
+                continue;
+            }
+            if let LinearOp::Copy { dst, .. } = ops[i]
+                && !live.contains(&dst)
+            {
+                remove[i] = true;
+                continue;
+            }
+            let defs = op_defs(&ops[i]);
+            let uses = op_uses(&ops[i], func_end_uses.get(&i).map(Vec::as_slice));
+            for d in defs {
+                live.remove(&d);
+            }
+            for u in uses {
+                live.insert(u);
+            }
+        }
+    }
+
+    let old_ops = std::mem::take(ops);
+    *ops = old_ops
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, op)| (!remove[i]).then_some(op))
+        .collect();
+}
+
 /// A lightweight enum mirroring NodeKind but owning the data needed
 /// for linearization (avoids borrow issues with self.func).
 enum NodeKindRef<'a> {
@@ -866,8 +1241,11 @@ pub fn linearize(func: &mut IrFunc) -> LinearIr {
         }
     }
 
+    let mut ops = lin.ops;
+    optimize_linear_ops(&mut ops);
+
     LinearIr {
-        ops: lin.ops,
+        ops,
         label_count: lin.label_count,
         vreg_count: func.vreg_count(),
         slot_count: func.slot_count(),
@@ -1100,7 +1478,7 @@ impl fmt::Debug for LinearIr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrBuilder, IrOp, Width};
+    use crate::ir::{IrBuilder, IrOp, LambdaId, VReg, Width};
 
     #[test]
     fn linearize_simple_chain() {
@@ -1267,6 +1645,68 @@ mod tests {
         assert!(
             display.contains("end"),
             "display should end with end:\n{display}"
+        );
+    }
+
+    #[test]
+    fn optimize_linear_ops_elides_dead_copy_chain() {
+        let v0 = VReg::new(0);
+        let v1 = VReg::new(1);
+        let v2 = VReg::new(2);
+        let mut ops = vec![
+            LinearOp::FuncStart {
+                lambda_id: LambdaId::new(0),
+                shape: <u32 as facet::Facet>::SHAPE,
+                data_args: vec![],
+                data_results: vec![],
+            },
+            LinearOp::Const { dst: v0, value: 7 },
+            LinearOp::Copy { dst: v1, src: v0 },
+            LinearOp::Copy { dst: v2, src: v1 },
+            LinearOp::WriteToField {
+                src: v2,
+                offset: 0,
+                width: Width::W4,
+            },
+            LinearOp::FuncEnd,
+        ];
+
+        optimize_linear_ops(&mut ops);
+
+        let copy_count = ops
+            .iter()
+            .filter(|op| matches!(op, LinearOp::Copy { .. }))
+            .count();
+        assert_eq!(copy_count, 0, "dead copy chain should be eliminated");
+        let write_src = ops.iter().find_map(|op| match op {
+            LinearOp::WriteToField { src, .. } => Some(*src),
+            _ => None,
+        });
+        assert_eq!(write_src, Some(v0), "store should use propagated source");
+    }
+
+    #[test]
+    fn optimize_linear_ops_keeps_copy_feeding_func_end_result() {
+        let v0 = VReg::new(0);
+        let v1 = VReg::new(1);
+        let mut ops = vec![
+            LinearOp::FuncStart {
+                lambda_id: LambdaId::new(0),
+                shape: <u32 as facet::Facet>::SHAPE,
+                data_args: vec![],
+                data_results: vec![v1],
+            },
+            LinearOp::Const { dst: v0, value: 9 },
+            LinearOp::Copy { dst: v1, src: v0 },
+            LinearOp::FuncEnd,
+        ];
+
+        optimize_linear_ops(&mut ops);
+
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, LinearOp::Copy { dst, src } if *dst == v1 && *src == v0)),
+            "copy into function result vreg must be preserved"
         );
     }
 }
