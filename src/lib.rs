@@ -4,11 +4,12 @@ pub mod context;
 pub mod format;
 pub mod intrinsics;
 pub mod ir;
+pub mod ir_backend;
 pub mod jit_debug;
-pub mod linearize;
 pub mod jit_f64;
 pub mod json;
 pub mod json_intrinsics;
+pub mod linearize;
 pub mod malum;
 pub mod postcard;
 mod pow10tab;
@@ -25,6 +26,30 @@ pub fn compile_decoder(
     decoder: &dyn format::Decoder,
 ) -> CompiledDecoder {
     compiler::compile_decoder(shape, decoder)
+}
+
+/// Compile a deserializer using the legacy direct dynasm emission path.
+pub fn compile_decoder_legacy(
+    shape: &'static facet::Shape,
+    decoder: &dyn format::Decoder,
+) -> CompiledDecoder {
+    compiler::compile_decoder(shape, decoder)
+}
+
+/// Compile a deserializer using IR lowering + linearization + backend adapter.
+pub fn compile_decoder_via_ir<F: format::Decoder + format::IrDecoder>(
+    shape: &'static facet::Shape,
+    decoder: &F,
+) -> CompiledDecoder {
+    compiler::compile_decoder_via_ir(shape, decoder)
+}
+
+/// Compile a deserializer from already-linearized IR.
+pub fn compile_decoder_linear_ir(
+    ir: &linearize::LinearIr,
+    trusted_utf8_input: bool,
+) -> CompiledDecoder {
+    compiler::compile_linear_ir_decoder(ir, trusted_utf8_input)
 }
 
 /// Compile an encoder (serializer) for the given shape and format.
@@ -109,10 +134,7 @@ impl core::fmt::Display for DeserError {
 impl std::error::Error for DeserError {}
 
 /// Serialize a value using a compiled encoder, returning the output bytes.
-pub fn serialize<T: facet::Facet<'static>>(
-    encoder: &CompiledEncoder,
-    value: &T,
-) -> Vec<u8> {
+pub fn serialize<T: facet::Facet<'static>>(encoder: &CompiledEncoder, value: &T) -> Vec<u8> {
     let mut ctx = context::EncodeContext::new();
     unsafe {
         (encoder.func())(value as *const T as *const u8, &mut ctx);
@@ -148,6 +170,31 @@ mod tests {
                 name: "Alice".into()
             }
         );
+    }
+
+    #[test]
+    fn postcard_flat_struct_via_ir() {
+        let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
+        let deser = compile_decoder_via_ir(Friend::SHAPE, &postcard::FadPostcard);
+        let result: Friend = deserialize(&deser, &input).unwrap();
+        assert_eq!(
+            result,
+            Friend {
+                age: 42,
+                name: "Alice".into()
+            }
+        );
+    }
+
+    #[test]
+    fn postcard_legacy_and_ir_match() {
+        let input = [0x2A, 0x05, b'A', b'l', b'i', b'c', b'e'];
+        let legacy = compile_decoder_legacy(Friend::SHAPE, &postcard::FadPostcard);
+        let via_ir = compile_decoder_via_ir(Friend::SHAPE, &postcard::FadPostcard);
+
+        let a: Friend = deserialize(&legacy, &input).unwrap();
+        let b: Friend = deserialize(&via_ir, &input).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
@@ -3537,7 +3584,9 @@ mod tests {
             name: String,
         }
 
-        let serde_val = WithStringSerde { name: String::new() };
+        let serde_val = WithStringSerde {
+            name: String::new(),
+        };
         let expected = ::postcard::to_allocvec(&serde_val).unwrap();
 
         #[derive(Facet)]
@@ -3545,7 +3594,9 @@ mod tests {
             name: String,
         }
 
-        let facet_val = WithString { name: String::new() };
+        let facet_val = WithString {
+            name: String::new(),
+        };
         let enc = compile_encoder(WithString::SHAPE, &postcard::FadPostcard);
         let got = serialize(&enc, &facet_val);
         assert_eq!(got, expected);
@@ -3745,14 +3796,14 @@ mod tests {
 
         // Test various characters that need JSON escaping
         let cases = [
-            "hello world",          // no escaping
-            "hello \"world\"",      // quotes
-            "back\\slash",          // backslash
-            "line\nbreak",          // newline
-            "tab\there",            // tab
-            "",                     // empty
-            "emoji: \u{1F600}",     // unicode (no escaping needed, just UTF-8)
-            "\x00\x01\x1F",        // control chars
+            "hello world",      // no escaping
+            "hello \"world\"",  // quotes
+            "back\\slash",      // backslash
+            "line\nbreak",      // newline
+            "tab\there",        // tab
+            "",                 // empty
+            "emoji: \u{1F600}", // unicode (no escaping needed, just UTF-8)
+            "\x00\x01\x1F",     // control chars
         ];
 
         for text in cases {

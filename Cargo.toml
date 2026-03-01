@@ -43,6 +43,10 @@ harness = false
 name = "citm_catalog"
 harness = false
 
+[[bench]]
+name = "ir_vs_legacy"
+harness = false
+
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"

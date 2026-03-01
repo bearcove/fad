@@ -8,9 +8,10 @@ use facet::{
 
 use crate::arch::EmitCtx;
 use crate::format::{
-    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, SkippedFieldInfo, VariantEmitInfo,
-    VariantEncodeInfo, VariantKind,
+    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, FieldLowerInfo, IrDecoder, SkippedFieldInfo,
+    VariantEmitInfo, VariantEncodeInfo, VariantKind, VariantLowerInfo,
 };
+use crate::ir::{RegionBuilder, Width as IrWidth};
 use crate::malum::StringOffsets;
 
 /// A compiled deserializer. Owns the executable buffer containing JIT'd machine code.
@@ -1503,7 +1504,8 @@ pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> Compiled
     // Discover String layout offsets (cached after first call).
     let string_offsets = crate::malum::discover_string_offsets();
 
-    let mut compiler = DecoderCompiler::new(extra_stack, option_scratch_offset, string_offsets, decoder);
+    let mut compiler =
+        DecoderCompiler::new(extra_stack, option_scratch_offset, string_offsets, decoder);
     compiler.compile_shape(shape);
 
     // Get the entry offset for the root shape.
@@ -1527,6 +1529,221 @@ pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> Compiled
     }
 }
 
+fn ir_width_from_disc_size(size: u32) -> IrWidth {
+    match size {
+        1 => IrWidth::W1,
+        2 => IrWidth::W2,
+        4 => IrWidth::W4,
+        8 => IrWidth::W8,
+        _ => panic!("unsupported discriminant size: {size}"),
+    }
+}
+
+fn lower_fields_for_ir(
+    shape: &'static Shape,
+    base_offset: usize,
+) -> (Vec<FieldLowerInfo>, Vec<SkippedFieldInfo>) {
+    let (fields, skipped) = collect_fields(shape);
+    let lowered = fields
+        .into_iter()
+        .map(|f| FieldLowerInfo {
+            offset: base_offset + f.offset,
+            shape: f.shape,
+            name: f.name,
+            required_index: f.required_index,
+            has_default: f.default.is_some(),
+        })
+        .collect();
+    (lowered, skipped)
+}
+
+fn lower_variants_for_ir(
+    enum_type: &'static facet::EnumType,
+    base_offset: usize,
+) -> Vec<VariantLowerInfo> {
+    collect_variants(enum_type)
+        .into_iter()
+        .map(|v| VariantLowerInfo {
+            index: v.index,
+            name: v.name,
+            rust_discriminant: v.rust_discriminant,
+            kind: v.kind,
+            fields: v
+                .fields
+                .into_iter()
+                .map(|f| FieldLowerInfo {
+                    offset: base_offset + f.offset,
+                    shape: f.shape,
+                    name: f.name,
+                    required_index: f.required_index,
+                    has_default: f.default.is_some(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn lower_shape_via_ir<F: IrDecoder>(
+    decoder: &F,
+    rb: &mut RegionBuilder<'_>,
+    shape: &'static Shape,
+    base_offset: usize,
+) {
+    if is_unit(shape) {
+        return;
+    }
+
+    if shape.is_transparent() {
+        let (fields, skipped) = lower_fields_for_ir(shape, base_offset);
+        if !skipped.is_empty() {
+            panic!(
+                "IR path does not support transparent wrappers with skipped/defaulted fields: {}",
+                shape.type_identifier
+            );
+        }
+        if fields.len() != 1 {
+            panic!(
+                "transparent wrapper must lower to exactly one field: {}",
+                shape.type_identifier
+            );
+        }
+        lower_shape_via_ir(decoder, rb, fields[0].shape, fields[0].offset);
+        return;
+    }
+
+    if get_option_def(shape).is_some() {
+        panic!(
+            "IR path does not support Option lowering yet: {}",
+            shape.type_identifier
+        );
+    }
+
+    if get_pointer_def(shape).is_some() {
+        panic!(
+            "IR path does not support pointer lowering yet: {}",
+            shape.type_identifier
+        );
+    }
+
+    if let Def::List(list_def) = &shape.def {
+        let _ = (rb, list_def, base_offset);
+        panic!(
+            "IR path does not support Vec/List lowering yet: {}",
+            shape.type_identifier
+        );
+    }
+
+    if let Def::Map(map_def) = &shape.def {
+        let _ = (rb, map_def, base_offset);
+        panic!(
+            "IR path does not support Map lowering yet: {}",
+            shape.type_identifier
+        );
+    }
+
+    if let Def::Array(array_def) = &shape.def {
+        let elem_layout = array_def
+            .t
+            .layout
+            .sized_layout()
+            .expect("array element must be Sized");
+        let stride = elem_layout.size();
+        for i in 0..array_def.n {
+            lower_shape_via_ir(decoder, rb, array_def.t, base_offset + i * stride);
+        }
+        return;
+    }
+
+    match &shape.ty {
+        Type::User(UserType::Struct(st)) => {
+            let (fields, skipped) = lower_fields_for_ir(shape, base_offset);
+            if !skipped.is_empty() {
+                panic!(
+                    "IR path does not support skipped/defaulted fields yet: {}",
+                    shape.type_identifier
+                );
+            }
+            let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
+            let is_positional = matches!(st.kind, StructKind::Tuple | StructKind::TupleStruct);
+            if is_positional {
+                decoder.lower_positional_fields(rb, &fields, &mut |inner_rb, field| {
+                    lower_shape_via_ir(decoder, inner_rb, field.shape, field.offset);
+                });
+            } else {
+                decoder.lower_struct_fields(
+                    rb,
+                    &fields,
+                    deny_unknown_fields,
+                    &mut |inner_rb, field| {
+                        lower_shape_via_ir(decoder, inner_rb, field.shape, field.offset);
+                    },
+                );
+            }
+        }
+        Type::User(UserType::Enum(enum_type)) => {
+            let disc_size = discriminant_size(enum_type.enum_repr);
+            let disc_width = ir_width_from_disc_size(disc_size);
+            let variants = lower_variants_for_ir(enum_type, base_offset);
+            decoder.lower_enum(rb, &variants, &mut |inner_rb, variant| {
+                let disc = inner_rb.const_val(variant.rust_discriminant as u64);
+                inner_rb.write_to_field(disc, base_offset as u32, disc_width);
+                for field in &variant.fields {
+                    lower_shape_via_ir(decoder, inner_rb, field.shape, field.offset);
+                }
+            });
+        }
+        _ => match shape.scalar_type() {
+            Some(st) if is_string_like_scalar(st) => {
+                decoder.lower_read_string(rb, base_offset, st);
+            }
+            Some(st) => {
+                decoder.lower_read_scalar(rb, base_offset, st);
+            }
+            None => panic!("unsupported IR-lowered shape: {}", shape.type_identifier),
+        },
+    }
+}
+
+/// Compile a deserializer through RVSDG + linearization + backend adapter.
+///
+/// This path coexists with the legacy direct dynasm emission path for A/B benchmarking.
+pub fn compile_decoder_via_ir<F: Decoder + IrDecoder>(
+    shape: &'static Shape,
+    decoder: &F,
+) -> CompiledDecoder {
+    let mut builder = crate::ir::IrBuilder::new(shape);
+    {
+        let mut rb = builder.root_region();
+        lower_shape_via_ir(decoder, &mut rb, shape, 0);
+        rb.set_results(&[]);
+    }
+
+    let mut func = builder.finish();
+    let linear = crate::linearize::linearize(&mut func);
+    compile_linear_ir_decoder(&linear, decoder.supports_trusted_utf8_input())
+}
+
+/// Compile a deserializer from already-linearized IR.
+///
+/// This is the first backend-adapter entrypoint used by the IR migration.
+pub fn compile_linear_ir_decoder(
+    ir: &crate::linearize::LinearIr,
+    trusted_utf8_input: bool,
+) -> CompiledDecoder {
+    let crate::ir_backend::LinearBackendResult { buf, entry } =
+        crate::ir_backend::compile_linear_ir(ir);
+    let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
+        unsafe { core::mem::transmute(buf.ptr(entry)) };
+
+    CompiledDecoder {
+        buf,
+        entry,
+        func,
+        trusted_utf8_input,
+        _jit_registration: None,
+    }
+}
+
 // =============================================================================
 // Encoder compiler — serialization direction
 // =============================================================================
@@ -1540,7 +1757,9 @@ pub struct CompiledEncoder {
 }
 
 impl CompiledEncoder {
-    pub(crate) fn func(&self) -> unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext) {
+    pub(crate) fn func(
+        &self,
+    ) -> unsafe extern "C" fn(*const u8, *mut crate::context::EncodeContext) {
         self.func
     }
 
@@ -1923,12 +2142,8 @@ impl<'fmt> EncoderCompiler<'fmt> {
         } else {
             match pointee.scalar_type() {
                 Some(st) if is_string_like_scalar(st) => {
-                    self.encoder.emit_encode_string(
-                        &mut self.ectx,
-                        0,
-                        st,
-                        &self.string_offsets,
-                    );
+                    self.encoder
+                        .emit_encode_string(&mut self.ectx, 0, st, &self.string_offsets);
                 }
                 Some(st) => {
                     self.encoder.emit_encode_scalar(&mut self.ectx, 0, st);
@@ -2044,21 +2259,10 @@ impl<'fmt> EncoderCompiler<'fmt> {
                 encoder.emit_encode_enum(ectx, &variants, &mut emit_variant_body);
             }
             (Some(tk), Some(ck), false) => {
-                encoder.emit_encode_enum_adjacent(
-                    ectx,
-                    &variants,
-                    tk,
-                    ck,
-                    &mut emit_variant_body,
-                );
+                encoder.emit_encode_enum_adjacent(ectx, &variants, tk, ck, &mut emit_variant_body);
             }
             (Some(tk), None, false) => {
-                encoder.emit_encode_enum_internal(
-                    ectx,
-                    &variants,
-                    tk,
-                    &mut emit_variant_body,
-                );
+                encoder.emit_encode_enum_internal(ectx, &variants, tk, &mut emit_variant_body);
             }
             (_, _, true) => {
                 encoder.emit_encode_enum_untagged(ectx, &variants, &mut emit_variant_body);
@@ -2279,7 +2483,10 @@ fn register_jit_symbols(
         .filter_map(|(&shape_ptr, entry)| {
             entry.offset.map(|off| {
                 let shape = unsafe { &*shape_ptr };
-                (format!("fad::{direction}::{}", shape.type_identifier), off.0)
+                (
+                    format!("fad::{direction}::{}", shape.type_identifier),
+                    off.0,
+                )
             })
         })
         .collect();
