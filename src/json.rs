@@ -141,6 +141,31 @@ impl Decoder for FadJson {
         emit_default_or_required_check(ectx, fields);
     }
 
+    // r[impl deser.json.tuple]
+    fn emit_positional_fields(
+        &self,
+        ectx: &mut EmitCtx,
+        fields: &[crate::format::FieldEmitInfo],
+        emit_field: &mut dyn FnMut(&mut EmitCtx, &crate::format::FieldEmitInfo),
+    ) {
+        // Expect '['
+        ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_array_start as *const u8);
+
+        if fields.is_empty() {
+            ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_array_end as *const u8);
+            return;
+        }
+
+        for (i, field) in fields.iter().enumerate() {
+            emit_field(ectx, field);
+            if i + 1 < fields.len() {
+                ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_comma as *const u8);
+            } else {
+                ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_expect_array_end as *const u8);
+            }
+        }
+    }
+
     // r[impl deser.json.option]
     fn emit_option(
         &self,

@@ -1193,6 +1193,46 @@ pub unsafe extern "C" fn fad_json_error_expected_tag_key(ctx: *mut DeserContext)
 
 // --- JSON array intrinsics ---
 
+/// Skip whitespace, then expect and consume ','.
+#[allow(clippy::missing_safety_doc)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_expect_comma(ctx: *mut DeserContext) {
+    unsafe {
+        fad_json_skip_ws(ctx);
+    }
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let b = unsafe { *ctx.input_ptr };
+    if b != b',' {
+        ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
+        return;
+    }
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+}
+
+/// Skip whitespace, then expect and consume ']'.
+#[allow(clippy::missing_safety_doc)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_expect_array_end(ctx: *mut DeserContext) {
+    unsafe {
+        fad_json_skip_ws(ctx);
+    }
+    let ctx = unsafe { &mut *ctx };
+    if ctx.input_ptr >= ctx.input_end {
+        ctx.error.code = ErrorCode::UnexpectedEof as u32;
+        return;
+    }
+    let b = unsafe { *ctx.input_ptr };
+    if b != b']' {
+        ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
+        return;
+    }
+    ctx.input_ptr = unsafe { ctx.input_ptr.add(1) };
+}
+
 /// Skip whitespace, then expect and consume '['.
 #[allow(clippy::missing_safety_doc)]
 #[unsafe(no_mangle)]

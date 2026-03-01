@@ -3776,6 +3776,58 @@ mod tests {
         let decoded: Friend = deserialize(&dec, &bytes).unwrap();
         assert_eq!(decoded, original);
     }
+
+    // ── Tuple and array tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn json_tuple_deser() {
+        let input = br#"[42, "Alice"]"#;
+        let dec = compile_decoder(<(u32, String)>::SHAPE, &json::FadJson);
+        let result: (u32, String) = deserialize(&dec, input).unwrap();
+        assert_eq!(result, (42, "Alice".into()));
+    }
+
+    #[test]
+    fn postcard_tuple_deser() {
+        let original: (u32, String) = (42, "Alice".into());
+        let bytes = ::postcard::to_allocvec(&original).unwrap();
+        let dec = compile_decoder(<(u32, String)>::SHAPE, &postcard::FadPostcard);
+        let result: (u32, String) = deserialize(&dec, &bytes).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn json_tuple_triple_deser() {
+        let input = br#"[1, 2, 3]"#;
+        let dec = compile_decoder(<(u32, u32, u32)>::SHAPE, &json::FadJson);
+        let result: (u32, u32, u32) = deserialize(&dec, input).unwrap();
+        assert_eq!(result, (1, 2, 3));
+    }
+
+    #[test]
+    fn json_array_deser() {
+        let input = br#"[10, 20, 30, 40]"#;
+        let dec = compile_decoder(<[u32; 4]>::SHAPE, &json::FadJson);
+        let result: [u32; 4] = deserialize(&dec, input).unwrap();
+        assert_eq!(result, [10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn postcard_array_deser() {
+        let original: [u32; 4] = [10, 20, 30, 40];
+        let bytes = ::postcard::to_allocvec(&original).unwrap();
+        let dec = compile_decoder(<[u32; 4]>::SHAPE, &postcard::FadPostcard);
+        let result: [u32; 4] = deserialize(&dec, &bytes).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn json_tuple_nested_deser() {
+        let input = br#"[[1, 2], [3, 4]]"#;
+        let dec = compile_decoder(<([u32; 2], [u32; 2])>::SHAPE, &json::FadJson);
+        let result: ([u32; 2], [u32; 2]) = deserialize(&dec, input).unwrap();
+        assert_eq!(result, ([1, 2], [3, 4]));
+    }
 }
 
 #[cfg(all(test, not(target_os = "windows")))]

@@ -301,6 +301,12 @@ struct BoolField {
     value: bool,
 }
 
+// ── Tuples and arrays ────────────────────────────────────────────────────────
+
+type Pair = (u32, String);
+type Triple = (u32, u64, f64);
+type Point2 = (f32, f32);
+
 // ── Option wrappers ──────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
@@ -569,6 +575,13 @@ mod postcard_flatten {
         bencher.bench(|| black_box(fad::deserialize::<Document>(deser, black_box(data)).unwrap()));
     }
 }
+
+// ── Tuples and arrays ────────────────────────────────────────────────────────
+
+bench!(tuple_pair, Pair, (42u32, "Alice".to_string()));
+bench!(tuple_triple, Triple, (42u32, 1_000_000u64, 3.14f64));
+bench!(array_u32_8, [u32; 8], [1, 2, 3, 4, 5, 6, 7, 8]);
+bench!(array_f64_4, [f64; 4], [1.0, 2.5, 3.14, 99.9]);
 
 // ── Options (both formats, deser only — encoder doesn't support Option yet) ──
 

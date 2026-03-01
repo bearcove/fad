@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use dynasmrt::{AssemblyOffset, DynamicLabel};
 use facet::{
-    Def, EnumRepr, KnownPointer, ListDef, MapDef, OptionDef, PointerDef, ScalarType, Shape, Type,
-    UserType,
+    ArrayDef, Def, EnumRepr, KnownPointer, ListDef, MapDef, OptionDef, PointerDef, ScalarType,
+    Shape, StructKind, Type, UserType,
 };
 
 use crate::arch::EmitCtx;
@@ -129,6 +129,12 @@ impl<'fmt> DecoderCompiler<'fmt> {
             return entry_label;
         }
 
+        // Check for fixed-size arrays ([T; N]) — detected by Def::Array.
+        if let Def::Array(array_def) = &shape.def {
+            self.compile_array(shape, array_def, entry_label);
+            return entry_label;
+        }
+
         // r[impl deser.pointer]
         // Check for smart pointers (Box<T>, Arc<T>, Rc<T>) — detected by Def::Pointer.
         if let Some(ptr_def) = get_pointer_def(shape) {
@@ -155,6 +161,13 @@ impl<'fmt> DecoderCompiler<'fmt> {
         let (fields, skipped_fields) = collect_fields(shape);
         let deny_unknown_fields = shape.has_deny_unknown_fields_attr();
         let inline = self.decoder.supports_inline_nested();
+
+        // Detect positional (tuple / tuple struct) — use positional field emission.
+        let is_positional = matches!(
+            &shape.ty,
+            Type::User(UserType::Struct(st))
+                if matches!(st.kind, StructKind::Tuple | StructKind::TupleStruct)
+        );
 
         // For non-inlining formats, depth-first compile all nested composite fields
         // (structs and enums) so they're available as call targets.
@@ -206,17 +219,31 @@ impl<'fmt> DecoderCompiler<'fmt> {
         let string_offsets = &self.string_offsets;
         let ectx = &mut self.ectx;
 
-        format.emit_struct_fields(ectx, &fields, deny_unknown_fields, &mut |ectx, field| {
-            emit_field(
-                ectx,
-                format,
-                field,
-                &fields,
-                &nested,
-                option_scratch_offset,
-                string_offsets,
-            );
-        });
+        if is_positional {
+            format.emit_positional_fields(ectx, &fields, &mut |ectx, field| {
+                emit_field(
+                    ectx,
+                    format,
+                    field,
+                    &fields,
+                    &nested,
+                    option_scratch_offset,
+                    string_offsets,
+                );
+            });
+        } else {
+            format.emit_struct_fields(ectx, &fields, deny_unknown_fields, &mut |ectx, field| {
+                emit_field(
+                    ectx,
+                    format,
+                    field,
+                    &fields,
+                    &nested,
+                    option_scratch_offset,
+                    string_offsets,
+                );
+            });
+        }
 
         self.ectx.end_func(error_exit);
 
@@ -341,6 +368,69 @@ impl<'fmt> DecoderCompiler<'fmt> {
                 );
             },
         );
+
+        self.ectx.end_func(error_exit);
+        self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
+    }
+
+    /// Compile a fixed-size array ([T; N]) shape into a function.
+    ///
+    /// Arrays have N elements of the same type at contiguous offsets.
+    /// Wire format: positional (no count prefix for postcard, `[...]` for JSON).
+    fn compile_array(
+        &mut self,
+        shape: &'static Shape,
+        array_def: &'static ArrayDef,
+        entry_label: DynamicLabel,
+    ) {
+        let key = shape as *const Shape;
+
+        let elem_shape = array_def.t;
+        let n = array_def.n;
+        let elem_size = elem_shape
+            .layout
+            .sized_layout()
+            .expect("array element must be Sized")
+            .size();
+
+        // Pre-compile element shape if it's composite.
+        let elem_label = if needs_precompilation(elem_shape) {
+            Some(self.compile_shape(elem_shape))
+        } else {
+            None
+        };
+
+        // Build fake FieldEmitInfo for each element: offset = i * elem_size.
+        let fake_fields: Vec<FieldEmitInfo> = (0..n)
+            .map(|i| FieldEmitInfo {
+                offset: i * elem_size,
+                shape: elem_shape,
+                name: "",
+                required_index: i,
+                default: None,
+            })
+            .collect();
+        let nested: Vec<Option<DynamicLabel>> = vec![elem_label; n];
+
+        self.ectx.bind_label(entry_label);
+        let (entry_offset, error_exit) = self.ectx.begin_func();
+
+        let format = self.decoder;
+        let option_scratch_offset = self.option_scratch_offset;
+        let string_offsets = &self.string_offsets;
+        let ectx = &mut self.ectx;
+
+        format.emit_positional_fields(ectx, &fake_fields, &mut |ectx, field| {
+            emit_field(
+                ectx,
+                format,
+                field,
+                &fake_fields,
+                &nested,
+                option_scratch_offset,
+                string_offsets,
+            );
+        });
 
         self.ectx.end_func(error_exit);
         self.shapes.get_mut(&key).unwrap().offset = Some(entry_offset);
@@ -919,7 +1009,7 @@ fn is_composite(shape: &'static Shape) -> bool {
     matches!(
         &shape.ty,
         Type::User(UserType::Struct(_) | UserType::Enum(_))
-    ) || matches!(&shape.def, Def::List(_) | Def::Map(_))
+    ) || matches!(&shape.def, Def::List(_) | Def::Map(_) | Def::Array(_))
         || get_pointer_def(shape).is_some()
 }
 
@@ -1342,6 +1432,9 @@ pub fn compile_decoder(shape: &'static Shape, decoder: &dyn Decoder) -> Compiled
         decoder.extra_stack_space(&[])
     } else if matches!(&shape.def, Def::Map(_)) {
         // Map<K,V> as root shape — format needs stack space for map loop state.
+        decoder.extra_stack_space(&[])
+    } else if matches!(&shape.def, Def::Array(_)) {
+        // [T; N] as root shape — positional, no format-level key-matching state.
         decoder.extra_stack_space(&[])
     } else if get_pointer_def(shape).is_some() {
         // Smart pointer as root shape — no format-specific stack needed at this level,

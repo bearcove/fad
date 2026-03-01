@@ -244,6 +244,25 @@ pub trait Decoder {
         panic!("struct fields continuation not supported by this format");
     }
 
+    /// Emit code to deserialize positional (tuple / fixed-size array) fields.
+    ///
+    /// Unlike `emit_struct_fields`, positional fields have no names and are
+    /// read in declaration order — all N elements must be present or an error
+    /// occurs. No required-field bitset tracking is needed.
+    ///
+    /// For JSON: reads `[e0, e1, ..., eN-1]`.
+    /// For postcard (default): elements in order, same as `emit_struct_fields`.
+    fn emit_positional_fields(
+        &self,
+        ectx: &mut EmitCtx,
+        fields: &[FieldEmitInfo],
+        emit_field: &mut dyn FnMut(&mut EmitCtx, &FieldEmitInfo),
+    ) {
+        for field in fields {
+            emit_field(ectx, field);
+        }
+    }
+
     /// Emit code to deserialize a `Vec<T>` (sequence of elements).
     ///
     /// The format reads the wire sequence (postcard: varint count + elements,
