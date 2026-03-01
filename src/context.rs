@@ -106,6 +106,7 @@ impl DeserContext {
     }
 
     /// Create a context for already-validated UTF-8 text input.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &str) -> Self {
         Self::new_with_trust(input.as_bytes(), true)
     }
@@ -131,7 +132,11 @@ impl DeserContext {
     }
 
     /// Set an error code, recording the current offset from the start of the original input.
-    pub fn set_error(&mut self, code: ErrorCode, input_start: *const u8) {
+    ///
+    /// # Safety
+    /// `input_start` must point to the beginning of the same allocation that `self.input_ptr`
+    /// was derived from, and `self.input_ptr` must be at or after `input_start`.
+    pub unsafe fn set_error(&mut self, code: ErrorCode, input_start: *const u8) {
         self.error.code = code as u32;
         self.error.offset = unsafe { self.input_ptr.offset_from(input_start) as u32 };
     }
@@ -284,6 +289,12 @@ impl EncodeContext {
             self.output_ptr = new_ptr.add(len);
             self.output_end = new_ptr.add(new_cap);
         }
+    }
+}
+
+impl Default for EncodeContext {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

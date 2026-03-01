@@ -1415,6 +1415,7 @@ impl EmitCtx {
     /// `loop_label`: label at the top of the loop (already bound by caller).
     /// `done_label`: label to branch to after the loop completes.
     /// `error_cleanup`: label for error/cleanup path.
+    #[allow(clippy::too_many_arguments)]
     pub fn emit_vec_varint_loop(
         &mut self,
         store_width: u32,
@@ -2019,7 +2020,7 @@ impl EmitCtx {
                     dynasm!(self.ops
                         ; .arch aarch64
                         ; mov x0, x22
-                        ; movz x1, #count as u32, LSL #0
+                        ; movz x1, #count, LSL #0
                     );
                     self.emit_call_fn_ptr(grow_fn);
                     self.emit_enc_reload_and_check_error();
@@ -2765,7 +2766,7 @@ impl EmitCtx {
         dynasm!(self.ops
             ; .arch aarch64
             ; mov x0, x22
-            ; movz x1, #count as u32, LSL #0
+            ; movz x1, #count, LSL #0
         );
         self.emit_call_fn_ptr(grow_fn);
         self.emit_enc_reload_and_check_error();

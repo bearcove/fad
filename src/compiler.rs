@@ -967,10 +967,10 @@ fn unwrap_inner_or_self(shape: &'static Shape) -> &'static Shape {
     if let Some(opt_def) = get_option_def(shape) {
         return opt_def.t;
     }
-    if let Some(ptr_def) = get_pointer_def(shape) {
-        if let Some(pointee) = ptr_def.pointee {
-            return pointee;
-        }
+    if let Some(ptr_def) = get_pointer_def(shape)
+        && let Some(pointee) = ptr_def.pointee
+    {
+        return pointee;
     }
     shape
 }
@@ -1289,16 +1289,16 @@ fn max_scratch_inner_size(
     }
 
     // Check if shape itself is a pointer type (e.g. Vec<Box<T>> element)
-    if let Some(ptr_def) = get_pointer_def(shape) {
-        if let Some(pointee) = ptr_def.pointee {
-            let inner_size = pointee
-                .layout
-                .sized_layout()
-                .expect("Pointer inner type must be Sized")
-                .size();
-            max_size = max_size.max(inner_size);
-            max_size = max_size.max(max_scratch_inner_size(pointee, visited));
-        }
+    if let Some(ptr_def) = get_pointer_def(shape)
+        && let Some(pointee) = ptr_def.pointee
+    {
+        let inner_size = pointee
+            .layout
+            .sized_layout()
+            .expect("Pointer inner type must be Sized")
+            .size();
+        max_size = max_size.max(inner_size);
+        max_size = max_size.max(max_scratch_inner_size(pointee, visited));
     }
 
     match &shape.ty {
@@ -1315,16 +1315,16 @@ fn max_scratch_inner_size(
                     max_size = max_size.max(inner_size);
                     max_size = max_size.max(max_scratch_inner_size(opt_def.t, visited));
                 }
-                if let Some(ptr_def) = get_pointer_def(field_shape) {
-                    if let Some(pointee) = ptr_def.pointee {
-                        let inner_size = pointee
-                            .layout
-                            .sized_layout()
-                            .expect("Pointer inner type must be Sized")
-                            .size();
-                        max_size = max_size.max(inner_size);
-                        max_size = max_size.max(max_scratch_inner_size(pointee, visited));
-                    }
+                if let Some(ptr_def) = get_pointer_def(field_shape)
+                    && let Some(pointee) = ptr_def.pointee
+                {
+                    let inner_size = pointee
+                        .layout
+                        .sized_layout()
+                        .expect("Pointer inner type must be Sized")
+                        .size();
+                    max_size = max_size.max(inner_size);
+                    max_size = max_size.max(max_scratch_inner_size(pointee, visited));
                 }
                 max_size = max_size.max(max_scratch_inner_size(field_shape, visited));
             }
@@ -1343,16 +1343,16 @@ fn max_scratch_inner_size(
                         max_size = max_size.max(inner_size);
                         max_size = max_size.max(max_scratch_inner_size(opt_def.t, visited));
                     }
-                    if let Some(ptr_def) = get_pointer_def(field_shape) {
-                        if let Some(pointee) = ptr_def.pointee {
-                            let inner_size = pointee
-                                .layout
-                                .sized_layout()
-                                .expect("Pointer inner type must be Sized")
-                                .size();
-                            max_size = max_size.max(inner_size);
-                            max_size = max_size.max(max_scratch_inner_size(pointee, visited));
-                        }
+                    if let Some(ptr_def) = get_pointer_def(field_shape)
+                        && let Some(pointee) = ptr_def.pointee
+                    {
+                        let inner_size = pointee
+                            .layout
+                            .sized_layout()
+                            .expect("Pointer inner type must be Sized")
+                            .size();
+                        max_size = max_size.max(inner_size);
+                        max_size = max_size.max(max_scratch_inner_size(pointee, visited));
                     }
                     max_size = max_size.max(max_scratch_inner_size(field_shape, visited));
                 }
@@ -1390,12 +1390,11 @@ fn has_seq_or_map_in_tree(
     }
 
     // Recurse through smart pointer inner types.
-    if let Some(ptr_def) = get_pointer_def(shape) {
-        if let Some(pointee) = ptr_def.pointee {
-            if has_seq_or_map_in_tree(pointee, visited) {
-                return true;
-            }
-        }
+    if let Some(ptr_def) = get_pointer_def(shape)
+        && let Some(pointee) = ptr_def.pointee
+        && has_seq_or_map_in_tree(pointee, visited)
+    {
+        return true;
     }
 
     match &shape.ty {

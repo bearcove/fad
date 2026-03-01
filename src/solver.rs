@@ -108,10 +108,10 @@ impl SubSolver {
                         continue;
                     }
                     let field = variant.fields.iter().find(|f| f.name == key_name).unwrap();
-                    if let Type::User(UserType::Struct(st)) = &field.shape.ty {
-                        if st.fields.iter().any(|f| f.effective_name() == inner_name) {
-                            mask |= 1u64 << bit;
-                        }
+                    if let Type::User(UserType::Struct(st)) = &field.shape.ty
+                        && st.fields.iter().any(|f| f.effective_name() == inner_name)
+                    {
+                        mask |= 1u64 << bit;
                     }
                 }
                 (inner_name, mask)
@@ -295,24 +295,21 @@ impl LoweredSolver {
         }
 
         // For keys with sub-solvers, check if inner keys can split remaining.
-        for sub in &self.sub_solvers {
-            if let Some(sub) = sub {
-                // Simulate: apply all inner key masks to see if they resolve.
-                let mut inner_candidates = candidates;
-                for &(_, inner_mask) in &sub.inner_key_masks {
-                    inner_candidates &= inner_mask;
-                }
-                if inner_candidates.count_ones() <= 1 {
-                    return; // Nested key evidence resolves.
-                }
+        for sub in self.sub_solvers.iter().flatten() {
+            // Simulate: apply all inner key masks to see if they resolve.
+            let mut inner_candidates = candidates;
+            for &(_, inner_mask) in &sub.inner_key_masks {
+                inner_candidates &= inner_mask;
+            }
+            if inner_candidates.count_ones() <= 1 {
+                return; // Nested key evidence resolves.
             }
         }
 
         // Still ambiguous — collect names for the error message.
         let mut ambiguous_names = Vec::new();
-        for bit in 0..self.num_candidates {
+        for (bit, (_, variant)) in object_variants.iter().enumerate().take(self.num_candidates) {
             if candidates & (1u64 << bit) != 0 {
-                let (_, variant) = &object_variants[bit];
                 ambiguous_names.push(variant.name);
             }
         }

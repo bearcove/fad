@@ -7,6 +7,10 @@ use core::num::IntErrorKind;
 
 /// Skip JSON whitespace (space, tab, newline, carriage return).
 /// Advances ctx.input_ptr past any whitespace.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_skip_ws(ctx: *mut DeserContext) {
     let ctx = unsafe { &mut *ctx };
@@ -22,6 +26,10 @@ pub unsafe extern "C" fn fad_json_skip_ws(ctx: *mut DeserContext) {
 }
 
 /// Skip whitespace, then expect and consume '{'.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_expect_object_start(ctx: *mut DeserContext) {
     unsafe {
@@ -41,6 +49,10 @@ pub unsafe extern "C" fn fad_json_expect_object_start(ctx: *mut DeserContext) {
 }
 
 /// Skip whitespace, then expect and consume ':'.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_expect_colon(ctx: *mut DeserContext) {
     unsafe {
@@ -61,6 +73,11 @@ pub unsafe extern "C" fn fad_json_expect_colon(ctx: *mut DeserContext) {
 
 /// Skip whitespace, then write the next byte to *out without consuming it.
 /// If at EOF, sets error.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_peek_after_ws(ctx: *mut DeserContext, out: *mut u8) {
     unsafe {
@@ -80,6 +97,10 @@ pub unsafe extern "C" fn fad_json_peek_after_ws(ctx: *mut DeserContext, out: *mu
 
 /// Read 4 hex digits from input, return as u16.
 /// Sets error code on failure (invalid hex digit or EOF).
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_read_hex4(ctx: &mut DeserContext) -> u16 {
     if ctx.remaining() < 4 {
         ctx.error.code = ErrorCode::InvalidEscapeSequence as u32;
@@ -106,6 +127,10 @@ unsafe fn json_read_hex4(ctx: &mut DeserContext) -> u16 {
 /// Process one JSON escape sequence after the `\` has been consumed.
 /// Appends the unescaped byte(s) to `buf`.
 /// Returns false and sets error code on invalid escape.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_unescape_one(ctx: &mut DeserContext, buf: &mut Vec<u8>) -> bool {
     if ctx.input_ptr >= ctx.input_end {
         ctx.error.code = ErrorCode::UnexpectedEof as u32;
@@ -178,6 +203,12 @@ unsafe fn json_unescape_one(ctx: &mut DeserContext, buf: &mut Vec<u8>) -> bool {
 /// Fast path: no escapes — returns borrowed pointer into input (zero-copy).
 /// Slow path: escapes found — unescapes into ctx's scratch buffer.
 /// Advances past the closing '"'.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out_ptr` must be a valid, aligned, non-null pointer to a `*const u8`
+/// - `out_len` must be a valid, aligned, non-null pointer to a `usize`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_key(
     ctx: *mut DeserContext,
@@ -225,6 +256,13 @@ pub unsafe extern "C" fn fad_json_read_key(
 }
 
 /// Slow path for key reading: unescapes into a Vec, transfers to ctx scratch buffer.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
+/// - `prefix_start` must point to `prefix_len` valid readable bytes
+/// - `out_ptr` must be a valid, aligned, non-null pointer to a `*const u8`
+/// - `out_len` must be a valid, aligned, non-null pointer to a `usize`
 unsafe fn json_read_key_slow(
     ctx: &mut DeserContext,
     prefix_start: *const u8,
@@ -261,6 +299,11 @@ unsafe fn json_read_key_slow(
 
 /// Pure key comparison: returns 1 if equal, 0 otherwise.
 /// Does NOT touch DeserContext — this is a pure function.
+///
+/// # Safety
+///
+/// - `key_ptr` must point to `key_len` valid readable bytes
+/// - `expected_ptr` must point to `expected_len` valid readable bytes
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_key_equals(
     key_ptr: *const u8,
@@ -277,6 +320,10 @@ pub unsafe extern "C" fn fad_json_key_equals(
 }
 
 /// Recursively skip one JSON value (string, number, boolean, null, object, array).
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
     unsafe {
@@ -442,6 +489,10 @@ pub unsafe extern "C" fn fad_json_skip_value(ctx: *mut DeserContext) {
 }
 
 /// Internal whitespace skip that takes &mut DeserContext directly.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn skip_ws_raw(ctx: &mut DeserContext) {
     while ctx.input_ptr < ctx.input_end {
         let b = unsafe { *ctx.input_ptr };
@@ -455,6 +506,10 @@ unsafe fn skip_ws_raw(ctx: &mut DeserContext) {
 }
 
 /// Skip whitespace, then expect and consume '}'.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_expect_object_end(ctx: *mut DeserContext) {
     unsafe {
@@ -474,6 +529,11 @@ pub unsafe extern "C" fn fad_json_expect_object_end(ctx: *mut DeserContext) {
 }
 
 /// Skip whitespace, then expect ',' (write 0 to *out) or '}' (write 1 to *out).
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_comma_or_end_object(ctx: *mut DeserContext, out: *mut u8) {
     unsafe {
@@ -501,6 +561,10 @@ pub unsafe extern "C" fn fad_json_comma_or_end_object(ctx: *mut DeserContext, ou
 
 /// Parse unsigned decimal digits from input, returning the u64 value.
 /// Skips leading whitespace. Sets error if no digits found or overflow.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_parse_unsigned(ctx: &mut DeserContext) -> u64 {
     let mut result: u64 = 0;
     let mut digits = 0u32;
@@ -536,6 +600,10 @@ unsafe fn json_parse_unsigned(ctx: &mut DeserContext) -> u64 {
 
 /// Parse a possibly-negative decimal integer, returning the i64 value.
 /// Skips leading whitespace. Handles optional '-' prefix.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_parse_signed(ctx: &mut DeserContext) -> i64 {
     let negative = ctx.input_ptr < ctx.input_end && unsafe { *ctx.input_ptr } == b'-';
     if negative {
@@ -566,6 +634,10 @@ unsafe fn json_parse_signed(ctx: &mut DeserContext) -> i64 {
 
 /// Extract a JSON number substring (digits, '.', 'e', 'E', '+', '-') without advancing past it,
 /// returning the byte slice. The caller parses the number from the slice.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_extract_number_bytes(ctx: &mut DeserContext) -> &[u8] {
     let start = ctx.input_ptr;
     while ctx.input_ptr < ctx.input_end {
@@ -581,6 +653,11 @@ unsafe fn json_extract_number_bytes(ctx: &mut DeserContext) -> &[u8] {
     unsafe { core::slice::from_raw_parts(start, len) }
 }
 
+/// Parse an unsigned 128-bit integer from JSON number bytes.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_parse_u128(ctx: &mut DeserContext) -> u128 {
     let bytes = unsafe { json_extract_number_bytes(ctx) };
     if bytes.is_empty() {
@@ -608,6 +685,11 @@ unsafe fn json_parse_u128(ctx: &mut DeserContext) -> u128 {
     }
 }
 
+/// Parse a signed 128-bit integer from JSON number bytes.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
 unsafe fn json_parse_i128(ctx: &mut DeserContext) -> i128 {
     let bytes = unsafe { json_extract_number_bytes(ctx) };
     if bytes.is_empty() {
@@ -637,6 +719,12 @@ unsafe fn json_parse_i128(ctx: &mut DeserContext) -> i128 {
 
 // --- Unsigned integer intrinsics ---
 
+/// Read a JSON unsigned integer and write it as a `u8`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_u8(ctx: *mut DeserContext, out: *mut u8) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -656,6 +744,12 @@ pub unsafe extern "C" fn fad_json_read_u8(ctx: *mut DeserContext, out: *mut u8) 
     unsafe { *out = val as u8 };
 }
 
+/// Read a JSON unsigned integer and write it as a `u16`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u16`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_u16(ctx: *mut DeserContext, out: *mut u16) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -675,6 +769,12 @@ pub unsafe extern "C" fn fad_json_read_u16(ctx: *mut DeserContext, out: *mut u16
     unsafe { *out = val as u16 };
 }
 
+/// Read a JSON unsigned integer and write it as a `u32`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u32`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_u32(ctx: *mut DeserContext, out: *mut u32) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -694,6 +794,12 @@ pub unsafe extern "C" fn fad_json_read_u32(ctx: *mut DeserContext, out: *mut u32
     unsafe { *out = val as u32 };
 }
 
+/// Read a JSON unsigned integer and write it as a `u64`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u64`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_u64(ctx: *mut DeserContext, out: *mut u64) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -709,6 +815,12 @@ pub unsafe extern "C" fn fad_json_read_u64(ctx: *mut DeserContext, out: *mut u64
     unsafe { *out = val };
 }
 
+/// Read a JSON unsigned integer and write it as a `u128`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u128`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_u128(ctx: *mut DeserContext, out: *mut u128) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -724,6 +836,12 @@ pub unsafe extern "C" fn fad_json_read_u128(ctx: *mut DeserContext, out: *mut u1
     unsafe { *out = val };
 }
 
+/// Read a JSON unsigned integer and write it as a `usize`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `usize`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_usize(ctx: *mut DeserContext, out: *mut usize) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -750,6 +868,12 @@ pub unsafe extern "C" fn fad_json_read_usize(ctx: *mut DeserContext, out: *mut u
 
 // r[impl deser.json.scalar.integer]
 
+/// Read a JSON signed integer and write it as an `i8`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_i8(ctx: *mut DeserContext, out: *mut i8) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -769,6 +893,12 @@ pub unsafe extern "C" fn fad_json_read_i8(ctx: *mut DeserContext, out: *mut i8) 
     unsafe { *out = val as i8 };
 }
 
+/// Read a JSON signed integer and write it as an `i16`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i16`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_i16(ctx: *mut DeserContext, out: *mut i16) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -788,6 +918,12 @@ pub unsafe extern "C" fn fad_json_read_i16(ctx: *mut DeserContext, out: *mut i16
     unsafe { *out = val as i16 };
 }
 
+/// Read a JSON signed integer and write it as an `i32`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i32`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_i32(ctx: *mut DeserContext, out: *mut i32) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -807,6 +943,12 @@ pub unsafe extern "C" fn fad_json_read_i32(ctx: *mut DeserContext, out: *mut i32
     unsafe { *out = val as i32 };
 }
 
+/// Read a JSON signed integer and write it as an `i64`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i64`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_i64(ctx: *mut DeserContext, out: *mut i64) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -822,6 +964,12 @@ pub unsafe extern "C" fn fad_json_read_i64(ctx: *mut DeserContext, out: *mut i64
     unsafe { *out = val };
 }
 
+/// Read a JSON signed integer and write it as an `i128`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i128`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_i128(ctx: *mut DeserContext, out: *mut i128) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -837,6 +985,12 @@ pub unsafe extern "C" fn fad_json_read_i128(ctx: *mut DeserContext, out: *mut i1
     unsafe { *out = val };
 }
 
+/// Read a JSON signed integer and write it as an `isize`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `isize`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_isize(ctx: *mut DeserContext, out: *mut isize) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -863,6 +1017,12 @@ pub unsafe extern "C" fn fad_json_read_isize(ctx: *mut DeserContext, out: *mut i
 
 // r[impl deser.json.scalar.float]
 
+/// Read a JSON number and write it as an `f32`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `f32`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_f32(ctx: *mut DeserContext, out: *mut f32) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -891,6 +1051,12 @@ pub unsafe extern "C" fn fad_json_read_f32(ctx: *mut DeserContext, out: *mut f32
     }
 }
 
+/// Read a JSON number and write it as an `f64`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `f64`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_f64(ctx: *mut DeserContext, out: *mut f64) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -923,6 +1089,12 @@ pub unsafe extern "C" fn fad_json_read_f64(ctx: *mut DeserContext, out: *mut f64
 
 // r[impl deser.json.scalar.bool]
 
+/// Read a JSON boolean (`true` or `false`) and write it to `*out`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `bool`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_bool(ctx: *mut DeserContext, out: *mut bool) {
     unsafe { fad_json_skip_ws(ctx) };
@@ -964,6 +1136,11 @@ pub unsafe extern "C" fn fad_json_read_bool(ctx: *mut DeserContext, out: *mut bo
 /// Parse a JSON string value ("...") and write it to *out as a Rust String.
 /// Fast path: no escapes — validates UTF-8, allocates via to_owned().
 /// Slow path: escapes found — unescapes into Vec, converts via String::from_utf8.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `String`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_string_value(ctx: *mut DeserContext, out: *mut String) {
     unsafe {
@@ -1025,6 +1202,13 @@ pub unsafe extern "C" fn fad_json_read_string_value(ctx: *mut DeserContext, out:
 ///
 /// This only supports the no-escape fast path. Escaped strings require
 /// transformation and therefore cannot produce a direct borrow.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `&str`
+/// - The returned `&str` borrows from the input buffer; the caller must ensure the
+///   input outlives the borrow
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_str_value(ctx: *mut DeserContext, out: *mut &str) {
     unsafe {
@@ -1074,6 +1258,12 @@ pub unsafe extern "C" fn fad_json_read_str_value(ctx: *mut DeserContext, out: *m
 ///
 /// Fast path (no escapes): `Cow::Borrowed`.
 /// Slow path (escapes): `Cow::Owned`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `Cow<str>`
+/// - For the `Borrowed` variant, the input buffer must outlive the borrow
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_cow_str_value(
     ctx: *mut DeserContext,
@@ -1125,6 +1315,12 @@ pub unsafe extern "C" fn fad_json_read_cow_str_value(
     ctx.error.code = ErrorCode::UnterminatedString as u32;
 }
 
+/// Read a JSON single-character string and write it as a `char`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `char`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_read_char(ctx: *mut DeserContext, out: *mut char) {
     let mut s = String::new();
@@ -1149,6 +1345,11 @@ pub unsafe extern "C" fn fad_json_read_char(ctx: *mut DeserContext, out: *mut ch
 }
 
 /// Slow path for string value reading: unescapes into a Vec, converts to String.
+///
+/// # Safety
+///
+/// - `ctx.input_ptr` through `ctx.input_end` must be a valid readable byte range
+/// - `prefix_start` must point to `prefix_len` valid readable bytes
 unsafe fn json_read_string_value_slow_to_string(
     ctx: &mut DeserContext,
     prefix_start: *const u8,
@@ -1187,6 +1388,13 @@ unsafe fn json_read_string_value_slow_to_string(
 
 /// Finish reading a `&str` after the JIT scan found the closing `"`.
 /// Validates UTF-8, writes borrowed slice to `*out`, advances past `"`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `&str`
+/// - `start` must point to `len` valid readable bytes (the string content without quotes)
+/// - The byte at `start + len` must be the closing `"` and be readable
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_finish_str_fast(
     ctx: *mut DeserContext,
@@ -1218,6 +1426,13 @@ pub unsafe extern "C" fn fad_json_finish_str_fast(
 
 /// Finish reading a `Cow<str>` after the JIT scan found the closing `"` (no escapes).
 /// Validates UTF-8, writes `Cow::Borrowed` to `*out`, advances past `"`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `Cow<str>`
+/// - `start` must point to `len` valid readable bytes (the string content without quotes)
+/// - The byte at `start + len` must be the closing `"` and be readable
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_finish_cow_str_fast(
     ctx: *mut DeserContext,
@@ -1249,6 +1464,12 @@ pub unsafe extern "C" fn fad_json_finish_cow_str_fast(
 
 /// Slow path for `String`: the JIT scan found `\` at `start + prefix_len`.
 /// `ctx.input_ptr` is at the `\` byte. Unescapes into Vec, writes String to `*out`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `String`
+/// - `start` must point to `prefix_len` valid readable bytes
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_string_with_escapes(
     ctx: *mut DeserContext,
@@ -1265,6 +1486,12 @@ pub unsafe extern "C" fn fad_json_string_with_escapes(
 }
 
 /// Slow path for `Cow<str>`: the JIT scan found `\`. Unescapes, writes `Cow::Owned`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an uninitialized or valid `Cow<str>`
+/// - `start` must point to `prefix_len` valid readable bytes
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_cow_str_with_escapes(
     ctx: *mut DeserContext,
@@ -1282,6 +1509,13 @@ pub unsafe extern "C" fn fad_json_cow_str_with_escapes(
 
 /// Slow path for key reading: the JIT scan found `\` in a key.
 /// `ctx.input_ptr` is at the `\` byte. Unescapes into scratch buffer.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `start` must point to `prefix_len` valid readable bytes
+/// - `out_ptr` must be a valid, aligned, non-null pointer to a `*const u8`
+/// - `out_len` must be a valid, aligned, non-null pointer to a `usize`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_key_slow_from_jit(
     ctx: *mut DeserContext,
@@ -1296,6 +1530,10 @@ pub unsafe extern "C" fn fad_json_key_slow_from_jit(
 
 /// Set ExpectedTagKey error. Used when the first key in an adjacently/internally
 /// tagged enum is not the expected tag key.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_error_expected_tag_key(ctx: *mut DeserContext) {
     let ctx = unsafe { &mut *ctx };
@@ -1305,7 +1543,10 @@ pub unsafe extern "C" fn fad_json_error_expected_tag_key(ctx: *mut DeserContext)
 // --- JSON array intrinsics ---
 
 /// Skip whitespace, then expect and consume ','.
-#[allow(clippy::missing_safety_doc)]
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_expect_comma(ctx: *mut DeserContext) {
     unsafe {
@@ -1325,7 +1566,10 @@ pub unsafe extern "C" fn fad_json_expect_comma(ctx: *mut DeserContext) {
 }
 
 /// Skip whitespace, then expect and consume ']'.
-#[allow(clippy::missing_safety_doc)]
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_expect_array_end(ctx: *mut DeserContext) {
     unsafe {
@@ -1345,7 +1589,10 @@ pub unsafe extern "C" fn fad_json_expect_array_end(ctx: *mut DeserContext) {
 }
 
 /// Skip whitespace, then expect and consume '['.
-#[allow(clippy::missing_safety_doc)]
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_expect_array_start(ctx: *mut DeserContext) {
     unsafe {
@@ -1365,7 +1612,11 @@ pub unsafe extern "C" fn fad_json_expect_array_start(ctx: *mut DeserContext) {
 }
 
 /// Skip whitespace, then expect ',' (write 0 to *out) or ']' (write 1 to *out).
-#[allow(clippy::missing_safety_doc)]
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_json_comma_or_end_array(ctx: *mut DeserContext, out: *mut u8) {
     unsafe {
@@ -1392,6 +1643,11 @@ pub unsafe extern "C" fn fad_json_comma_or_end_array(ctx: *mut DeserContext, out
 // =============================================================================
 
 /// Ensure the output buffer has at least `needed` bytes of capacity.
+///
+/// # Safety
+///
+/// - `ctx.output_ptr` through `ctx.output_end` must be a valid writable byte range
+///   (or the buffer must be growable via `ctx.grow`)
 unsafe fn enc_ensure(ctx: &mut EncodeContext, needed: usize) {
     if ctx.remaining() < needed {
         unsafe { ctx.grow(needed) };
@@ -1399,6 +1655,11 @@ unsafe fn enc_ensure(ctx: &mut EncodeContext, needed: usize) {
 }
 
 /// Write a byte slice to the output buffer, ensuring capacity first.
+///
+/// # Safety
+///
+/// - `ctx.output_ptr` through `ctx.output_end` must be a valid writable byte range
+///   (or the buffer must be growable via `ctx.grow`)
 unsafe fn enc_write_bytes(ctx: &mut EncodeContext, bytes: &[u8]) {
     unsafe { enc_ensure(ctx, bytes.len()) };
     unsafe {
@@ -1409,6 +1670,10 @@ unsafe fn enc_write_bytes(ctx: &mut EncodeContext, bytes: &[u8]) {
 
 macro_rules! json_write_unsigned {
     ($name:ident, $ty:ty) => {
+        /// # Safety
+        ///
+        /// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+        /// - `field_ptr` must be a valid, aligned pointer to a `$ty`
         pub unsafe extern "C" fn $name(ctx: *mut EncodeContext, field_ptr: *const u8) {
             let ctx = unsafe { &mut *ctx };
             let value = unsafe { *(field_ptr as *const $ty) };
@@ -1421,6 +1686,10 @@ macro_rules! json_write_unsigned {
 
 macro_rules! json_write_signed {
     ($name:ident, $ty:ty) => {
+        /// # Safety
+        ///
+        /// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+        /// - `field_ptr` must be a valid, aligned pointer to a `$ty`
         pub unsafe extern "C" fn $name(ctx: *mut EncodeContext, field_ptr: *const u8) {
             let ctx = unsafe { &mut *ctx };
             let value = unsafe { *(field_ptr as *const $ty) };
@@ -1444,6 +1713,12 @@ json_write_signed!(fad_json_write_i64, i64);
 json_write_signed!(fad_json_write_i128, i128);
 json_write_signed!(fad_json_write_isize, isize);
 
+/// Write an `f32` as a JSON number. Writes `null` for infinity/NaN.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to an `f32`
 pub unsafe extern "C" fn fad_json_write_f32(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const f32) };
@@ -1463,6 +1738,12 @@ pub unsafe extern "C" fn fad_json_write_f32(ctx: *mut EncodeContext, field_ptr: 
     }
 }
 
+/// Write an `f64` as a JSON number. Writes `null` for infinity/NaN.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to an `f64`
 pub unsafe extern "C" fn fad_json_write_f64(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const f64) };
@@ -1479,6 +1760,12 @@ pub unsafe extern "C" fn fad_json_write_f64(ctx: *mut EncodeContext, field_ptr: 
     }
 }
 
+/// Write a `bool` as JSON `true` or `false`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to a `bool`
 pub unsafe extern "C" fn fad_json_write_bool(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const bool) };
@@ -1489,6 +1776,12 @@ pub unsafe extern "C" fn fad_json_write_bool(ctx: *mut EncodeContext, field_ptr:
     }
 }
 
+/// Write a `char` as a JSON single-character string with escaping.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to a `char`
 pub unsafe extern "C" fn fad_json_write_char(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const char) };
@@ -1505,6 +1798,11 @@ pub unsafe extern "C" fn fad_json_write_char(ctx: *mut EncodeContext, field_ptr:
     ctx.output_ptr = unsafe { ctx.output_ptr.add(1) };
 }
 
+/// Write a unit `()` as JSON `null`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
 pub unsafe extern "C" fn fad_json_write_unit(ctx: *mut EncodeContext, _field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     unsafe { enc_write_bytes(ctx, b"null") };
@@ -1513,6 +1811,12 @@ pub unsafe extern "C" fn fad_json_write_unit(ctx: *mut EncodeContext, _field_ptr
 /// Write a JSON string value: `"..."` with proper escaping.
 ///
 /// Called as: fn(ctx, field_ptr) where field_ptr points at the String/&str in the input struct.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to a `String` (or type with
+///   compatible memory layout as discovered by `malum::discover_string_offsets`)
 pub unsafe extern "C" fn fad_json_write_string(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let offsets = crate::malum::discover_string_offsets();
@@ -1542,6 +1846,11 @@ pub unsafe extern "C" fn fad_json_write_string(ctx: *mut EncodeContext, field_pt
 
 /// Escape a byte slice as JSON string content and write to the EncodeContext.
 /// Does NOT write the surrounding quotes.
+///
+/// # Safety
+///
+/// - `ctx.output_ptr` through `ctx.output_end` must be a valid writable byte range
+///   (or the buffer must be growable via `ctx.grow`)
 unsafe fn json_escape_bytes_to_ctx(ctx: &mut EncodeContext, bytes: &[u8]) {
     // Fast path: scan for bytes that need escaping
     let mut start = 0;

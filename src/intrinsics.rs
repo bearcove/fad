@@ -94,6 +94,10 @@ fn zigzag_decode_i128(encoded: u128) -> i128 {
 
 // r[impl deser.postcard.scalar.bool]
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `bool`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_bool(ctx: *mut DeserContext, out: *mut bool) {
     let ctx = unsafe { &mut *ctx };
@@ -110,6 +114,10 @@ pub unsafe extern "C" fn fad_read_bool(ctx: *mut DeserContext, out: *mut bool) {
     }
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_u8(ctx: *mut DeserContext, out: *mut u8) {
     let ctx = unsafe { &mut *ctx };
@@ -122,6 +130,10 @@ pub unsafe extern "C" fn fad_read_u8(ctx: *mut DeserContext, out: *mut u8) {
     unsafe { *out = byte };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u16`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_u16(ctx: *mut DeserContext, out: *mut u16) {
     let ctx = unsafe { &mut *ctx };
@@ -138,6 +150,10 @@ pub unsafe extern "C" fn fad_read_u16(ctx: *mut DeserContext, out: *mut u16) {
 
 // r[impl deser.postcard.scalar.varint]
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u32`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_varint_u32(ctx: *mut DeserContext, out: *mut u32) {
     let ctx = unsafe { &mut *ctx };
@@ -152,6 +168,10 @@ pub unsafe extern "C" fn fad_read_varint_u32(ctx: *mut DeserContext, out: *mut u
     unsafe { *out = val as u32 };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u64`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_u64(ctx: *mut DeserContext, out: *mut u64) {
     let ctx = unsafe { &mut *ctx };
@@ -162,6 +182,10 @@ pub unsafe extern "C" fn fad_read_u64(ctx: *mut DeserContext, out: *mut u64) {
     unsafe { *out = val };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `u128`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_u128(ctx: *mut DeserContext, out: *mut u128) {
     let ctx = unsafe { &mut *ctx };
@@ -172,6 +196,10 @@ pub unsafe extern "C" fn fad_read_u128(ctx: *mut DeserContext, out: *mut u128) {
     unsafe { *out = val };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `usize`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_usize(ctx: *mut DeserContext, out: *mut usize) {
     let ctx = unsafe { &mut *ctx };
@@ -193,6 +221,10 @@ pub unsafe extern "C" fn fad_read_usize(ctx: *mut DeserContext, out: *mut usize)
 // i8: raw byte in two's complement (per postcard spec)
 // i16/i32/i64: ZigZag + varint
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i8`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_i8(ctx: *mut DeserContext, out: *mut i8) {
     let ctx = unsafe { &mut *ctx };
@@ -205,6 +237,10 @@ pub unsafe extern "C" fn fad_read_i8(ctx: *mut DeserContext, out: *mut i8) {
     unsafe { *out = byte as i8 };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i16`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_i16(ctx: *mut DeserContext, out: *mut i16) {
     let ctx = unsafe { &mut *ctx };
@@ -220,6 +256,10 @@ pub unsafe extern "C" fn fad_read_i16(ctx: *mut DeserContext, out: *mut i16) {
     unsafe { *out = decoded as i16 };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i32`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_i32(ctx: *mut DeserContext, out: *mut i32) {
     let ctx = unsafe { &mut *ctx };
@@ -235,6 +275,10 @@ pub unsafe extern "C" fn fad_read_i32(ctx: *mut DeserContext, out: *mut i32) {
     unsafe { *out = decoded as i32 };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i64`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_i64(ctx: *mut DeserContext, out: *mut i64) {
     let ctx = unsafe { &mut *ctx };
@@ -245,6 +289,10 @@ pub unsafe extern "C" fn fad_read_i64(ctx: *mut DeserContext, out: *mut i64) {
     unsafe { *out = zigzag_decode(val) };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `i128`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_i128(ctx: *mut DeserContext, out: *mut i128) {
     let ctx = unsafe { &mut *ctx };
@@ -255,6 +303,10 @@ pub unsafe extern "C" fn fad_read_i128(ctx: *mut DeserContext, out: *mut i128) {
     unsafe { *out = zigzag_decode_i128(val) };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `isize`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_isize(ctx: *mut DeserContext, out: *mut isize) {
     let ctx = unsafe { &mut *ctx };
@@ -277,6 +329,10 @@ pub unsafe extern "C" fn fad_read_isize(ctx: *mut DeserContext, out: *mut isize)
 
 // r[impl deser.postcard.scalar.float]
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `f32`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_f32(ctx: *mut DeserContext, out: *mut f32) {
     let ctx = unsafe { &mut *ctx };
@@ -290,6 +346,10 @@ pub unsafe extern "C" fn fad_read_f32(ctx: *mut DeserContext, out: *mut f32) {
     unsafe { *out = f32::from_le_bytes(bytes) };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to an `f64`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_f64(ctx: *mut DeserContext, out: *mut f64) {
     let ctx = unsafe { &mut *ctx };
@@ -306,6 +366,11 @@ pub unsafe extern "C" fn fad_read_f64(ctx: *mut DeserContext, out: *mut f64) {
 // --- String intrinsic ---
 
 /// Read a postcard length-prefixed string from the input, write to `*out`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `String` memory
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *mut String) {
     let ctx = unsafe { &mut *ctx };
@@ -316,7 +381,7 @@ pub unsafe extern "C" fn fad_read_postcard_string(ctx: *mut DeserContext, out: *
     unsafe { out.write(s.to_owned()) };
 }
 
-unsafe fn read_postcard_string_borrowed<'a>(ctx: &'a mut DeserContext) -> Option<&'a str> {
+unsafe fn read_postcard_string_borrowed(ctx: &mut DeserContext) -> Option<&str> {
     let mut len: u32 = 0;
     unsafe { fad_read_varint_u32(ctx as *mut _, &mut len) };
     if ctx.error.code != 0 {
@@ -354,6 +419,12 @@ unsafe fn read_postcard_string_borrowed<'a>(ctx: &'a mut DeserContext) -> Option
 ///
 /// This is always zero-copy: postcard strings are length-prefixed UTF-8 and
 /// require no unescaping.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `&str` memory
+/// - The borrowed slice is only valid for the lifetime of the input buffer
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_postcard_str(ctx: *mut DeserContext, out: *mut &str) {
     let ctx = unsafe { &mut *ctx };
@@ -369,6 +440,12 @@ pub unsafe extern "C" fn fad_read_postcard_str(ctx: *mut DeserContext, out: *mut
 ///
 /// Postcard strings are always borrowable (no escape sequences), so this always
 /// produces `Cow::Borrowed`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `Cow<'static, str>` memory
+/// - The borrowed slice is only valid for the lifetime of the input buffer
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_postcard_cow_str(
     ctx: *mut DeserContext,
@@ -383,6 +460,10 @@ pub unsafe extern "C" fn fad_read_postcard_cow_str(
     unsafe { out.write(Cow::Borrowed(s_static)) };
 }
 
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to a `char`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_read_char(ctx: *mut DeserContext, out: *mut char) {
     let mut len: u32 = 0;
@@ -431,6 +512,12 @@ pub unsafe extern "C" fn fad_read_char(ctx: *mut DeserContext, out: *mut char) {
 ///
 /// Wraps the facet OptionVTable's init_none, which takes wide pointer types
 /// (PtrUninit), into a thin `extern "C"` interface callable from JIT code.
+///
+/// # Safety
+///
+/// - `init_none_fn` must be a valid `OptionInitNoneFn` for the target Option type
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized memory
+///   sized and aligned for the target `Option<T>`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_option_init_none(init_none_fn: facet::OptionInitNoneFn, out: *mut u8) {
     let ptr_uninit = facet::PtrUninit::new_sized(out);
@@ -441,6 +528,14 @@ pub unsafe extern "C" fn fad_option_init_none(init_none_fn: facet::OptionInitNon
 ///
 /// `value_ptr` points to an already-deserialized T. init_some will _move_ it
 /// (read + write into the Option), so the caller must not use value_ptr afterwards.
+///
+/// # Safety
+///
+/// - `init_some_fn` must be a valid `OptionInitSomeFn` for the target Option type
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized memory
+///   sized and aligned for the target `Option<T>`
+/// - `value_ptr` must be a valid, aligned, non-null pointer to an initialized `T`;
+///   it is consumed (moved) and must not be used after this call
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_option_init_some(
     init_some_fn: facet::OptionInitSomeFn,
@@ -462,6 +557,14 @@ pub unsafe extern "C" fn fad_option_init_some(
 ///
 /// `value_ptr` points to an already-deserialized T. new_into_fn will _move_ it
 /// (read + write into the pointer), so the caller must not use value_ptr afterwards.
+///
+/// # Safety
+///
+/// - `new_into_fn` must be a valid `NewIntoFn` for the target smart pointer type
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized memory
+///   sized and aligned for the target smart pointer (Box/Arc/Rc)
+/// - `value_ptr` must be a valid, aligned, non-null pointer to an initialized `T`;
+///   it is consumed (moved) and must not be used after this call
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_pointer_new_into(
     new_into_fn: facet::NewIntoFn,
@@ -479,6 +582,12 @@ pub unsafe extern "C" fn fad_pointer_new_into(
 /// bounds check the input, or advance the cursor. The JIT inlines those parts.
 /// This intrinsic only handles the work that can't be inlined: UTF-8 validation
 /// and heap allocation.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `String` memory
+/// - `data_ptr` must point to at least `data_len` readable bytes
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_postcard_validate_and_alloc_string(
     ctx: *mut DeserContext,
@@ -515,6 +624,11 @@ pub unsafe extern "C" fn fad_postcard_validate_and_alloc_string(
 /// - On success: pointer to allocated buffer containing the string bytes
 /// - On empty (data_len == 0): `1 as *mut u8` (dangling aligned pointer)
 /// - On error: null pointer (error code set on ctx)
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `data_ptr` must point to at least `data_len` readable bytes
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fad_string_validate_alloc_copy(
     ctx: *mut DeserContext,
@@ -525,7 +639,7 @@ pub unsafe extern "C" fn fad_string_validate_alloc_copy(
 
     // Empty string: return dangling pointer, JIT writes ptr/0/0.
     if len == 0 {
-        return std::mem::align_of::<u8>() as *mut u8;
+        return std::ptr::dangling_mut::<u8>();
     }
 
     // Validate UTF-8 unless input is already trusted.
@@ -749,7 +863,7 @@ pub unsafe extern "C" fn fad_map_build(
     count: usize,
 ) {
     let f: MapFromPairSliceFn = unsafe { core::mem::transmute(from_pair_slice_fn) };
-    let uninit = PtrUninit::new(map_ptr as *mut u8);
+    let uninit = PtrUninit::new(map_ptr);
     unsafe { f(uninit, pairs_ptr, count) };
 }
 
@@ -762,6 +876,11 @@ use crate::context::EncodeContext;
 ///
 /// The JIT must flush output_ptr to ctx before calling this, and reload
 /// output_ptr and output_end after (same pattern as deser cursor flush/reload).
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `ctx.output_ptr` must have been flushed (written back) before this call
 pub unsafe extern "C" fn fad_output_grow(ctx: *mut EncodeContext, needed: usize) {
     let ctx = unsafe { &mut *ctx };
     unsafe { ctx.grow(needed) };
@@ -790,6 +909,7 @@ unsafe fn write_varint32(ptr: *mut u8, mut value: u32) -> usize {
 /// Helper: write a u64 as a varint into the output buffer.
 /// Assumes sufficient capacity has already been ensured.
 /// Returns the number of bytes written.
+#[allow(dead_code)]
 unsafe fn write_varint64(ptr: *mut u8, mut value: u64) -> usize {
     let start = ptr;
     let mut p = ptr;
@@ -839,6 +959,11 @@ unsafe fn ensure_capacity(ctx: &mut EncodeContext, needed: usize) {
 ///
 /// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
 /// Reads ptr and len from the string's memory layout using discovered offsets.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must point to a valid, initialized String/&str/Cow<str> value
 pub unsafe extern "C" fn fad_encode_postcard_string(
     ctx: *mut EncodeContext,
     field_ptr: *const u8,
@@ -870,6 +995,11 @@ pub unsafe extern "C" fn fad_encode_postcard_string(
 /// Encode a u128 as a varint.
 ///
 /// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to an initialized `u128`
 pub unsafe extern "C" fn fad_encode_u128(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const u128) };
@@ -882,6 +1012,11 @@ pub unsafe extern "C" fn fad_encode_u128(ctx: *mut EncodeContext, field_ptr: *co
 /// Encode an i128 as zigzag + varint.
 ///
 /// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to an initialized `i128`
 pub unsafe extern "C" fn fad_encode_i128(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const i128) };
@@ -895,6 +1030,11 @@ pub unsafe extern "C" fn fad_encode_i128(ctx: *mut EncodeContext, field_ptr: *co
 /// Encode a char as length-prefixed UTF-8 bytes (postcard wire format).
 ///
 /// Called as: fn(ctx, field_ptr) where field_ptr = input + field_offset.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to an `EncodeContext`
+/// - `field_ptr` must be a valid, aligned pointer to an initialized `char`
 pub unsafe extern "C" fn fad_encode_char(ctx: *mut EncodeContext, field_ptr: *const u8) {
     let ctx = unsafe { &mut *ctx };
     let value = unsafe { *(field_ptr as *const char) };
