@@ -5,6 +5,7 @@ pub mod format;
 pub mod intrinsics;
 pub mod ir;
 pub mod ir_backend;
+pub mod ir_parse;
 pub mod ir_passes;
 pub mod jit_debug;
 pub mod jit_f64;
@@ -17,6 +18,7 @@ mod pow10tab;
 pub mod recipe;
 pub mod regalloc_engine;
 pub mod regalloc_mir;
+pub mod regalloc_mir_parse;
 pub mod solver;
 
 use compiler::{CompiledDecoder, CompiledEncoder};

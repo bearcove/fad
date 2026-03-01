@@ -199,6 +199,57 @@ impl fmt::Display for IntrinsicFn {
     }
 }
 
+/// Bidirectional mapping between string names and [`IntrinsicFn`] values.
+///
+/// Used by the text-format display and parser to print/resolve intrinsic names
+/// instead of raw hex addresses.
+pub struct IntrinsicRegistry {
+    entries: Vec<(&'static str, IntrinsicFn)>,
+}
+
+impl IntrinsicRegistry {
+    /// Build a registry from all known intrinsics (postcard + JSON).
+    pub fn new() -> Self {
+        let mut entries = crate::intrinsics::known_intrinsics();
+        entries.extend(crate::json_intrinsics::known_intrinsics());
+        Self { entries }
+    }
+
+    /// Build an empty registry (for tests that don't use real intrinsics).
+    pub fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Register a custom intrinsic (e.g. test-only functions).
+    pub fn register(&mut self, name: &'static str, func: IntrinsicFn) {
+        self.entries.push((name, func));
+    }
+
+    /// Look up the name for an intrinsic function pointer.
+    pub fn name_of(&self, func: IntrinsicFn) -> Option<&'static str> {
+        self.entries
+            .iter()
+            .find(|(_, f)| *f == func)
+            .map(|(name, _)| *name)
+    }
+
+    /// Look up the function pointer for a name.
+    pub fn func_by_name(&self, name: &str) -> Option<IntrinsicFn> {
+        self.entries
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+    }
+}
+
+impl Default for IntrinsicRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── Ports and edges ────────────────────────────────────────────────────────
 
 // r[impl ir.rvsdg.ports]
@@ -598,9 +649,9 @@ pub struct IrFunc {
     /// The root lambda node.
     pub root: NodeId,
     /// Next VReg to allocate.
-    vreg_count: u32,
+    pub(crate) vreg_count: u32,
     /// Next stack slot to allocate.
-    slot_count: u32,
+    pub(crate) slot_count: u32,
     /// Lambda registry: maps LambdaId to the NodeId of the lambda node.
     pub lambdas: Vec<NodeId>,
 }
@@ -1568,12 +1619,46 @@ impl<'a> RegionBuilder<'a> {
 
 impl fmt::Display for IrFunc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_node(f, self.root, 0)
+        let display = IrFuncDisplay {
+            func: self,
+            registry: None,
+        };
+        fmt::Display::fmt(&display, f)
+    }
+}
+
+/// Wrapper for displaying an [`IrFunc`] with an optional [`IntrinsicRegistry`]
+/// for resolving intrinsic names.
+pub struct IrFuncDisplay<'a> {
+    pub func: &'a IrFunc,
+    pub registry: Option<&'a IntrinsicRegistry>,
+}
+
+impl<'a> fmt::Display for IrFuncDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.func.fmt_node(f, self.func.root, 0, self.registry)
     }
 }
 
 impl IrFunc {
-    fn fmt_node(&self, f: &mut fmt::Formatter<'_>, node_id: NodeId, indent: usize) -> fmt::Result {
+    /// Display this IrFunc using an intrinsic registry for name resolution.
+    pub fn display_with_registry<'a>(
+        &'a self,
+        registry: &'a IntrinsicRegistry,
+    ) -> IrFuncDisplay<'a> {
+        IrFuncDisplay {
+            func: self,
+            registry: Some(registry),
+        }
+    }
+
+    fn fmt_node(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        node_id: NodeId,
+        indent: usize,
+        registry: Option<&IntrinsicRegistry>,
+    ) -> fmt::Result {
         let node = &self.nodes[node_id];
         let pad = "  ".repeat(indent);
 
@@ -1589,12 +1674,12 @@ impl IrFunc {
                     lambda_id.index(),
                     shape.type_identifier,
                 )?;
-                self.fmt_region(f, *body, indent + 1)?;
+                self.fmt_region(f, *body, indent + 1, registry)?;
                 writeln!(f, "{pad}}}")?;
             }
             NodeKind::Simple(op) => {
                 write!(f, "{pad}n{} = ", node_id.index())?;
-                self.fmt_op(f, op)?;
+                self.fmt_op(f, op, registry)?;
                 write!(f, " [")?;
                 for (i, inp) in node.inputs.iter().enumerate() {
                     if i > 0 {
@@ -1628,7 +1713,7 @@ impl IrFunc {
                 writeln!(f, "{pad}] {{")?;
                 for (i, &region) in regions.iter().enumerate() {
                     writeln!(f, "{inputs_pad}branch {i}:")?;
-                    self.fmt_region(f, region, indent + 2)?;
+                    self.fmt_region(f, region, indent + 2, registry)?;
                 }
                 write!(f, "{pad}}} -> [")?;
                 for (i, out) in node.outputs.iter().enumerate() {
@@ -1648,7 +1733,7 @@ impl IrFunc {
                     self.fmt_source(f, &inp.source)?;
                 }
                 writeln!(f, "] {{")?;
-                self.fmt_region(f, *body, indent + 1)?;
+                self.fmt_region(f, *body, indent + 1, registry)?;
                 write!(f, "{pad}}} -> [")?;
                 for (i, out) in node.outputs.iter().enumerate() {
                     if i > 0 {
@@ -1684,6 +1769,7 @@ impl IrFunc {
         f: &mut fmt::Formatter<'_>,
         region_id: RegionId,
         indent: usize,
+        registry: Option<&IntrinsicRegistry>,
     ) -> fmt::Result {
         let region = &self.regions[region_id];
         let pad = "  ".repeat(indent);
@@ -1703,7 +1789,7 @@ impl IrFunc {
 
         // Nodes.
         for &node_id in &region.nodes {
-            self.fmt_node(f, node_id, indent + 1)?;
+            self.fmt_node(f, node_id, indent + 1, registry)?;
         }
 
         // Results.
@@ -1720,7 +1806,12 @@ impl IrFunc {
         Ok(())
     }
 
-    fn fmt_op(&self, f: &mut fmt::Formatter<'_>, op: &IrOp) -> fmt::Result {
+    fn fmt_op(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        op: &IrOp,
+        registry: Option<&IntrinsicRegistry>,
+    ) -> fmt::Result {
         match op {
             IrOp::ReadBytes { count } => write!(f, "ReadBytes({count})"),
             IrOp::PeekByte => write!(f, "PeekByte"),
@@ -1753,12 +1844,33 @@ impl IrFunc {
             IrOp::SignExtend { from_width } => write!(f, "SignExtend(from={from_width})"),
             IrOp::CallIntrinsic {
                 func, field_offset, ..
-            } => write!(f, "CallIntrinsic({func}, field_offset={field_offset})"),
-            IrOp::CallPure { func, .. } => write!(f, "CallPure({func})"),
+            } => {
+                write!(f, "CallIntrinsic(")?;
+                Self::fmt_intrinsic(f, *func, registry)?;
+                write!(f, ", field_offset={field_offset})")
+            }
+            IrOp::CallPure { func, .. } => {
+                write!(f, "CallPure(")?;
+                Self::fmt_intrinsic(f, *func, registry)?;
+                write!(f, ")")
+            }
             IrOp::ErrorExit { code } => write!(f, "ErrorExit({code:?})"),
             IrOp::SimdStringScan => write!(f, "SimdStringScan"),
             IrOp::SimdWhitespaceSkip => write!(f, "SimdWhitespaceSkip"),
         }
+    }
+
+    fn fmt_intrinsic(
+        f: &mut fmt::Formatter<'_>,
+        func: IntrinsicFn,
+        registry: Option<&IntrinsicRegistry>,
+    ) -> fmt::Result {
+        if let Some(reg) = registry {
+            if let Some(name) = reg.name_of(func) {
+                return write!(f, "@{name}");
+            }
+        }
+        write!(f, "{func}")
     }
 
     fn fmt_source(&self, f: &mut fmt::Formatter<'_>, source: &PortSource) -> fmt::Result {

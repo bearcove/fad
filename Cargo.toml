@@ -17,6 +17,7 @@ dynasm = "5"
 itoa = "1"
 zmij = "1"
 regalloc2 = "0.15"
+chumsky = "1.0.0-alpha.8"
 
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }

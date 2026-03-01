@@ -1905,3 +1905,186 @@ unsafe fn json_escape_bytes_to_ctx(ctx: &mut EncodeContext, bytes: &[u8]) {
         unsafe { enc_write_bytes(ctx, tail) };
     }
 }
+
+/// Returns all known JSON intrinsics as `(name, IntrinsicFn)` pairs.
+pub fn known_intrinsics() -> Vec<(&'static str, crate::ir::IntrinsicFn)> {
+    use crate::ir::IntrinsicFn;
+    vec![
+        (
+            "kajit_json_skip_ws",
+            IntrinsicFn(kajit_json_skip_ws as *const () as usize),
+        ),
+        (
+            "kajit_json_expect_object_start",
+            IntrinsicFn(kajit_json_expect_object_start as *const () as usize),
+        ),
+        (
+            "kajit_json_expect_colon",
+            IntrinsicFn(kajit_json_expect_colon as *const () as usize),
+        ),
+        (
+            "kajit_json_peek_after_ws",
+            IntrinsicFn(kajit_json_peek_after_ws as *const () as usize),
+        ),
+        (
+            "kajit_json_read_key",
+            IntrinsicFn(kajit_json_read_key as *const () as usize),
+        ),
+        (
+            "kajit_json_key_equals",
+            IntrinsicFn(kajit_json_key_equals as *const () as usize),
+        ),
+        (
+            "kajit_json_skip_value",
+            IntrinsicFn(kajit_json_skip_value as *const () as usize),
+        ),
+        (
+            "kajit_json_expect_object_end",
+            IntrinsicFn(kajit_json_expect_object_end as *const () as usize),
+        ),
+        (
+            "kajit_json_comma_or_end_object",
+            IntrinsicFn(kajit_json_comma_or_end_object as *const () as usize),
+        ),
+        (
+            "kajit_json_read_u8",
+            IntrinsicFn(kajit_json_read_u8 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_u16",
+            IntrinsicFn(kajit_json_read_u16 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_u32",
+            IntrinsicFn(kajit_json_read_u32 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_u64",
+            IntrinsicFn(kajit_json_read_u64 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_u128",
+            IntrinsicFn(kajit_json_read_u128 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_usize",
+            IntrinsicFn(kajit_json_read_usize as *const () as usize),
+        ),
+        (
+            "kajit_json_read_i8",
+            IntrinsicFn(kajit_json_read_i8 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_i16",
+            IntrinsicFn(kajit_json_read_i16 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_i32",
+            IntrinsicFn(kajit_json_read_i32 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_i64",
+            IntrinsicFn(kajit_json_read_i64 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_i128",
+            IntrinsicFn(kajit_json_read_i128 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_isize",
+            IntrinsicFn(kajit_json_read_isize as *const () as usize),
+        ),
+        (
+            "kajit_json_read_f32",
+            IntrinsicFn(kajit_json_read_f32 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_f64",
+            IntrinsicFn(kajit_json_read_f64 as *const () as usize),
+        ),
+        (
+            "kajit_json_read_bool",
+            IntrinsicFn(kajit_json_read_bool as *const () as usize),
+        ),
+        (
+            "kajit_json_read_string_value",
+            IntrinsicFn(kajit_json_read_string_value as *const () as usize),
+        ),
+        (
+            "kajit_json_read_str_value",
+            IntrinsicFn(kajit_json_read_str_value as *const () as usize),
+        ),
+        (
+            "kajit_json_read_cow_str_value",
+            IntrinsicFn(kajit_json_read_cow_str_value as *const () as usize),
+        ),
+        (
+            "kajit_json_read_char",
+            IntrinsicFn(kajit_json_read_char as *const () as usize),
+        ),
+        (
+            "kajit_json_finish_str_fast",
+            IntrinsicFn(kajit_json_finish_str_fast as *const () as usize),
+        ),
+        (
+            "kajit_json_finish_cow_str_fast",
+            IntrinsicFn(kajit_json_finish_cow_str_fast as *const () as usize),
+        ),
+        (
+            "kajit_json_string_with_escapes",
+            IntrinsicFn(kajit_json_string_with_escapes as *const () as usize),
+        ),
+        (
+            "kajit_json_cow_str_with_escapes",
+            IntrinsicFn(kajit_json_cow_str_with_escapes as *const () as usize),
+        ),
+        (
+            "kajit_json_key_slow_from_jit",
+            IntrinsicFn(kajit_json_key_slow_from_jit as *const () as usize),
+        ),
+        (
+            "kajit_json_error_expected_tag_key",
+            IntrinsicFn(kajit_json_error_expected_tag_key as *const () as usize),
+        ),
+        (
+            "kajit_json_expect_comma",
+            IntrinsicFn(kajit_json_expect_comma as *const () as usize),
+        ),
+        (
+            "kajit_json_expect_array_end",
+            IntrinsicFn(kajit_json_expect_array_end as *const () as usize),
+        ),
+        (
+            "kajit_json_expect_array_start",
+            IntrinsicFn(kajit_json_expect_array_start as *const () as usize),
+        ),
+        (
+            "kajit_json_comma_or_end_array",
+            IntrinsicFn(kajit_json_comma_or_end_array as *const () as usize),
+        ),
+        (
+            "kajit_json_write_f32",
+            IntrinsicFn(kajit_json_write_f32 as *const () as usize),
+        ),
+        (
+            "kajit_json_write_f64",
+            IntrinsicFn(kajit_json_write_f64 as *const () as usize),
+        ),
+        (
+            "kajit_json_write_bool",
+            IntrinsicFn(kajit_json_write_bool as *const () as usize),
+        ),
+        (
+            "kajit_json_write_char",
+            IntrinsicFn(kajit_json_write_char as *const () as usize),
+        ),
+        (
+            "kajit_json_write_unit",
+            IntrinsicFn(kajit_json_write_unit as *const () as usize),
+        ),
+        (
+            "kajit_json_write_string",
+            IntrinsicFn(kajit_json_write_string as *const () as usize),
+        ),
+    ]
+}

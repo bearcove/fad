@@ -149,6 +149,244 @@ pub struct RaProgram {
     pub slot_count: u32,
 }
 
+// ─── Display ────────────────────────────────────────────────────────────────
+
+impl std::fmt::Display for RaProgram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for func in &self.funcs {
+            write!(f, "{func}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for RaFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "ra_func @{} {{",
+            self.lambda_id.index()
+        )?;
+        for block in &self.blocks {
+            fmt_block(f, block)?;
+        }
+        writeln!(f, "}}")
+    }
+}
+
+fn fmt_block(f: &mut std::fmt::Formatter<'_>, block: &RaBlock) -> std::fmt::Result {
+    // Block header: block b0 [params: v0, v1] (preds: b2, b3):
+    write!(f, "  block b{}", block.id.0)?;
+    if !block.params.is_empty() {
+        write!(f, " [params:")?;
+        for (i, p) in block.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(f, " v{}", p.index())?;
+        }
+        write!(f, "]")?;
+    }
+    if !block.preds.is_empty() {
+        write!(f, " (preds:")?;
+        for (i, p) in block.preds.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(f, " b{}", p.0)?;
+        }
+        write!(f, ")")?;
+    }
+    writeln!(f, ":")?;
+
+    // Instructions.
+    for inst in &block.insts {
+        write!(f, "    ")?;
+        fmt_ra_inst(f, inst)?;
+        writeln!(f)?;
+    }
+
+    // Terminator.
+    write!(f, "    term: ")?;
+    fmt_terminator(f, &block.term)?;
+    writeln!(f)?;
+
+    // Successors with edge args.
+    if block.succs.is_empty() {
+        writeln!(f, "    succs: (none)")?;
+    } else {
+        write!(f, "    succs:")?;
+        for edge in &block.succs {
+            write!(f, " b{}", edge.to.0)?;
+            if !edge.args.is_empty() {
+                write!(f, " [")?;
+                for (i, arg) in edge.args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "v{}", arg.index())?;
+                }
+                write!(f, "]")?;
+            }
+        }
+        writeln!(f)?;
+    }
+
+    Ok(())
+}
+
+fn fmt_ra_inst(f: &mut std::fmt::Formatter<'_>, inst: &RaInst) -> std::fmt::Result {
+    // Show operands in a compact format.
+    // Defs first, then the op name, then uses.
+    let defs: Vec<_> = inst
+        .operands
+        .iter()
+        .filter(|o| o.kind == OperandKind::Def)
+        .collect();
+    let uses: Vec<_> = inst
+        .operands
+        .iter()
+        .filter(|o| o.kind == OperandKind::Use)
+        .collect();
+
+    if !defs.is_empty() {
+        for (i, d) in defs.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            fmt_operand(f, d)?;
+        }
+        write!(f, " = ")?;
+    }
+
+    // Op name (simplified from LinearOp).
+    fmt_ra_op_name(f, &inst.op)?;
+
+    if !uses.is_empty() {
+        write!(f, " ")?;
+        for (i, u) in uses.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            fmt_operand(f, u)?;
+        }
+    }
+
+    if inst.clobbers.caller_saved_gpr || inst.clobbers.caller_saved_simd {
+        write!(f, " !")?;
+        if inst.clobbers.caller_saved_gpr {
+            write!(f, "gpr")?;
+        }
+        if inst.clobbers.caller_saved_simd {
+            if inst.clobbers.caller_saved_gpr {
+                write!(f, ",")?;
+            }
+            write!(f, "simd")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn fmt_operand(f: &mut std::fmt::Formatter<'_>, op: &RaOperand) -> std::fmt::Result {
+    write!(f, "v{}", op.vreg.index())?;
+    write!(
+        f,
+        ":{}",
+        match op.class {
+            RegClass::Gpr => "gpr",
+            RegClass::Simd => "simd",
+        }
+    )?;
+    if let Some(fixed) = op.fixed {
+        match fixed {
+            FixedReg::AbiArg(i) => write!(f, "/arg{i}")?,
+            FixedReg::AbiRet(i) => write!(f, "/ret{i}")?,
+        }
+    }
+    Ok(())
+}
+
+fn fmt_ra_op_name(f: &mut std::fmt::Formatter<'_>, op: &LinearOp) -> std::fmt::Result {
+    match op {
+        LinearOp::Const { value, .. } => write!(f, "const({value:#x})"),
+        LinearOp::BinOp { op, .. } => write!(f, "{op:?}"),
+        LinearOp::UnaryOp { op, .. } => write!(f, "{op:?}"),
+        LinearOp::Copy { .. } => write!(f, "copy"),
+        LinearOp::BoundsCheck { count } => write!(f, "bounds_check({count})"),
+        LinearOp::ReadBytes { count, .. } => write!(f, "read_bytes({count})"),
+        LinearOp::PeekByte { .. } => write!(f, "peek_byte"),
+        LinearOp::AdvanceCursor { count } => write!(f, "advance({count})"),
+        LinearOp::AdvanceCursorBy { .. } => write!(f, "advance_by"),
+        LinearOp::SaveCursor { .. } => write!(f, "save_cursor"),
+        LinearOp::RestoreCursor { .. } => write!(f, "restore_cursor"),
+        LinearOp::WriteToField { offset, width, .. } => {
+            write!(f, "store([{offset}:{width}])")
+        }
+        LinearOp::ReadFromField { offset, width, .. } => {
+            write!(f, "load([{offset}:{width}])")
+        }
+        LinearOp::SaveOutPtr { .. } => write!(f, "save_out_ptr"),
+        LinearOp::SetOutPtr { .. } => write!(f, "set_out_ptr"),
+        LinearOp::SlotAddr { slot, .. } => write!(f, "slot_addr({})", slot.index()),
+        LinearOp::WriteToSlot { slot, .. } => write!(f, "write_slot({})", slot.index()),
+        LinearOp::ReadFromSlot { slot, .. } => write!(f, "read_slot({})", slot.index()),
+        LinearOp::CallIntrinsic {
+            func, field_offset, ..
+        } => write!(f, "call_intrinsic({func}, fo={field_offset})"),
+        LinearOp::CallPure { func, .. } => write!(f, "call_pure({func})"),
+        LinearOp::CallLambda { target, .. } => write!(f, "call_lambda(@{})", target.index()),
+        LinearOp::SimdStringScan { .. } => write!(f, "simd_string_scan"),
+        LinearOp::SimdWhitespaceSkip => write!(f, "simd_ws_skip"),
+        LinearOp::ErrorExit { code } => write!(f, "error_exit({code:?})"),
+        _ => write!(f, "<?op>"),
+    }
+}
+
+fn fmt_terminator(f: &mut std::fmt::Formatter<'_>, term: &RaTerminator) -> std::fmt::Result {
+    match term {
+        RaTerminator::Return => write!(f, "return"),
+        RaTerminator::ErrorExit { code } => write!(f, "error_exit({code:?})"),
+        RaTerminator::Branch { target } => write!(f, "branch b{}", target.0),
+        RaTerminator::BranchIf {
+            cond,
+            target,
+            fallthrough,
+        } => write!(
+            f,
+            "branch_if v{} -> b{}, fallthrough b{}",
+            cond.index(),
+            target.0,
+            fallthrough.0
+        ),
+        RaTerminator::BranchIfZero {
+            cond,
+            target,
+            fallthrough,
+        } => write!(
+            f,
+            "branch_if_zero v{} -> b{}, fallthrough b{}",
+            cond.index(),
+            target.0,
+            fallthrough.0
+        ),
+        RaTerminator::JumpTable {
+            predicate,
+            targets,
+            default,
+        } => {
+            write!(f, "jump_table v{} [", predicate.index())?;
+            for (i, t) in targets.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "b{}", t.0)?;
+            }
+            write!(f, "], default b{}", default.0)
+        }
+    }
+}
+
 // r[impl ir.regalloc.ra-mir]
 // r[impl ir.regalloc.ra-mir.block-params]
 // r[impl ir.regalloc.ra-mir.operands]
