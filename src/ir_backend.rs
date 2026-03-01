@@ -1203,6 +1203,21 @@ fn compile_linear_ir_aarch64(
             }
         }
 
+        fn has_inst_edits(&self, linear_op_index: usize) -> bool {
+            let Some(lambda_id) = self
+                .current_func
+                .as_ref()
+                .map(|f| f.lambda_id.index() as u32)
+            else {
+                return false;
+            };
+            let Some(by_lambda) = self.edits_by_lambda.get(&lambda_id) else {
+                return false;
+            };
+            by_lambda.before.contains_key(&linear_op_index)
+                || by_lambda.after.contains_key(&linear_op_index)
+        }
+
         fn has_edge_edits(&self, linear_op_index: usize, succ_index: usize) -> bool {
             let Some(lambda_id) = self
                 .current_func
@@ -1528,7 +1543,250 @@ fn compile_linear_ir_aarch64(
             dst: crate::ir::VReg,
             lhs: crate::ir::VReg,
             rhs: crate::ir::VReg,
+            materialize_cmpne_result: bool,
         ) {
+            if kind == BinOpKind::CmpNe {
+                let lhs_alloc = self.current_alloc(0);
+                let rhs_alloc = self.current_alloc(1);
+                let rhs_const = self.const_of(rhs);
+
+                if let Some(reg) = lhs_alloc.as_reg() {
+                    assert!(
+                        reg.class() == regalloc2::RegClass::Int,
+                        "unsupported register allocation class {:?} for CmpNe lhs",
+                        reg.class()
+                    );
+                }
+                if let Some(reg) = rhs_alloc.as_reg() {
+                    assert!(
+                        reg.class() == regalloc2::RegClass::Int,
+                        "unsupported register allocation class {:?} for CmpNe rhs",
+                        reg.class()
+                    );
+                }
+
+                match (
+                    lhs_alloc.as_reg(),
+                    lhs_alloc.as_stack(),
+                    rhs_const,
+                    rhs_alloc.as_reg(),
+                    rhs_alloc.as_stack(),
+                ) {
+                    (Some(lhs_reg), None, Some(c), _, _) => {
+                        let lhs_r = lhs_reg.hw_enc() as u8;
+                        self.emit_load_u64_x10(c);
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; cmp X(lhs_r), x10);
+                    }
+                    (None, Some(lhs_stack), Some(c), _, _) => {
+                        let lhs_off = self.spill_off(lhs_stack);
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #lhs_off]);
+                        if c <= 4095 {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, c as u32);
+                        } else {
+                            self.emit_load_u64_x10(c);
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, x10);
+                        }
+                    }
+                    (Some(lhs_reg), None, None, Some(rhs_reg), None) => {
+                        let lhs_r = lhs_reg.hw_enc() as u8;
+                        let rhs_r = rhs_reg.hw_enc() as u8;
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; cmp X(lhs_r), X(rhs_r));
+                    }
+                    (Some(lhs_reg), None, None, None, Some(rhs_stack)) => {
+                        let lhs_r = lhs_reg.hw_enc() as u8;
+                        let rhs_off = self.spill_off(rhs_stack);
+                        dynasm!(self.ectx.ops
+                            ; .arch aarch64
+                            ; ldr x10, [sp, #rhs_off]
+                            ; cmp X(lhs_r), x10
+                        );
+                    }
+                    (None, Some(lhs_stack), None, Some(rhs_reg), None) => {
+                        let lhs_off = self.spill_off(lhs_stack);
+                        let rhs_r = rhs_reg.hw_enc() as u8;
+                        dynasm!(self.ectx.ops
+                            ; .arch aarch64
+                            ; ldr x9, [sp, #lhs_off]
+                            ; cmp x9, X(rhs_r)
+                        );
+                    }
+                    (None, Some(lhs_stack), None, None, Some(rhs_stack)) => {
+                        let lhs_off = self.spill_off(lhs_stack);
+                        let rhs_off = self.spill_off(rhs_stack);
+                        dynasm!(self.ectx.ops
+                            ; .arch aarch64
+                            ; ldr x9, [sp, #lhs_off]
+                            ; ldr x10, [sp, #rhs_off]
+                            ; cmp x9, x10
+                        );
+                    }
+                    _ => panic!("unexpected none allocation for CmpNe operands"),
+                }
+
+                if !materialize_cmpne_result {
+                    self.set_const(dst, None);
+                    return;
+                }
+
+                let dst_alloc = self.current_alloc(2);
+                if let Some(dst_reg) = dst_alloc.as_reg() {
+                    assert!(
+                        dst_reg.class() == regalloc2::RegClass::Int,
+                        "unsupported register allocation class {:?} for CmpNe dst",
+                        dst_reg.class()
+                    );
+                    let dst_r = dst_reg.hw_enc() as u8;
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; cset X(dst_r), ne);
+                } else if let Some(dst_stack) = dst_alloc.as_stack() {
+                    let dst_off = self.spill_off(dst_stack);
+                    dynasm!(self.ectx.ops
+                        ; .arch aarch64
+                        ; cset x9, ne
+                        ; str x9, [sp, #dst_off]
+                    );
+                } else {
+                    panic!("unexpected none allocation for CmpNe dst");
+                }
+                self.set_const(dst, None);
+                return;
+            }
+
+            let lhs_alloc = self.current_alloc(0);
+            let rhs_alloc = self.current_alloc(1);
+            let dst_alloc = self.current_alloc(2);
+            if let (Some(lhs_reg), Some(rhs_reg), Some(dst_reg)) =
+                (lhs_alloc.as_reg(), rhs_alloc.as_reg(), dst_alloc.as_reg())
+            {
+                assert!(
+                    lhs_reg.class() == regalloc2::RegClass::Int,
+                    "unsupported register allocation class {:?} for binop lhs",
+                    lhs_reg.class()
+                );
+                assert!(
+                    rhs_reg.class() == regalloc2::RegClass::Int,
+                    "unsupported register allocation class {:?} for binop rhs",
+                    rhs_reg.class()
+                );
+                assert!(
+                    dst_reg.class() == regalloc2::RegClass::Int,
+                    "unsupported register allocation class {:?} for binop dst",
+                    dst_reg.class()
+                );
+
+                let lhs_r = lhs_reg.hw_enc() as u8;
+                let rhs_r = rhs_reg.hw_enc() as u8;
+                let dst_r = dst_reg.hw_enc() as u8;
+
+                let handled = match kind {
+                    BinOpKind::Add => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; add X(dst_r), X(dst_r), X(rhs_r));
+                        } else if dst_r == rhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; add X(dst_r), X(dst_r), X(lhs_r));
+                        } else {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; add X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                        }
+                        true
+                    }
+                    BinOpKind::Sub => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; sub X(dst_r), X(dst_r), X(rhs_r));
+                            true
+                        } else if dst_r != rhs_r {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; sub X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    BinOpKind::And => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; and X(dst_r), X(dst_r), X(rhs_r));
+                        } else if dst_r == rhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; and X(dst_r), X(dst_r), X(lhs_r));
+                        } else {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; and X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                        }
+                        true
+                    }
+                    BinOpKind::Or => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; orr X(dst_r), X(dst_r), X(rhs_r));
+                        } else if dst_r == rhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; orr X(dst_r), X(dst_r), X(lhs_r));
+                        } else {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; orr X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                        }
+                        true
+                    }
+                    BinOpKind::Xor => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; eor X(dst_r), X(dst_r), X(rhs_r));
+                        } else if dst_r == rhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; eor X(dst_r), X(dst_r), X(lhs_r));
+                        } else {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; eor X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                        }
+                        true
+                    }
+                    BinOpKind::Shr => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; lsr X(dst_r), X(dst_r), X(rhs_r));
+                            true
+                        } else if dst_r != rhs_r {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; lsr X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    BinOpKind::Shl => {
+                        if dst_r == lhs_r {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; lsl X(dst_r), X(dst_r), X(rhs_r));
+                            true
+                        } else if dst_r != rhs_r {
+                            dynasm!(self.ectx.ops
+                                ; .arch aarch64
+                                ; mov X(dst_r), X(lhs_r)
+                                ; lsl X(dst_r), X(dst_r), X(rhs_r)
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    BinOpKind::CmpNe => unreachable!("CmpNe handled above"),
+                };
+                if handled {
+                    self.set_const(dst, None);
+                    return;
+                }
+            }
+
             self.emit_load_use_x9(lhs, 0);
             let rhs_const = self.const_of(rhs);
             match kind {
@@ -1569,20 +1827,7 @@ fn compile_linear_ir_aarch64(
                     self.emit_load_use_x10(rhs, 1);
                     dynasm!(self.ectx.ops ; .arch aarch64 ; eor x9, x9, x10);
                 }
-                BinOpKind::CmpNe => {
-                    if let Some(c) = rhs_const
-                        && c <= 4095
-                    {
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, c as u32);
-                    } else if let Some(c) = rhs_const {
-                        self.emit_load_u64_x10(c);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, x10);
-                    } else {
-                        self.emit_load_use_x10(rhs, 1);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, x10);
-                    }
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; cset x9, ne);
-                }
+                BinOpKind::CmpNe => unreachable!("CmpNe handled above"),
                 BinOpKind::Shr => {
                     if let Some(c) = rhs_const
                         && c <= 63
@@ -1668,6 +1913,14 @@ fn compile_linear_ir_aarch64(
                 return;
             }
             panic!("unexpected none allocation for branch condition");
+        }
+
+        fn emit_branch_on_last_cmp_ne(&mut self, target: DynamicLabel, invert: bool) {
+            if invert {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; b.eq =>target);
+            } else {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; b.ne =>target);
+            }
         }
 
         fn emit_jump_table(
@@ -1943,13 +2196,47 @@ fn compile_linear_ir_aarch64(
         }
 
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
-            for op in &ir.ops {
+            let mut fused_cmpne_cond = None::<crate::ir::VReg>;
+            for (op_index, op) in ir.ops.iter().enumerate() {
+                if let Some(expected_cond) = fused_cmpne_cond
+                    && !matches!(
+                        op,
+                        LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. }
+                            if *cond == expected_cond
+                    )
+                {
+                    panic!(
+                        "fused CmpNe for vreg {:?} must be followed by BranchIf/BranchIfZero",
+                        expected_cond
+                    );
+                }
                 let linear_op_index = if self.current_func.is_some()
                     && !matches!(op, LinearOp::FuncStart { .. } | LinearOp::FuncEnd)
                 {
                     Some(self.current_lambda_linear_op_index)
                 } else {
                     None
+                };
+                let fuse_cmpne_to_next_branch = match op {
+                    LinearOp::BinOp {
+                        op: BinOpKind::CmpNe,
+                        dst,
+                        ..
+                    } => match (linear_op_index, ir.ops.get(op_index + 1)) {
+                        (Some(lin_idx), Some(next_op)) => {
+                            let is_cmp_branch_pair = matches!(
+                                next_op,
+                                LinearOp::BranchIf { cond, .. }
+                                    | LinearOp::BranchIfZero { cond, .. }
+                                    if *cond == *dst
+                            );
+                            is_cmp_branch_pair
+                                && !self.has_inst_edits(lin_idx)
+                                && !self.has_inst_edits(lin_idx + 1)
+                        }
+                        _ => false,
+                    },
+                    _ => false,
                 };
                 self.current_inst_allocs = linear_op_index.and_then(|lin_idx| {
                     let lambda_id = self.current_func.as_ref()?.lambda_id.index() as u32;
@@ -2009,6 +2296,14 @@ fn compile_linear_ir_aarch64(
                         self.ectx.emit_branch(target_label);
                     }
                     LinearOp::BranchIf { cond, target } => {
+                        let use_cmp_flags = match fused_cmpne_cond.take() {
+                            Some(expected) if expected == *cond => true,
+                            Some(expected) => panic!(
+                                "fused CmpNe expected branch on {:?}, got {:?}",
+                                expected, cond
+                            ),
+                            None => false,
+                        };
                         let lin_idx = linear_op_index
                             .expect("BranchIf should have linear op index inside function");
                         let taken_target = self.edge_target_label(lin_idx, 0, self.label(*target));
@@ -2016,14 +2311,30 @@ fn compile_linear_ir_aarch64(
                             let fallthrough_cont = self.ectx.new_label();
                             let fallthrough_target =
                                 self.edge_target_label(lin_idx, 1, fallthrough_cont);
-                            self.emit_branch_if(*cond, taken_target, false);
+                            if use_cmp_flags {
+                                self.emit_branch_on_last_cmp_ne(taken_target, false);
+                            } else {
+                                self.emit_branch_if(*cond, taken_target, false);
+                            }
                             self.ectx.emit_branch(fallthrough_target);
                             self.ectx.bind_label(fallthrough_cont);
                         } else {
-                            self.emit_branch_if(*cond, taken_target, false);
+                            if use_cmp_flags {
+                                self.emit_branch_on_last_cmp_ne(taken_target, false);
+                            } else {
+                                self.emit_branch_if(*cond, taken_target, false);
+                            }
                         }
                     }
                     LinearOp::BranchIfZero { cond, target } => {
+                        let use_cmp_flags = match fused_cmpne_cond.take() {
+                            Some(expected) if expected == *cond => true,
+                            Some(expected) => panic!(
+                                "fused CmpNe expected branch on {:?}, got {:?}",
+                                expected, cond
+                            ),
+                            None => false,
+                        };
                         let lin_idx = linear_op_index
                             .expect("BranchIfZero should have linear op index inside function");
                         let taken_target = self.edge_target_label(lin_idx, 0, self.label(*target));
@@ -2031,11 +2342,19 @@ fn compile_linear_ir_aarch64(
                             let fallthrough_cont = self.ectx.new_label();
                             let fallthrough_target =
                                 self.edge_target_label(lin_idx, 1, fallthrough_cont);
-                            self.emit_branch_if(*cond, taken_target, true);
+                            if use_cmp_flags {
+                                self.emit_branch_on_last_cmp_ne(taken_target, true);
+                            } else {
+                                self.emit_branch_if(*cond, taken_target, true);
+                            }
                             self.ectx.emit_branch(fallthrough_target);
                             self.ectx.bind_label(fallthrough_cont);
                         } else {
-                            self.emit_branch_if(*cond, taken_target, true);
+                            if use_cmp_flags {
+                                self.emit_branch_on_last_cmp_ne(taken_target, true);
+                            } else {
+                                self.emit_branch_if(*cond, taken_target, true);
+                            }
                         }
                     }
                     LinearOp::JumpTable {
@@ -2059,7 +2378,12 @@ fn compile_linear_ir_aarch64(
                         self.emit_edit_move(from, to);
                         self.set_const(*dst, self.const_of(*src));
                     }
-                    LinearOp::BinOp { op, dst, lhs, rhs } => self.emit_binop(*op, *dst, *lhs, *rhs),
+                    LinearOp::BinOp { op, dst, lhs, rhs } => {
+                        self.emit_binop(*op, *dst, *lhs, *rhs, !fuse_cmpne_to_next_branch);
+                        if fuse_cmpne_to_next_branch {
+                            fused_cmpne_cond = Some(*dst);
+                        }
+                    }
                     LinearOp::UnaryOp { op, dst, src } => self.emit_unary(*op, *dst, *src),
 
                     LinearOp::BoundsCheck { count } => {
@@ -2157,6 +2481,9 @@ fn compile_linear_ir_aarch64(
 
             if self.current_func.is_some() {
                 panic!("unterminated function: missing FuncEnd");
+            }
+            if fused_cmpne_cond.is_some() {
+                panic!("unterminated fused CmpNe/BranchIf pair");
             }
 
             self.emit_edge_trampolines();
