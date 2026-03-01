@@ -6,7 +6,7 @@ use crate::format::{
     Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, FieldLowerInfo, IrDecoder, VariantEmitInfo,
 };
 use crate::intrinsics;
-use crate::ir::{IntrinsicFn, RegionBuilder, SlotId};
+use crate::ir::{IntrinsicFn, IrOp, PortSource, RegionBuilder, SlotId};
 use crate::malum::VecOffsets;
 use crate::recipe::{self, Width};
 
@@ -610,6 +610,109 @@ fn ifn(f: *const u8) -> IntrinsicFn {
     IntrinsicFn(f as usize)
 }
 
+fn lower_nonzero_to_bool(builder: &mut RegionBuilder<'_>, value: PortSource) -> PortSource {
+    builder.gamma(value, &[], 2, |branch_idx, rb| {
+        let out = rb.const_val(if branch_idx == 0 { 0 } else { 1 });
+        rb.set_results(&[out]);
+    })[0]
+}
+
+fn lower_error_if_nonzero(
+    builder: &mut RegionBuilder<'_>,
+    value: PortSource,
+    code: crate::context::ErrorCode,
+) {
+    builder.gamma(value, &[], 2, |branch_idx, rb| {
+        if branch_idx == 1 {
+            rb.error_exit(code);
+        }
+        rb.set_results(&[]);
+    });
+}
+
+// r[impl ir.intrinsics.representable-inline]
+// r[impl ir.varint.lowering]
+// r[impl ir.varint.errors]
+// r[impl deser.postcard.scalar.varint.no-rust-call]
+fn lower_postcard_varint_scalar(
+    builder: &mut RegionBuilder<'_>,
+    offset: u32,
+    width: crate::ir::Width,
+    zigzag: bool,
+    bits: u32,
+) {
+    let max_bytes = match bits {
+        16 => 3_u64,
+        32 => 5_u64,
+        64 => 10_u64,
+        _ => panic!("unsupported varint bit width: {bits}"),
+    };
+
+    let acc0 = builder.const_val(0);
+    let shift0 = builder.const_val(0);
+    let rem0 = builder.const_val(max_bytes);
+    let last_low0 = builder.const_val(0);
+    let last_cont0 = builder.const_val(1);
+
+    let loop_out = builder.theta(&[acc0, shift0, rem0, last_low0, last_cont0], |rb| {
+        let args = rb.region_args(5);
+        let acc = args[0];
+        let shift = args[1];
+        let rem = args[2];
+
+        rb.bounds_check(1);
+        let byte = rb.read_bytes(1);
+
+        let mask_7f = rb.const_val(0x7f);
+        let low = rb.binop(IrOp::And, byte, mask_7f);
+        let part = rb.binop(IrOp::Shl, low, shift);
+        let acc2 = rb.binop(IrOp::Or, acc, part);
+        let seven = rb.const_val(7);
+        let shift2 = rb.binop(IrOp::Add, shift, seven);
+        let one = rb.const_val(1);
+        let rem2 = rb.binop(IrOp::Sub, rem, one);
+
+        let mask_80 = rb.const_val(0x80);
+        let cont = rb.binop(IrOp::And, byte, mask_80);
+        let cont_bool = lower_nonzero_to_bool(rb, cont);
+        let rem_bool = lower_nonzero_to_bool(rb, rem2);
+        let predicate = rb.binop(IrOp::And, cont_bool, rem_bool);
+
+        rb.set_results(&[predicate, acc2, shift2, rem2, low, cont_bool]);
+    });
+
+    let mut value = loop_out[0];
+    let rem = loop_out[2];
+    let last_low = loop_out[3];
+    let last_cont = loop_out[4];
+
+    // continued after exhausting byte budget => malformed varint.
+    lower_error_if_nonzero(builder, last_cont, crate::context::ErrorCode::InvalidVarint);
+
+    if bits == 64 {
+        // 10th byte may only carry one payload bit for u64.
+        builder.gamma(rem, &[last_low], 2, |branch_idx, rb| {
+            let args = rb.region_args(1);
+            if branch_idx == 0 {
+                let mask_7e = rb.const_val(0x7e);
+                let extra = rb.binop(IrOp::And, args[0], mask_7e);
+                lower_error_if_nonzero(rb, extra, crate::context::ErrorCode::InvalidVarint);
+            }
+            rb.set_results(&[]);
+        });
+    } else {
+        let bit_width = builder.const_val(bits as u64);
+        let upper = builder.binop(IrOp::Shr, value, bit_width);
+        lower_error_if_nonzero(builder, upper, crate::context::ErrorCode::NumberOutOfRange);
+    }
+
+    if zigzag {
+        value = builder.unary(IrOp::ZigzagDecode { wide: bits == 64 }, value);
+    }
+
+    builder.write_to_field(value, offset, width);
+}
+
 impl IrDecoder for FadPostcard {
     // r[impl ir.format-trait.lower]
 
@@ -634,30 +737,58 @@ impl IrDecoder for FadPostcard {
     ) {
         let offset = offset as u32;
 
-        // In the IR path, all scalar reads go through call_intrinsic.
-        // The varint fast-path inlining is an optimization that can be added
-        // as an IR pass later — for now, call the intrinsic unconditionally.
-        let func = match scalar_type {
-            ScalarType::Bool => ifn(intrinsics::fad_read_bool as _),
-            ScalarType::U8 => ifn(intrinsics::fad_read_u8 as _),
-            ScalarType::I8 => ifn(intrinsics::fad_read_i8 as _),
-            ScalarType::U16 => ifn(intrinsics::fad_read_u16 as _),
-            ScalarType::U32 => ifn(intrinsics::fad_read_varint_u32 as _),
-            ScalarType::U64 => ifn(intrinsics::fad_read_u64 as _),
-            ScalarType::I16 => ifn(intrinsics::fad_read_i16 as _),
-            ScalarType::I32 => ifn(intrinsics::fad_read_i32 as _),
-            ScalarType::I64 => ifn(intrinsics::fad_read_i64 as _),
-            ScalarType::F32 => ifn(intrinsics::fad_read_f32 as _),
-            ScalarType::F64 => ifn(intrinsics::fad_read_f64 as _),
-            ScalarType::U128 => ifn(intrinsics::fad_read_u128 as _),
-            ScalarType::I128 => ifn(intrinsics::fad_read_i128 as _),
-            ScalarType::USize => ifn(intrinsics::fad_read_usize as _),
-            ScalarType::ISize => ifn(intrinsics::fad_read_isize as _),
-            ScalarType::Char => ifn(intrinsics::fad_read_char as _),
-            _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
-        };
+        match scalar_type {
+            ScalarType::U16 => {
+                lower_postcard_varint_scalar(builder, offset, crate::ir::Width::W2, false, 16);
+            }
+            ScalarType::U32 => {
+                lower_postcard_varint_scalar(builder, offset, crate::ir::Width::W4, false, 32);
+            }
+            ScalarType::U64 => {
+                lower_postcard_varint_scalar(builder, offset, crate::ir::Width::W8, false, 64);
+            }
+            ScalarType::I16 => {
+                lower_postcard_varint_scalar(builder, offset, crate::ir::Width::W2, true, 16);
+            }
+            ScalarType::I32 => {
+                lower_postcard_varint_scalar(builder, offset, crate::ir::Width::W4, true, 32);
+            }
+            ScalarType::I64 => {
+                lower_postcard_varint_scalar(builder, offset, crate::ir::Width::W8, true, 64);
+            }
 
-        builder.call_intrinsic(func, &[], offset, false);
+            ScalarType::Bool => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_bool as _), &[], offset, false);
+            }
+            ScalarType::U8 => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_u8 as _), &[], offset, false);
+            }
+            ScalarType::I8 => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_i8 as _), &[], offset, false);
+            }
+            ScalarType::F32 => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_f32 as _), &[], offset, false);
+            }
+            ScalarType::F64 => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_f64 as _), &[], offset, false);
+            }
+            ScalarType::U128 => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_u128 as _), &[], offset, false);
+            }
+            ScalarType::I128 => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_i128 as _), &[], offset, false);
+            }
+            ScalarType::USize => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_usize as _), &[], offset, false);
+            }
+            ScalarType::ISize => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_isize as _), &[], offset, false);
+            }
+            ScalarType::Char => {
+                builder.call_intrinsic(ifn(intrinsics::fad_read_char as _), &[], offset, false);
+            }
+            _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
+        }
     }
 
     fn lower_read_string(
@@ -956,36 +1087,37 @@ mod ir_tests {
             _ => panic!("unexpected field"),
         });
 
-        // Two fields → two CallIntrinsic nodes.
-        let body = func.root_body();
-        let nodes = &func.regions[body].nodes;
-        assert_eq!(nodes.len(), 2);
+        let mut has_u32_intrinsic = false;
+        let mut has_u8_intrinsic = false;
+        let mut has_theta = false;
 
-        // First: fad_read_varint_u32 at offset 0
-        match &func.nodes[nodes[0]].kind {
-            NodeKind::Simple(IrOp::CallIntrinsic {
-                func: f,
-                field_offset,
-                ..
-            }) => {
-                assert_eq!(f.0, intrinsics::fad_read_varint_u32 as *const () as usize);
-                assert_eq!(*field_offset, 0);
+        for (_, node) in func.nodes.iter() {
+            match &node.kind {
+                NodeKind::Simple(IrOp::CallIntrinsic {
+                    func: f,
+                    field_offset,
+                    ..
+                }) => {
+                    if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+                        && *field_offset == 0
+                    {
+                        has_u32_intrinsic = true;
+                    }
+                    if f.0 == intrinsics::fad_read_u8 as *const () as usize && *field_offset == 4 {
+                        has_u8_intrinsic = true;
+                    }
+                }
+                NodeKind::Theta { .. } => has_theta = true,
+                _ => {}
             }
-            other => panic!("expected CallIntrinsic for u32, got {:?}", other),
         }
 
-        // Second: fad_read_u8 at offset 4
-        match &func.nodes[nodes[1]].kind {
-            NodeKind::Simple(IrOp::CallIntrinsic {
-                func: f,
-                field_offset,
-                ..
-            }) => {
-                assert_eq!(f.0, intrinsics::fad_read_u8 as *const () as usize);
-                assert_eq!(*field_offset, 4);
-            }
-            other => panic!("expected CallIntrinsic for u8, got {:?}", other),
-        }
+        assert!(
+            !has_u32_intrinsic,
+            "u32 varint should lower to core IR, not CallIntrinsic"
+        );
+        assert!(has_u8_intrinsic, "u8 should still use intrinsic path");
+        assert!(has_theta, "u32 varint lowering should include a Theta loop");
     }
 
     #[test]

@@ -471,6 +471,22 @@ Rust functions with `extern "C"` ABI. The IR represents these as
 `CallIntrinsic` nodes. The backend emits calls using the platform's
 C calling convention.
 
+r[ir.intrinsics.representable-inline]
+Operations representable in the core IR vocabulary must not be modeled as
+format-specific intrinsic calls. They must be lowered to generic IR nodes so
+that optimization and backend logic remain format-agnostic.
+
+r[ir.varint.lowering]
+Postcard varint decoding is represented in RVSDG using generic nodes:
+cursor ops (`ReadBytes`, `BoundsCheck`), arithmetic ops (`And`, `Or`, `Shl`,
+comparisons), and structured control (`Theta`/`Gamma`) for the byte loop and
+termination checks. There is no postcard-specific varint opcode.
+
+r[ir.varint.errors]
+The varint lowering handles all error cases inside IR control flow:
+unexpected EOF, malformed/overlong varint, and numeric narrowing overflow.
+Errors feed the standard IR error model and exit path.
+
 ### Optimization passes
 
 r[ir.passes]
@@ -493,6 +509,12 @@ Planned passes, in rough priority order:
    ops are candidates only if they have the same state predecessor.
 5. **Cold path sinking**: move error-construction nodes into error-only
    regions so they don't pollute the hot path's register pressure.
+
+r[ir.passes.lower-to-core]
+Normalization passes may rewrite format-lowering helper forms into the core
+IR vocabulary before linearization. This includes replacing placeholder calls
+with explicit loop/control/data subgraphs when the behavior is representable
+as core IR.
 
 ## Scalar types
 
@@ -638,6 +660,10 @@ r[deser.postcard.scalar.varint]
 Postcard encodes unsigned integers as LEB128 varints and signed integers as
 ZigZag-encoded varints. The deserializer decodes the varint and stores the
 result into the target type.
+
+r[deser.postcard.scalar.varint.no-rust-call]
+Postcard varint decode on the deserialization hot path is emitted as native
+JIT code from IR, not as a call into a Rust varint helper.
 
 r[deser.postcard.scalar.float]
 Postcard encodes f32 as 4 little-endian bytes and f64 as 8 little-endian
