@@ -1772,12 +1772,21 @@ fn compile_linear_ir_aarch64(
             self.emit_load_use_x9(predicate, 0);
             for (index, label) in labels.iter().enumerate() {
                 let target = self.edge_target_label(linear_op_index, index, self.label(*label));
-                self.emit_load_u32_w10(index as u32);
-                dynasm!(self.ectx.ops
-                    ; .arch aarch64
-                    ; cmp w9, w10
-                    ; b.eq =>target
-                );
+                let idx = index as u32;
+                if idx <= 4095 {
+                    dynasm!(self.ectx.ops
+                        ; .arch aarch64
+                        ; cmp w9, idx
+                        ; b.eq =>target
+                    );
+                } else {
+                    self.emit_load_u32_w10(idx);
+                    dynasm!(self.ectx.ops
+                        ; .arch aarch64
+                        ; cmp w9, w10
+                        ; b.eq =>target
+                    );
+                }
             }
             let default_succ_index = labels.len();
             let default_target =
