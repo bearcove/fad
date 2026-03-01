@@ -49,13 +49,6 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/facet_deser"),
-            func: Box::new(|runner| {
-                let data = &*DATA;
-                runner.run(|| { black_box(facet_json::from_str::<$Type>(black_box(data)).unwrap()); });
-            }),
-        });
-        $v.push(harness::Bench {
             name: format!("{prefix}/fad_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
@@ -85,13 +78,6 @@ macro_rules! bench {
             func: Box::new(|runner| {
                 let data = &*DATA;
                 runner.run(|| { black_box(serde_json::from_str::<$Type>(black_box(data)).unwrap()); });
-            }),
-        });
-        $v.push(harness::Bench {
-            name: format!("{prefix}/facet_deser"),
-            func: Box::new(|runner| {
-                let data = &*DATA;
-                runner.run(|| { black_box(facet_json::from_str::<$Type>(black_box(data)).unwrap()); });
             }),
         });
         $v.push(harness::Bench {
@@ -139,13 +125,6 @@ macro_rules! bench {
             }),
         });
         $v.push(harness::Bench {
-            name: format!("{prefix}/facet_deser"),
-            func: Box::new(|runner| {
-                let data = &*DATA;
-                runner.run(|| { black_box(facet_postcard::from_slice::<$Type>(black_box(data)).unwrap()); });
-            }),
-        });
-        $v.push(harness::Bench {
             name: format!("{prefix}/fad_deser"),
             func: Box::new(|runner| {
                 let data = &*DATA;
@@ -175,13 +154,6 @@ macro_rules! bench {
             func: Box::new(|runner| {
                 let data = &*DATA;
                 runner.run(|| { black_box(::postcard::from_bytes::<$Type>(black_box(data)).unwrap()); });
-            }),
-        });
-        $v.push(harness::Bench {
-            name: format!("{prefix}/facet_deser"),
-            func: Box::new(|runner| {
-                let data = &*DATA;
-                runner.run(|| { black_box(facet_postcard::from_slice::<$Type>(black_box(data)).unwrap()); });
             }),
         });
         $v.push(harness::Bench {

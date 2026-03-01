@@ -390,9 +390,7 @@ fn delta_fill(ratio: f64) -> (f64, bool) {
 fn render(sections: &[Section], meta: &Meta) -> String {
     let mut h = String::new();
 
-    let active_sections: Vec<&Section> = sections.iter()
-        .filter(|s| s.groups.iter().any(|g| g.rows.iter().any(|r| !r.name.starts_with("facet"))))
-        .collect();
+    let active_sections: Vec<&Section> = sections.iter().collect();
 
     h.push_str(r#"<!DOCTYPE html>
 <html lang="en">
@@ -503,9 +501,7 @@ footer{
         let tab_id = tab_id(&section.label);
         write!(h, r#"<div class="panel{}" id="panel-{}">"#, active, tab_id).unwrap();
 
-        let mut groups: Vec<&Group> = section.groups.iter()
-            .filter(|g| g.rows.iter().any(|r| !r.name.starts_with("facet")))
-            .collect();
+        let mut groups: Vec<&Group> = section.groups.iter().collect();
         groups.sort_by(|a, b| group_sort_key(b).partial_cmp(&group_sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
 
         // Win summary row
@@ -532,9 +528,7 @@ footer{
         }
 
         for group in &groups {
-            let rows: Vec<&Row> = group.rows.iter()
-                .filter(|r| !r.name.starts_with("facet"))
-                .collect();
+            let rows: Vec<&Row> = group.rows.iter().collect();
             if rows.is_empty() { continue; }
 
             // Prefer fad_from_str over fad_from_bytes; hide fad_from_bytes if others exist

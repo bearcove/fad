@@ -88,16 +88,6 @@ fn main() {
     });
 
     v.push(harness::Bench {
-        name: "canada/facet_json".into(),
-        func: Box::new(|runner| {
-            let data = &*CANADA_JSON;
-            runner.run(|| {
-                black_box(facet_json::from_slice::<FeatureCollection>(black_box(data)).unwrap());
-            });
-        }),
-    });
-
-    v.push(harness::Bench {
         name: "canada/fad".into(),
         func: Box::new(|runner| {
             let data = &*CANADA_JSON;
