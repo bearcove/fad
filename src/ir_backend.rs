@@ -891,7 +891,6 @@ fn compile_linear_ir_aarch64(
         labels: Vec<DynamicLabel>,
         lambda_labels: Vec<DynamicLabel>,
         slot_base: u32,
-        vreg_base: u32,
         spill_base: u32,
         entry: Option<AssemblyOffset>,
         current_func: Option<FunctionCtx>,
@@ -924,11 +923,9 @@ fn compile_linear_ir_aarch64(
         ) -> Self {
             let slot_base = BASE_FRAME;
             let slot_bytes = ir.slot_count * 8;
-            let vreg_base = slot_base + slot_bytes;
-            let vreg_bytes = ir.vreg_count * 8;
-            let spill_base = vreg_base + vreg_bytes;
+            let spill_base = slot_base + slot_bytes;
             let spill_bytes = max_spillslots as u32 * 8;
-            let extra_stack = slot_bytes + vreg_bytes + spill_bytes + 8;
+            let extra_stack = slot_bytes + spill_bytes + 8;
 
             let mut ectx = EmitCtx::new(extra_stack);
             let labels: Vec<DynamicLabel> = (0..ir.label_count).map(|_| ectx.new_label()).collect();
@@ -1076,7 +1073,6 @@ fn compile_linear_ir_aarch64(
                 labels,
                 lambda_labels,
                 slot_base,
-                vreg_base,
                 spill_base,
                 entry: None,
                 current_func: None,
@@ -1091,10 +1087,6 @@ fn compile_linear_ir_aarch64(
                 current_inst_allocs: None,
                 current_lambda_linear_op_index: 0,
             }
-        }
-
-        fn vreg_off(&self, v: crate::ir::VReg) -> u32 {
-            self.vreg_base + (v.index() as u32) * 8
         }
 
         fn slot_off(&self, s: crate::ir::SlotId) -> u32 {
@@ -1324,11 +1316,6 @@ fn compile_linear_ir_aarch64(
             });
         }
 
-        fn emit_store_x9_to_vreg(&mut self, v: crate::ir::VReg) {
-            let off = self.vreg_off(v);
-            dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]);
-        }
-
         fn current_alloc(&self, operand_index: usize) -> Allocation {
             self.current_inst_allocs
                 .as_ref()
@@ -1417,10 +1404,9 @@ fn compile_linear_ir_aarch64(
             self.emit_load_x10_from_allocation(alloc);
         }
 
-        fn emit_store_def_x9(&mut self, v: crate::ir::VReg, operand_index: usize) {
+        fn emit_store_def_x9(&mut self, _v: crate::ir::VReg, operand_index: usize) {
             let alloc = self.current_alloc(operand_index);
             let _ = self.emit_store_x9_to_allocation(alloc);
-            self.emit_store_x9_to_vreg(v);
         }
 
         fn emit_load_u32_w10(&mut self, value: u32) {
