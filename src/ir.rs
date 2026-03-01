@@ -53,7 +53,7 @@ impl<T> fmt::Debug for Id<T> {
 }
 
 impl<T> Id<T> {
-    fn new(index: u32) -> Self {
+    pub(crate) fn new(index: u32) -> Self {
         Self {
             index,
             _phantom: PhantomData,

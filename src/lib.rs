@@ -5,6 +5,7 @@ pub mod format;
 pub mod intrinsics;
 pub mod ir;
 pub mod jit_debug;
+pub mod linearize;
 pub mod jit_f64;
 pub mod json;
 pub mod json_intrinsics;
