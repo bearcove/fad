@@ -1637,11 +1637,33 @@ fn compile_linear_ir_aarch64(
             default: LabelId,
             linear_op_index: usize,
         ) {
-            self.emit_load_use_x9(predicate, 0);
+            let _ = predicate;
+            let alloc = self.current_alloc(0);
+            let pred_reg = alloc.as_reg().map(|r| {
+                assert!(
+                    r.class() == regalloc2::RegClass::Int,
+                    "unsupported register allocation class {:?} for jumptable predicate",
+                    r.class()
+                );
+                r.hw_enc() as u8
+            });
+            if let Some(slot) = alloc.as_stack() {
+                let off = self.spill_off(slot);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
+            } else if pred_reg.is_none() {
+                panic!("unexpected none allocation for jumptable predicate");
+            }
             for (index, label) in labels.iter().enumerate() {
                 let target = self.edge_target_label(linear_op_index, index, self.label(*label));
                 let idx = index as u32;
-                if idx <= 4095 {
+                if let Some(r) = pred_reg {
+                    self.emit_load_u32_w10(idx);
+                    dynasm!(self.ectx.ops
+                        ; .arch aarch64
+                        ; cmp X(r), x10
+                        ; b.eq =>target
+                    );
+                } else if idx <= 4095 {
                     dynasm!(self.ectx.ops
                         ; .arch aarch64
                         ; cmp w9, idx
