@@ -15,6 +15,7 @@ pub mod malum;
 pub mod postcard;
 mod pow10tab;
 pub mod recipe;
+pub mod regalloc_mir;
 pub mod solver;
 
 use compiler::{CompiledDecoder, CompiledEncoder};

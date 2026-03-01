@@ -1,0 +1,766 @@
+//! RA-MIR lowering from linear IR.
+//!
+//! This module builds a CFG-oriented machine IR used as allocator input.
+
+use crate::context::ErrorCode;
+use crate::ir::{LambdaId, VReg};
+use crate::linearize::{LabelId, LinearIr, LinearOp};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(pub u32);
+
+impl BlockId {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperandKind {
+    Use,
+    Def,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegClass {
+    Gpr,
+    Simd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedReg {
+    AbiArg(u8),
+    AbiRet(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaOperand {
+    pub vreg: VReg,
+    pub kind: OperandKind,
+    pub class: RegClass,
+    pub fixed: Option<FixedReg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RaClobbers {
+    pub caller_saved_gpr: bool,
+    pub caller_saved_simd: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RaInst {
+    pub op: LinearOp,
+    pub operands: Vec<RaOperand>,
+    pub clobbers: RaClobbers,
+}
+
+#[derive(Debug, Clone)]
+pub struct RaEdge {
+    pub to: BlockId,
+    pub args: Vec<VReg>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RaTerminator {
+    Return,
+    ErrorExit {
+        code: ErrorCode,
+    },
+    Branch {
+        target: BlockId,
+    },
+    BranchIf {
+        cond: VReg,
+        target: BlockId,
+        fallthrough: BlockId,
+    },
+    BranchIfZero {
+        cond: VReg,
+        target: BlockId,
+        fallthrough: BlockId,
+    },
+    JumpTable {
+        predicate: VReg,
+        targets: Vec<BlockId>,
+        default: BlockId,
+    },
+}
+
+impl RaTerminator {
+    fn uses(&self) -> Vec<VReg> {
+        match self {
+            Self::BranchIf { cond, .. } | Self::BranchIfZero { cond, .. } => vec![*cond],
+            Self::JumpTable { predicate, .. } => vec![*predicate],
+            Self::Return | Self::ErrorExit { .. } | Self::Branch { .. } => Vec::new(),
+        }
+    }
+
+    fn successors(&self) -> Vec<BlockId> {
+        match self {
+            Self::Return | Self::ErrorExit { .. } => Vec::new(),
+            Self::Branch { target } => vec![*target],
+            Self::BranchIf {
+                target,
+                fallthrough,
+                ..
+            }
+            | Self::BranchIfZero {
+                target,
+                fallthrough,
+                ..
+            } => vec![*target, *fallthrough],
+            Self::JumpTable {
+                targets, default, ..
+            } => {
+                let mut out = targets.clone();
+                out.push(*default);
+                out
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RaBlock {
+    pub id: BlockId,
+    pub label: Option<LabelId>,
+    pub params: Vec<VReg>,
+    pub insts: Vec<RaInst>,
+    pub term: RaTerminator,
+    pub preds: Vec<BlockId>,
+    pub succs: Vec<RaEdge>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RaFunction {
+    pub lambda_id: LambdaId,
+    pub entry: BlockId,
+    pub data_args: Vec<VReg>,
+    pub data_results: Vec<VReg>,
+    pub blocks: Vec<RaBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RaProgram {
+    pub funcs: Vec<RaFunction>,
+    pub vreg_count: u32,
+    pub slot_count: u32,
+}
+
+// r[impl ir.regalloc.ra-mir]
+// r[impl ir.regalloc.ra-mir.block-params]
+// r[impl ir.regalloc.ra-mir.operands]
+// r[impl ir.regalloc.ra-mir.calls]
+pub fn lower_linear_ir(ir: &LinearIr) -> RaProgram {
+    let mut funcs = Vec::new();
+    let mut i = 0usize;
+
+    while i < ir.ops.len() {
+        let (lambda_id, data_args, data_results) = match &ir.ops[i] {
+            LinearOp::FuncStart {
+                lambda_id,
+                data_args,
+                data_results,
+                ..
+            } => (*lambda_id, data_args.clone(), data_results.clone()),
+            other => panic!("expected FuncStart at op {i}, got {other:?}"),
+        };
+
+        let mut depth = 1usize;
+        let mut end = i + 1;
+        while end < ir.ops.len() {
+            match &ir.ops[end] {
+                LinearOp::FuncStart { .. } => depth += 1,
+                LinearOp::FuncEnd => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            end += 1;
+        }
+        assert!(
+            end < ir.ops.len(),
+            "missing FuncEnd for lambda {:?}",
+            lambda_id
+        );
+        let body = &ir.ops[i + 1..end];
+        funcs.push(lower_function(
+            lambda_id,
+            data_args,
+            data_results,
+            body,
+            ir.vreg_count,
+        ));
+        i = end + 1;
+    }
+
+    RaProgram {
+        funcs,
+        vreg_count: ir.vreg_count,
+        slot_count: ir.slot_count,
+    }
+}
+
+#[derive(Debug, Clone)]
+enum TempTerm {
+    Return,
+    ErrorExit(ErrorCode),
+    Branch(LabelId),
+    BranchIf {
+        cond: VReg,
+        target: LabelId,
+    },
+    BranchIfZero {
+        cond: VReg,
+        target: LabelId,
+    },
+    JumpTable {
+        predicate: VReg,
+        labels: Vec<LabelId>,
+        default: LabelId,
+    },
+    Fallthrough(usize),
+}
+
+fn is_terminator(op: &LinearOp) -> bool {
+    matches!(
+        op,
+        LinearOp::Branch(_)
+            | LinearOp::BranchIf { .. }
+            | LinearOp::BranchIfZero { .. }
+            | LinearOp::JumpTable { .. }
+            | LinearOp::ErrorExit { .. }
+    )
+}
+
+fn lower_function(
+    lambda_id: LambdaId,
+    data_args: Vec<VReg>,
+    data_results: Vec<VReg>,
+    ops: &[LinearOp],
+    vreg_count: u32,
+) -> RaFunction {
+    if ops.is_empty() {
+        return RaFunction {
+            lambda_id,
+            entry: BlockId(0),
+            data_args,
+            data_results,
+            blocks: vec![RaBlock {
+                id: BlockId(0),
+                label: None,
+                params: Vec::new(),
+                insts: Vec::new(),
+                term: RaTerminator::Return,
+                preds: Vec::new(),
+                succs: Vec::new(),
+            }],
+        };
+    }
+
+    let mut leaders = vec![0usize];
+    for (idx, op) in ops.iter().enumerate() {
+        if idx != 0 && matches!(op, LinearOp::Label(_)) {
+            leaders.push(idx);
+        }
+        if is_terminator(op) && idx + 1 < ops.len() {
+            leaders.push(idx + 1);
+        }
+    }
+    leaders.sort_unstable();
+    leaders.dedup();
+
+    let mut block_for_op = vec![usize::MAX; ops.len()];
+    for bi in 0..leaders.len() {
+        let start = leaders[bi];
+        let end = if bi + 1 < leaders.len() {
+            leaders[bi + 1]
+        } else {
+            ops.len()
+        };
+        for slot in &mut block_for_op[start..end] {
+            *slot = bi;
+        }
+    }
+
+    let mut labels = std::collections::HashMap::new();
+    let mut blocks = Vec::new();
+    let mut temp_terms = Vec::new();
+
+    for bi in 0..leaders.len() {
+        let start = leaders[bi];
+        let end = if bi + 1 < leaders.len() {
+            leaders[bi + 1]
+        } else {
+            ops.len()
+        };
+
+        let mut cursor = start;
+        let mut label = None;
+        if matches!(ops[cursor], LinearOp::Label(_))
+            && let LinearOp::Label(l) = ops[cursor]
+        {
+            label = Some(l);
+            labels.insert(l, BlockId(bi as u32));
+            cursor += 1;
+        }
+
+        let mut insts = Vec::new();
+        let mut term: Option<TempTerm> = None;
+        while cursor < end {
+            let op = ops[cursor].clone();
+            match op {
+                LinearOp::Branch(target) => {
+                    term = Some(TempTerm::Branch(target));
+                    cursor += 1;
+                    break;
+                }
+                LinearOp::BranchIf { cond, target } => {
+                    term = Some(TempTerm::BranchIf { cond, target });
+                    cursor += 1;
+                    break;
+                }
+                LinearOp::BranchIfZero { cond, target } => {
+                    term = Some(TempTerm::BranchIfZero { cond, target });
+                    cursor += 1;
+                    break;
+                }
+                LinearOp::JumpTable {
+                    predicate,
+                    labels,
+                    default,
+                } => {
+                    term = Some(TempTerm::JumpTable {
+                        predicate,
+                        labels,
+                        default,
+                    });
+                    cursor += 1;
+                    break;
+                }
+                LinearOp::ErrorExit { code } => {
+                    term = Some(TempTerm::ErrorExit(code));
+                    cursor += 1;
+                    break;
+                }
+                LinearOp::Label(_) | LinearOp::FuncStart { .. } | LinearOp::FuncEnd => {
+                    panic!("unexpected structural op in function body: {:?}", op);
+                }
+                other => {
+                    insts.push(lower_inst(other));
+                    cursor += 1;
+                }
+            }
+        }
+        assert!(
+            cursor == end,
+            "non-terminator ops after terminator in block {bi}"
+        );
+
+        if term.is_none() {
+            if bi + 1 < leaders.len() {
+                term = Some(TempTerm::Fallthrough(bi + 1));
+            } else {
+                term = Some(TempTerm::Return);
+            }
+        }
+
+        blocks.push(RaBlock {
+            id: BlockId(bi as u32),
+            label,
+            params: Vec::new(),
+            insts,
+            term: RaTerminator::Return,
+            preds: Vec::new(),
+            succs: Vec::new(),
+        });
+        temp_terms.push(term.expect("term just set"));
+    }
+
+    for (bi, tt) in temp_terms.iter().enumerate() {
+        let next = if bi + 1 < blocks.len() {
+            Some(BlockId((bi + 1) as u32))
+        } else {
+            None
+        };
+        blocks[bi].term = resolve_term(tt, &labels, next);
+    }
+
+    let mut use_sets = vec![vec![false; vreg_count as usize]; blocks.len()];
+    let mut def_sets = vec![vec![false; vreg_count as usize]; blocks.len()];
+    for (i, b) in blocks.iter().enumerate() {
+        collect_use_def(b, &mut use_sets[i], &mut def_sets[i]);
+    }
+
+    if let Some(first) = blocks.first() {
+        let defs = &mut def_sets[first.id.index()];
+        for &arg in &data_args {
+            defs[arg.index()] = true;
+        }
+    }
+
+    let mut live_in = vec![vec![false; vreg_count as usize]; blocks.len()];
+    let mut live_out = vec![vec![false; vreg_count as usize]; blocks.len()];
+    loop {
+        let mut changed = false;
+        for bi in (0..blocks.len()).rev() {
+            let mut out = vec![false; vreg_count as usize];
+            for succ in blocks[bi].term.successors() {
+                for (idx, v) in live_in[succ.index()].iter().enumerate() {
+                    out[idx] |= *v;
+                }
+            }
+
+            let mut inn = use_sets[bi].clone();
+            for idx in 0..inn.len() {
+                inn[idx] |= out[idx] && !def_sets[bi][idx];
+            }
+
+            if out != live_out[bi] || inn != live_in[bi] {
+                live_out[bi] = out;
+                live_in[bi] = inn;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for bi in 0..blocks.len() {
+        if bi == 0 {
+            blocks[bi].params = data_args.clone();
+            continue;
+        }
+        let mut params = Vec::new();
+        for (idx, live) in live_in[bi].iter().enumerate() {
+            if *live {
+                params.push(VReg::new(idx as u32));
+            }
+        }
+        blocks[bi].params = params;
+    }
+
+    let succ_lists: Vec<Vec<BlockId>> = blocks.iter().map(|b| b.term.successors()).collect();
+    for bi in 0..blocks.len() {
+        blocks[bi].succs = succ_lists[bi]
+            .iter()
+            .map(|to| RaEdge {
+                to: *to,
+                args: blocks[to.index()].params.clone(),
+            })
+            .collect();
+    }
+    for (from, succs) in succ_lists.iter().enumerate() {
+        for succ in succs {
+            blocks[succ.index()].preds.push(BlockId(from as u32));
+        }
+    }
+
+    RaFunction {
+        lambda_id,
+        entry: BlockId(0),
+        data_args,
+        data_results,
+        blocks,
+    }
+}
+
+fn resolve_term(
+    t: &TempTerm,
+    labels: &std::collections::HashMap<LabelId, BlockId>,
+    next: Option<BlockId>,
+) -> RaTerminator {
+    match t {
+        TempTerm::Return => RaTerminator::Return,
+        TempTerm::ErrorExit(code) => RaTerminator::ErrorExit { code: *code },
+        TempTerm::Branch(label) => RaTerminator::Branch {
+            target: *labels
+                .get(label)
+                .unwrap_or_else(|| panic!("unknown label target: {:?}", label)),
+        },
+        TempTerm::BranchIf { cond, target } => RaTerminator::BranchIf {
+            cond: *cond,
+            target: *labels
+                .get(target)
+                .unwrap_or_else(|| panic!("unknown label target: {:?}", target)),
+            fallthrough: next.expect("BranchIf must have fallthrough block"),
+        },
+        TempTerm::BranchIfZero { cond, target } => RaTerminator::BranchIfZero {
+            cond: *cond,
+            target: *labels
+                .get(target)
+                .unwrap_or_else(|| panic!("unknown label target: {:?}", target)),
+            fallthrough: next.expect("BranchIfZero must have fallthrough block"),
+        },
+        TempTerm::JumpTable {
+            predicate,
+            labels: ls,
+            default,
+        } => RaTerminator::JumpTable {
+            predicate: *predicate,
+            targets: ls
+                .iter()
+                .map(|l| {
+                    *labels
+                        .get(l)
+                        .unwrap_or_else(|| panic!("unknown jump-table label: {:?}", l))
+                })
+                .collect(),
+            default: *labels
+                .get(default)
+                .unwrap_or_else(|| panic!("unknown jump-table default: {:?}", default)),
+        },
+        TempTerm::Fallthrough(next_idx) => RaTerminator::Branch {
+            target: BlockId(*next_idx as u32),
+        },
+    }
+}
+
+fn push_use(out: &mut Vec<RaOperand>, v: VReg, fixed: Option<FixedReg>) {
+    out.push(RaOperand {
+        vreg: v,
+        kind: OperandKind::Use,
+        class: RegClass::Gpr,
+        fixed,
+    });
+}
+
+fn push_def(out: &mut Vec<RaOperand>, v: VReg, fixed: Option<FixedReg>) {
+    out.push(RaOperand {
+        vreg: v,
+        kind: OperandKind::Def,
+        class: RegClass::Gpr,
+        fixed,
+    });
+}
+
+fn lower_inst(op: LinearOp) -> RaInst {
+    let mut operands = Vec::new();
+    let mut clobbers = RaClobbers::default();
+
+    match &op {
+        LinearOp::Const { dst, .. }
+        | LinearOp::ReadBytes { dst, .. }
+        | LinearOp::PeekByte { dst }
+        | LinearOp::SaveCursor { dst }
+        | LinearOp::ReadFromField { dst, .. }
+        | LinearOp::SaveOutPtr { dst }
+        | LinearOp::SlotAddr { dst, .. }
+        | LinearOp::ReadFromSlot { dst, .. } => {
+            push_def(&mut operands, *dst, None);
+        }
+        LinearOp::BinOp { dst, lhs, rhs, .. } => {
+            push_use(&mut operands, *lhs, None);
+            push_use(&mut operands, *rhs, None);
+            push_def(&mut operands, *dst, None);
+        }
+        LinearOp::UnaryOp { dst, src, .. } | LinearOp::Copy { dst, src } => {
+            push_use(&mut operands, *src, None);
+            push_def(&mut operands, *dst, None);
+        }
+        LinearOp::AdvanceCursorBy { src }
+        | LinearOp::RestoreCursor { src }
+        | LinearOp::WriteToField { src, .. }
+        | LinearOp::SetOutPtr { src }
+        | LinearOp::WriteToSlot { src, .. } => {
+            push_use(&mut operands, *src, None);
+        }
+        LinearOp::CallIntrinsic { args, dst, .. } => {
+            for (i, &arg) in args.iter().enumerate() {
+                push_use(&mut operands, arg, Some(FixedReg::AbiArg(i as u8)));
+            }
+            if let Some(dst) = dst {
+                push_def(&mut operands, *dst, Some(FixedReg::AbiRet(0)));
+            }
+            clobbers = RaClobbers {
+                caller_saved_gpr: true,
+                caller_saved_simd: true,
+            };
+        }
+        LinearOp::CallPure { args, dst, .. } => {
+            for (i, &arg) in args.iter().enumerate() {
+                push_use(&mut operands, arg, Some(FixedReg::AbiArg(i as u8)));
+            }
+            push_def(&mut operands, *dst, Some(FixedReg::AbiRet(0)));
+            clobbers = RaClobbers {
+                caller_saved_gpr: true,
+                caller_saved_simd: true,
+            };
+        }
+        LinearOp::CallLambda { args, results, .. } => {
+            for (i, &arg) in args.iter().enumerate() {
+                push_use(&mut operands, arg, Some(FixedReg::AbiArg(i as u8)));
+            }
+            for (i, &r) in results.iter().enumerate() {
+                push_def(&mut operands, r, Some(FixedReg::AbiRet(i as u8)));
+            }
+            clobbers = RaClobbers {
+                caller_saved_gpr: true,
+                caller_saved_simd: true,
+            };
+        }
+        LinearOp::SimdStringScan { pos, kind } => {
+            push_def(&mut operands, *pos, None);
+            push_def(&mut operands, *kind, None);
+        }
+        LinearOp::BoundsCheck { .. }
+        | LinearOp::AdvanceCursor { .. }
+        | LinearOp::SimdWhitespaceSkip => {}
+        LinearOp::Label(_)
+        | LinearOp::Branch(_)
+        | LinearOp::BranchIf { .. }
+        | LinearOp::BranchIfZero { .. }
+        | LinearOp::JumpTable { .. }
+        | LinearOp::ErrorExit { .. }
+        | LinearOp::FuncStart { .. }
+        | LinearOp::FuncEnd => {
+            panic!("unexpected non-inst op in lower_inst: {:?}", op);
+        }
+    }
+
+    RaInst {
+        op,
+        operands,
+        clobbers,
+    }
+}
+
+fn collect_use_def(block: &RaBlock, use_set: &mut [bool], def_set: &mut [bool]) {
+    for inst in &block.insts {
+        for op in &inst.operands {
+            match op.kind {
+                OperandKind::Use => {
+                    if !def_set[op.vreg.index()] {
+                        use_set[op.vreg.index()] = true;
+                    }
+                }
+                OperandKind::Def => {
+                    def_set[op.vreg.index()] = true;
+                }
+            }
+        }
+    }
+    for v in block.term.uses() {
+        if !def_set[v.index()] {
+            use_set[v.index()] = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{IntrinsicFn, IrBuilder, IrOp, Width};
+    use crate::linearize::linearize;
+
+    // r[verify ir.regalloc.ra-mir.block-params]
+    #[test]
+    fn ra_mir_has_block_params_for_gamma_join() {
+        let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let pred = rb.const_val(0);
+            let out = rb.gamma(pred, &[], 2, |branch_idx, bb| {
+                let val = if branch_idx == 0 {
+                    bb.const_val(42)
+                } else {
+                    bb.const_val(99)
+                };
+                bb.set_results(&[val]);
+            });
+            rb.write_to_field(out[0], 0, Width::W4);
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let ra = lower_linear_ir(&lin);
+        let root = &ra.funcs[0];
+
+        assert!(
+            root.blocks
+                .iter()
+                .any(|b| b.preds.len() >= 2 && !b.params.is_empty()),
+            "expected merge block with params; got: {:#?}",
+            root.blocks
+        );
+    }
+
+    // r[verify ir.regalloc.ra-mir.block-params]
+    #[test]
+    fn ra_mir_has_block_params_for_theta_loop_header() {
+        let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let init_count = rb.const_val(5);
+            let one = rb.const_val(1);
+            let _ = rb.theta(&[init_count, one], |bb| {
+                let args = bb.region_args(2);
+                let counter = args[0];
+                let one = args[1];
+                let next = bb.binop(IrOp::Sub, counter, one);
+                bb.set_results(&[next, next, one]);
+            });
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let ra = lower_linear_ir(&lin);
+        let root = &ra.funcs[0];
+
+        assert!(
+            root.blocks
+                .iter()
+                .any(|b| b.preds.len() >= 2 && !b.params.is_empty()),
+            "expected loop header with params; got: {:#?}",
+            root.blocks
+        );
+    }
+
+    // r[verify ir.regalloc.ra-mir.calls]
+    #[test]
+    fn ra_mir_call_operands_and_clobbers_are_modeled() {
+        unsafe extern "C" fn add3(
+            _ctx: *mut crate::context::DeserContext,
+            a: u64,
+            b: u64,
+            c: u64,
+        ) -> u64 {
+            a + b + c
+        }
+
+        let mut builder = IrBuilder::new(<u64 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let a = rb.const_val(1);
+            let b = rb.const_val(2);
+            let c = rb.const_val(3);
+            let out = rb
+                .call_intrinsic(IntrinsicFn(add3 as *const () as usize), &[a, b, c], 0, true)
+                .expect("call should return output");
+            rb.write_to_field(out, 0, Width::W8);
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let ra = lower_linear_ir(&lin);
+        let root = &ra.funcs[0];
+        let call = root
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .find(|i| matches!(i.op, LinearOp::CallIntrinsic { .. }))
+            .expect("missing call inst");
+
+        assert!(call.clobbers.caller_saved_gpr);
+        assert!(call.clobbers.caller_saved_simd);
+        assert_eq!(call.operands.len(), 4);
+        assert_eq!(call.operands[0].fixed, Some(FixedReg::AbiArg(0)));
+        assert_eq!(call.operands[1].fixed, Some(FixedReg::AbiArg(1)));
+        assert_eq!(call.operands[2].fixed, Some(FixedReg::AbiArg(2)));
+        assert_eq!(call.operands[3].fixed, Some(FixedReg::AbiRet(0)));
+    }
+}

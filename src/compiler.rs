@@ -1955,6 +1955,12 @@ pub fn compile_linear_ir_decoder(
     ir: &crate::linearize::LinearIr,
     trusted_utf8_input: bool,
 ) -> CompiledDecoder {
+    // r[impl ir.regalloc.ra-mir]
+    // Build allocator-oriented CFG IR before machine emission.
+    // The current backend still emits directly from LinearIr; regalloc integration
+    // will consume this in a follow-up step.
+    let _ra_mir = crate::regalloc_mir::lower_linear_ir(ir);
+
     let crate::ir_backend::LinearBackendResult { buf, entry } =
         crate::ir_backend::compile_linear_ir(ir);
     let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
