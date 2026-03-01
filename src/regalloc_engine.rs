@@ -14,12 +14,23 @@ use crate::regalloc_mir::{FixedReg, OperandKind as RaOperandKind, RaFunction, Ra
 
 /// Materialized allocation result for one function.
 #[derive(Debug, Clone)]
+pub struct EdgeEdit {
+    pub from_linear_op_index: usize,
+    pub succ_index: usize,
+    pub pos: regalloc2::InstPosition,
+    pub from: Allocation,
+    pub to: Allocation,
+}
+
+/// Materialized allocation result for one function.
+#[derive(Debug, Clone)]
 pub struct AllocatedFunction {
     pub lambda_id: LambdaId,
     pub num_spillslots: usize,
     pub edits: Vec<(regalloc2::ProgPoint, Edit)>,
     pub inst_allocs: Vec<Vec<Allocation>>,
     pub inst_linear_op_indices: Vec<Option<usize>>,
+    pub edge_edits: Vec<EdgeEdit>,
 }
 
 /// Materialized allocation result for a full RA-MIR program.
@@ -86,11 +97,18 @@ struct WorkBlock {
     succ_args: Vec<Vec<crate::ir::VReg>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct EdgeBlockInfo {
+    from_linear_op_index: usize,
+    succ_index: usize,
+}
+
 #[derive(Debug, Clone)]
 struct AdapterFunction {
     blocks: Vec<AdapterBlock>,
     insts: Vec<AdapterInst>,
     inst_linear_op_indices: Vec<Option<usize>>,
+    inst_edge_infos: Vec<Option<EdgeBlockInfo>>,
     num_vregs: usize,
     empty_vregs: Vec<VReg>,
 }
@@ -325,7 +343,7 @@ fn lower_term_uses(term: &crate::regalloc_mir::RaTerminator) -> Vec<crate::ir::V
     }
 }
 
-fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
+fn split_critical_edges(func: &RaFunction) -> (Vec<WorkBlock>, Vec<Option<EdgeBlockInfo>>) {
     let mut blocks: Vec<WorkBlock> = func
         .blocks
         .iter()
@@ -347,6 +365,7 @@ fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
             }
         })
         .collect();
+    let mut edge_infos = vec![None; blocks.len()];
 
     let mut from = 0usize;
     while from < blocks.len() {
@@ -358,6 +377,9 @@ fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
             }
 
             let args = blocks[from].succ_args[succ_idx].clone();
+            let from_linear_op_index = blocks[from]
+                .term_linear_op_index
+                .expect("critical-edge source must map to a linear op index");
             let edge_block = WorkBlock {
                 raw_insts: Vec::new(),
                 term_kind: BlockTermKind::BranchLike,
@@ -370,6 +392,10 @@ fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
             };
             let edge_id = blocks.len();
             blocks.push(edge_block);
+            edge_infos.push(Some(EdgeBlockInfo {
+                from_linear_op_index,
+                succ_index: succ_idx,
+            }));
 
             blocks[from].succs[succ_idx] = edge_id;
 
@@ -383,18 +409,48 @@ fn split_critical_edges(func: &RaFunction) -> Vec<WorkBlock> {
         from += 1;
     }
 
-    blocks
+    (blocks, edge_infos)
 }
 
 impl AdapterFunction {
     fn from_ra(func: &RaFunction, num_vregs: usize) -> Self {
-        let mut blocks = split_critical_edges(func);
+        let (mut blocks, edge_infos) = split_critical_edges(func);
         let mut adapter_insts = Vec::<AdapterInst>::new();
         let mut inst_linear_op_indices = Vec::<Option<usize>>::new();
+        let mut inst_edge_infos = Vec::<Option<EdgeBlockInfo>>::new();
         let mut adapter_blocks = Vec::<AdapterBlock>::new();
 
-        for b in &mut blocks {
+        for (block_index, b) in blocks.iter_mut().enumerate() {
             let start = Inst::new(adapter_insts.len());
+
+            if block_index == 0 {
+                let entry_linear_op_index = b
+                    .raw_insts
+                    .first()
+                    .map(|inst| inst.linear_op_index)
+                    .or(b.term_linear_op_index);
+                let mut entry_operands = Vec::new();
+                for (arg_idx, &arg) in func.data_args.iter().enumerate() {
+                    let fixed = fixed_preg(FixedReg::AbiArg((arg_idx + 2) as u8))
+                        .expect("entry data arg has unsupported ABI register index");
+                    entry_operands.push(Operand::new(
+                        int_vreg(arg),
+                        OperandConstraint::FixedReg(fixed),
+                        OperandKind::Def,
+                        OperandPos::Late,
+                    ));
+                }
+                if !entry_operands.is_empty() {
+                    adapter_insts.push(AdapterInst {
+                        operands: entry_operands,
+                        clobbers: PRegSet::empty(),
+                        is_branch: false,
+                        is_ret: false,
+                    });
+                    inst_linear_op_indices.push(entry_linear_op_index);
+                    inst_edge_infos.push(None);
+                }
+            }
 
             for inst in &b.raw_insts {
                 let operands: Vec<Operand> =
@@ -408,7 +464,9 @@ impl AdapterFunction {
                 }
                 for operand in &operands {
                     if let OperandConstraint::FixedReg(preg) = operand.constraint() {
-                        clobbers.remove(preg);
+                        if operand.kind() == OperandKind::Def {
+                            clobbers.remove(preg);
+                        }
                     }
                 }
                 adapter_insts.push(AdapterInst {
@@ -418,6 +476,7 @@ impl AdapterFunction {
                     is_ret: false,
                 });
                 inst_linear_op_indices.push(Some(inst.linear_op_index));
+                inst_edge_infos.push(None);
             }
 
             let term_operands = b
@@ -436,6 +495,7 @@ impl AdapterFunction {
                 is_ret,
             });
             inst_linear_op_indices.push(b.term_linear_op_index);
+            inst_edge_infos.push(edge_infos[block_index]);
 
             let end = Inst::new(adapter_insts.len());
             adapter_blocks.push(AdapterBlock {
@@ -455,6 +515,7 @@ impl AdapterFunction {
             blocks: adapter_blocks,
             insts: adapter_insts,
             inst_linear_op_indices,
+            inst_edge_infos,
             num_vregs,
             empty_vregs: Vec::new(),
         }
@@ -539,12 +600,32 @@ fn materialize_output(
     for i in 0..adapter.insts.len() {
         inst_allocs.push(out.inst_allocs(Inst::new(i)).to_vec());
     }
+    let mut edge_edits = Vec::new();
+    for (prog_point, edit) in &out.edits {
+        let inst_index = prog_point.inst().index();
+        let Some(edge_info) = adapter
+            .inst_edge_infos
+            .get(inst_index)
+            .and_then(|info| *info)
+        else {
+            continue;
+        };
+        let Edit::Move { from, to } = edit;
+        edge_edits.push(EdgeEdit {
+            from_linear_op_index: edge_info.from_linear_op_index,
+            succ_index: edge_info.succ_index,
+            pos: prog_point.pos(),
+            from: *from,
+            to: *to,
+        });
+    }
     AllocatedFunction {
         lambda_id,
         num_spillslots: out.num_spillslots,
         edits: out.edits.clone(),
         inst_allocs,
         inst_linear_op_indices: adapter.inst_linear_op_indices.clone(),
+        edge_edits,
     }
 }
 

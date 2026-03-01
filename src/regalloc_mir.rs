@@ -442,7 +442,7 @@ fn lower_function(
 
     for bi in 0..blocks.len() {
         if bi == 0 {
-            blocks[bi].params = data_args.clone();
+            blocks[bi].params = Vec::new();
             continue;
         }
         let mut params = Vec::new();
@@ -771,9 +771,9 @@ mod tests {
         assert!(call.clobbers.caller_saved_gpr);
         assert!(call.clobbers.caller_saved_simd);
         assert_eq!(call.operands.len(), 4);
-        assert_eq!(call.operands[0].fixed, Some(FixedReg::AbiArg(0)));
-        assert_eq!(call.operands[1].fixed, Some(FixedReg::AbiArg(1)));
-        assert_eq!(call.operands[2].fixed, Some(FixedReg::AbiArg(2)));
+        assert_eq!(call.operands[0].fixed, Some(FixedReg::AbiArg(1)));
+        assert_eq!(call.operands[1].fixed, Some(FixedReg::AbiArg(2)));
+        assert_eq!(call.operands[2].fixed, Some(FixedReg::AbiArg(3)));
         assert_eq!(call.operands[3].fixed, Some(FixedReg::AbiRet(0)));
     }
 }

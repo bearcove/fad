@@ -874,6 +874,18 @@ fn compile_linear_ir_aarch64(
         after: HashMap<usize, Vec<(Allocation, Allocation)>>,
     }
 
+    #[derive(Default)]
+    struct LambdaEdgeEditMap {
+        before: HashMap<(usize, usize), Vec<(Allocation, Allocation)>>,
+        after: HashMap<(usize, usize), Vec<(Allocation, Allocation)>>,
+    }
+
+    struct EdgeTrampoline {
+        label: DynamicLabel,
+        target: DynamicLabel,
+        moves: Vec<(Allocation, Allocation)>,
+    }
+
     struct Lowerer {
         ectx: EmitCtx,
         labels: Vec<DynamicLabel>,
@@ -885,7 +897,11 @@ fn compile_linear_ir_aarch64(
         current_func: Option<FunctionCtx>,
         const_vregs: Vec<Option<u64>>,
         edits_by_lambda: HashMap<u32, LambdaEditMap>,
+        edge_edits_by_lambda: HashMap<u32, LambdaEdgeEditMap>,
         allocs_by_lambda: HashMap<u32, HashMap<usize, Vec<Allocation>>>,
+        entry_arg_allocs_by_lambda: HashMap<u32, Vec<Vec<Allocation>>>,
+        edge_trampoline_labels: HashMap<(u32, usize, usize), DynamicLabel>,
+        edge_trampolines: Vec<EdgeTrampoline>,
         current_inst_allocs: Option<Vec<Allocation>>,
         current_lambda_linear_op_index: usize,
     }
@@ -933,14 +949,13 @@ fn compile_linear_ir_aarch64(
                 (0..=lambda_max).map(|_| ectx.new_label()).collect();
 
             let mut edits_by_lambda = HashMap::<u32, LambdaEditMap>::new();
+            let mut edge_edits_by_lambda = HashMap::<u32, LambdaEdgeEditMap>::new();
             let mut allocs_by_lambda = HashMap::<u32, HashMap<usize, Vec<Allocation>>>::new();
             for func in &alloc.functions {
-                let lambda_entry = edits_by_lambda
-                    .entry(func.lambda_id.index() as u32)
-                    .or_default();
-                let allocs_entry = allocs_by_lambda
-                    .entry(func.lambda_id.index() as u32)
-                    .or_default();
+                let lambda_id = func.lambda_id.index() as u32;
+                let lambda_entry = edits_by_lambda.entry(lambda_id).or_default();
+                let lambda_edge_entry = edge_edits_by_lambda.entry(lambda_id).or_default();
+                let allocs_entry = allocs_by_lambda.entry(lambda_id).or_default();
                 for (prog_point, edit) in &func.edits {
                     let Some(Some(linear_op_index)) =
                         func.inst_linear_op_indices.get(prog_point.inst().index())
@@ -957,6 +972,17 @@ fn compile_linear_ir_aarch64(
                         .or_default()
                         .push((*from, *to));
                 }
+                for edge_edit in &func.edge_edits {
+                    let key = (edge_edit.from_linear_op_index, edge_edit.succ_index);
+                    let bucket = match edge_edit.pos {
+                        InstPosition::Before => &mut lambda_edge_entry.before,
+                        InstPosition::After => &mut lambda_edge_entry.after,
+                    };
+                    bucket
+                        .entry(key)
+                        .or_default()
+                        .push((edge_edit.from, edge_edit.to));
+                }
                 for (inst_index, maybe_linear_op_index) in
                     func.inst_linear_op_indices.iter().copied().enumerate()
                 {
@@ -968,6 +994,77 @@ fn compile_linear_ir_aarch64(
                     };
                     allocs_entry.insert(linear_op_index, inst_allocs.clone());
                 }
+            }
+            let mut entry_arg_allocs_by_lambda = HashMap::<u32, Vec<Vec<Allocation>>>::new();
+            let ra_program = crate::regalloc_mir::lower_linear_ir(ir);
+            for ra_func in &ra_program.funcs {
+                let lambda_id = ra_func.lambda_id.index() as u32;
+                let mut per_arg_allocs = vec![Vec::new(); ra_func.data_args.len()];
+                if let Some(allocs_for_lambda) = allocs_by_lambda.get(&lambda_id) {
+                    let mut arg_pos_by_vreg = HashMap::<usize, usize>::new();
+                    for (arg_pos, vreg) in ra_func.data_args.iter().copied().enumerate() {
+                        arg_pos_by_vreg.insert(vreg.index(), arg_pos);
+                    }
+
+                    for block in &ra_func.blocks {
+                        for inst in &block.insts {
+                            let Some(inst_allocs) = allocs_for_lambda.get(&inst.linear_op_index)
+                            else {
+                                continue;
+                            };
+                            for (operand_index, operand) in inst.operands.iter().enumerate() {
+                                if operand.kind != crate::regalloc_mir::OperandKind::Use {
+                                    continue;
+                                }
+                                let Some(&arg_pos) = arg_pos_by_vreg.get(&operand.vreg.index())
+                                else {
+                                    continue;
+                                };
+                                let Some(&alloc) = inst_allocs.get(operand_index) else {
+                                    continue;
+                                };
+                                if alloc.is_none() {
+                                    continue;
+                                }
+                                if !per_arg_allocs[arg_pos].contains(&alloc) {
+                                    per_arg_allocs[arg_pos].push(alloc);
+                                }
+                            }
+                        }
+
+                        if let Some(term_linear_op_index) = block.term_linear_op_index
+                            && let Some(term_allocs) = allocs_for_lambda.get(&term_linear_op_index)
+                        {
+                            let term_uses: Vec<crate::ir::VReg> = match &block.term {
+                                crate::regalloc_mir::RaTerminator::BranchIf { cond, .. }
+                                | crate::regalloc_mir::RaTerminator::BranchIfZero {
+                                    cond, ..
+                                } => vec![*cond],
+                                crate::regalloc_mir::RaTerminator::JumpTable {
+                                    predicate, ..
+                                } => vec![*predicate],
+                                crate::regalloc_mir::RaTerminator::Return
+                                | crate::regalloc_mir::RaTerminator::ErrorExit { .. }
+                                | crate::regalloc_mir::RaTerminator::Branch { .. } => Vec::new(),
+                            };
+                            for (operand_index, vreg) in term_uses.into_iter().enumerate() {
+                                let Some(&arg_pos) = arg_pos_by_vreg.get(&vreg.index()) else {
+                                    continue;
+                                };
+                                let Some(&alloc) = term_allocs.get(operand_index) else {
+                                    continue;
+                                };
+                                if alloc.is_none() {
+                                    continue;
+                                }
+                                if !per_arg_allocs[arg_pos].contains(&alloc) {
+                                    per_arg_allocs[arg_pos].push(alloc);
+                                }
+                            }
+                        }
+                    }
+                }
+                entry_arg_allocs_by_lambda.insert(lambda_id, per_arg_allocs);
             }
 
             Self {
@@ -981,7 +1078,11 @@ fn compile_linear_ir_aarch64(
                 current_func: None,
                 const_vregs: vec![None; ir.vreg_count as usize],
                 edits_by_lambda,
+                edge_edits_by_lambda,
                 allocs_by_lambda,
+                entry_arg_allocs_by_lambda,
+                edge_trampoline_labels: HashMap::new(),
+                edge_trampolines: Vec::new(),
                 current_inst_allocs: None,
                 current_lambda_linear_op_index: 0,
             }
@@ -1125,6 +1226,83 @@ fn compile_linear_ir_aarch64(
             self.flush_all_vregs();
             for (from, to) in edits {
                 self.emit_edit_move(from, to);
+            }
+        }
+
+        fn has_edge_edits(&self, linear_op_index: usize, succ_index: usize) -> bool {
+            let Some(lambda_id) = self
+                .current_func
+                .as_ref()
+                .map(|f| f.lambda_id.index() as u32)
+            else {
+                return false;
+            };
+            let Some(by_lambda) = self.edge_edits_by_lambda.get(&lambda_id) else {
+                return false;
+            };
+            let key = (linear_op_index, succ_index);
+            by_lambda.before.contains_key(&key) || by_lambda.after.contains_key(&key)
+        }
+
+        fn edge_target_label(
+            &mut self,
+            linear_op_index: usize,
+            succ_index: usize,
+            actual_target: DynamicLabel,
+        ) -> DynamicLabel {
+            let Some(lambda_id) = self
+                .current_func
+                .as_ref()
+                .map(|f| f.lambda_id.index() as u32)
+            else {
+                return actual_target;
+            };
+            let Some(by_lambda) = self.edge_edits_by_lambda.get(&lambda_id) else {
+                return actual_target;
+            };
+            let key = (linear_op_index, succ_index);
+            let has_edits =
+                by_lambda.before.contains_key(&key) || by_lambda.after.contains_key(&key);
+            if !has_edits {
+                return actual_target;
+            }
+
+            let cache_key = (lambda_id, linear_op_index, succ_index);
+            if let Some(label) = self.edge_trampoline_labels.get(&cache_key).copied() {
+                return label;
+            }
+
+            let mut moves = Vec::new();
+            if let Some(before) = by_lambda.before.get(&key) {
+                moves.extend(before.iter().copied());
+            }
+            if let Some(after) = by_lambda.after.get(&key) {
+                // Edge blocks only contain an unconditional branch; both before/after edits
+                // must execute before branching to the real CFG target.
+                moves.extend(after.iter().copied());
+            }
+
+            let label = self.ectx.new_label();
+            self.edge_trampoline_labels.insert(cache_key, label);
+            self.edge_trampolines.push(EdgeTrampoline {
+                label,
+                target: actual_target,
+                moves,
+            });
+            label
+        }
+
+        fn emit_edge_trampolines(&mut self) {
+            let trampolines = std::mem::take(&mut self.edge_trampolines);
+            for trampoline in trampolines {
+                self.ectx.bind_label(trampoline.label);
+                if !trampoline.moves.is_empty() {
+                    self.flush_all_vregs();
+                    for (from, to) in trampoline.moves {
+                        self.emit_edit_move(from, to);
+                    }
+                }
+                self.ectx.emit_branch(trampoline.target);
             }
         }
 
@@ -1474,10 +1652,11 @@ fn compile_linear_ir_aarch64(
             predicate: crate::ir::VReg,
             labels: &[LabelId],
             default: LabelId,
+            linear_op_index: usize,
         ) {
             self.emit_load_use_x9(predicate, 0);
             for (index, label) in labels.iter().enumerate() {
-                let target = self.label(*label);
+                let target = self.edge_target_label(linear_op_index, index, self.label(*label));
                 self.emit_load_u32_w10(index as u32);
                 dynasm!(self.ectx.ops
                     ; .arch aarch64
@@ -1485,7 +1664,10 @@ fn compile_linear_ir_aarch64(
                     ; b.eq =>target
                 );
             }
-            self.ectx.emit_branch(self.label(default));
+            let default_succ_index = labels.len();
+            let default_target =
+                self.edge_target_label(linear_op_index, default_succ_index, self.label(default));
+            self.ectx.emit_branch(default_target);
         }
 
         fn emit_load_intrinsic_arg_x1(&mut self, arg: IntrinsicArg) {
@@ -1763,6 +1945,27 @@ fn compile_linear_ir_aarch64(
                     _ => unreachable!(),
                 }
             }
+
+            // Seed regalloc locations for entry block params from the canonical arg snapshot.
+            let lambda_id = self
+                .current_func
+                .as_ref()
+                .expect("emit_store_incoming_lambda_args without active function")
+                .lambda_id
+                .index() as u32;
+            for (arg_index, &arg) in data_args.iter().enumerate() {
+                let off = self.vreg_off(arg);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
+                let per_arg_allocs = self
+                    .entry_arg_allocs_by_lambda
+                    .get(&lambda_id)
+                    .and_then(|all| all.get(arg_index))
+                    .cloned()
+                    .unwrap_or_default();
+                for alloc in per_arg_allocs {
+                    let _ = self.emit_store_x9_to_allocation(alloc);
+                }
+            }
         }
 
         fn emit_load_lambda_results_to_ret_regs(&mut self, data_results: &[crate::ir::VReg]) {
@@ -1908,20 +2111,51 @@ fn compile_linear_ir_aarch64(
                         self.ectx.bind_label(self.label(*label));
                     }
                     LinearOp::Branch(target) => {
-                        self.ectx.emit_branch(self.label(*target));
+                        let target_label = if let Some(lin_idx) = linear_op_index {
+                            self.edge_target_label(lin_idx, 0, self.label(*target))
+                        } else {
+                            self.label(*target)
+                        };
+                        self.ectx.emit_branch(target_label);
                     }
                     LinearOp::BranchIf { cond, target } => {
-                        self.emit_branch_if(*cond, self.label(*target), false);
+                        let lin_idx = linear_op_index
+                            .expect("BranchIf should have linear op index inside function");
+                        let taken_target = self.edge_target_label(lin_idx, 0, self.label(*target));
+                        if self.has_edge_edits(lin_idx, 1) {
+                            let fallthrough_cont = self.ectx.new_label();
+                            let fallthrough_target =
+                                self.edge_target_label(lin_idx, 1, fallthrough_cont);
+                            self.emit_branch_if(*cond, taken_target, false);
+                            self.ectx.emit_branch(fallthrough_target);
+                            self.ectx.bind_label(fallthrough_cont);
+                        } else {
+                            self.emit_branch_if(*cond, taken_target, false);
+                        }
                     }
                     LinearOp::BranchIfZero { cond, target } => {
-                        self.emit_branch_if(*cond, self.label(*target), true);
+                        let lin_idx = linear_op_index
+                            .expect("BranchIfZero should have linear op index inside function");
+                        let taken_target = self.edge_target_label(lin_idx, 0, self.label(*target));
+                        if self.has_edge_edits(lin_idx, 1) {
+                            let fallthrough_cont = self.ectx.new_label();
+                            let fallthrough_target =
+                                self.edge_target_label(lin_idx, 1, fallthrough_cont);
+                            self.emit_branch_if(*cond, taken_target, true);
+                            self.ectx.emit_branch(fallthrough_target);
+                            self.ectx.bind_label(fallthrough_cont);
+                        } else {
+                            self.emit_branch_if(*cond, taken_target, true);
+                        }
                     }
                     LinearOp::JumpTable {
                         predicate,
                         labels,
                         default,
                     } => {
-                        self.emit_jump_table(*predicate, labels, *default);
+                        let lin_idx = linear_op_index
+                            .expect("JumpTable should have linear op index inside function");
+                        self.emit_jump_table(*predicate, labels, *default, lin_idx);
                     }
 
                     LinearOp::Const { dst, value } => {
@@ -2033,6 +2267,8 @@ fn compile_linear_ir_aarch64(
             if self.current_func.is_some() {
                 panic!("unterminated function: missing FuncEnd");
             }
+
+            self.emit_edge_trampolines();
 
             let entry = self.entry.expect("missing root FuncStart for lambda 0");
             let buf = self.ectx.finalize();
