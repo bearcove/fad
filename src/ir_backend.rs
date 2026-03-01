@@ -907,10 +907,7 @@ fn compile_linear_ir_aarch64(
 
     #[derive(Clone, Copy)]
     enum IntrinsicArg {
-        VReg {
-            vreg: crate::ir::VReg,
-            operand_index: usize,
-        },
+        VReg { operand_index: usize },
         OutField(u32),
     }
 
@@ -1707,107 +1704,20 @@ fn compile_linear_ir_aarch64(
             self.ectx.emit_branch(default_target);
         }
 
-        fn emit_load_intrinsic_arg_x1(&mut self, arg: IntrinsicArg) {
+        fn emit_set_abi_reg_from_intrinsic_arg(&mut self, abi_arg: u8, arg: IntrinsicArg) {
+            let target = PReg::new(abi_arg as usize, RegClass::Int);
             match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x1, x9);
+                IntrinsicArg::VReg { operand_index } => {
+                    self.emit_set_abi_arg_from_allocation(abi_arg, operand_index)
                 }
                 IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x1, x21, #offset);
-                }
-            }
-        }
-
-        fn emit_load_intrinsic_arg_x2(&mut self, arg: IntrinsicArg) {
-            match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x2, x9);
-                }
-                IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x2, x21, #offset);
-                }
-            }
-        }
-
-        fn emit_load_intrinsic_arg_x3(&mut self, arg: IntrinsicArg) {
-            match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x3, x9);
-                }
-                IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x3, x21, #offset);
-                }
-            }
-        }
-
-        fn emit_load_intrinsic_arg_x4(&mut self, arg: IntrinsicArg) {
-            match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x4, x9);
-                }
-                IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x4, x21, #offset);
-                }
-            }
-        }
-
-        fn emit_load_intrinsic_arg_x5(&mut self, arg: IntrinsicArg) {
-            match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x5, x9);
-                }
-                IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x5, x21, #offset);
-                }
-            }
-        }
-
-        fn emit_load_intrinsic_arg_x6(&mut self, arg: IntrinsicArg) {
-            match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x6, x9);
-                }
-                IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x6, x21, #offset);
-                }
-            }
-        }
-
-        fn emit_load_intrinsic_arg_x7(&mut self, arg: IntrinsicArg) {
-            match arg {
-                IntrinsicArg::VReg {
-                    vreg,
-                    operand_index,
-                } => {
-                    self.emit_load_use_x9(vreg, operand_index);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x7, x9);
-                }
-                IntrinsicArg::OutField(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x7, x21, #offset);
+                    let target_r = target.hw_enc() as u8;
+                    self.emit_load_u64_x10(offset as u64);
+                    dynasm!(self.ectx.ops
+                        ; .arch aarch64
+                        ; mov X(target_r), x21
+                        ; add X(target_r), X(target_r), x10
+                    );
                 }
             }
         }
@@ -1837,26 +1747,8 @@ fn compile_linear_ir_aarch64(
                 ; mov x0, x22
             );
 
-            if let Some(arg) = args.first().copied() {
-                self.emit_load_intrinsic_arg_x1(arg);
-            }
-            if let Some(arg) = args.get(1).copied() {
-                self.emit_load_intrinsic_arg_x2(arg);
-            }
-            if let Some(arg) = args.get(2).copied() {
-                self.emit_load_intrinsic_arg_x3(arg);
-            }
-            if let Some(arg) = args.get(3).copied() {
-                self.emit_load_intrinsic_arg_x4(arg);
-            }
-            if let Some(arg) = args.get(4).copied() {
-                self.emit_load_intrinsic_arg_x5(arg);
-            }
-            if let Some(arg) = args.get(5).copied() {
-                self.emit_load_intrinsic_arg_x6(arg);
-            }
-            if let Some(arg) = args.get(6).copied() {
-                self.emit_load_intrinsic_arg_x7(arg);
+            for (i, arg) in args.iter().copied().enumerate() {
+                self.emit_set_abi_reg_from_intrinsic_arg((i + 1) as u8, arg);
             }
 
             let ptr = fn_ptr as u64;
@@ -1902,10 +1794,7 @@ fn compile_linear_ir_aarch64(
                         .iter()
                         .copied()
                         .enumerate()
-                        .map(|(i, vreg)| IntrinsicArg::VReg {
-                            vreg,
-                            operand_index: i,
-                        })
+                        .map(|(i, _vreg)| IntrinsicArg::VReg { operand_index: i })
                         .collect();
                     self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
                     dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x0);
@@ -1916,10 +1805,7 @@ fn compile_linear_ir_aarch64(
                         .iter()
                         .copied()
                         .enumerate()
-                        .map(|(i, vreg)| IntrinsicArg::VReg {
-                            vreg,
-                            operand_index: i,
-                        })
+                        .map(|(i, _vreg)| IntrinsicArg::VReg { operand_index: i })
                         .collect();
                     // Side-effect intrinsic ABI: fn(ctx, args..., out+field_offset)
                     call_args.push(IntrinsicArg::OutField(field_offset));
