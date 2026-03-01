@@ -13,6 +13,8 @@ use yaxpeax_arch::LengthedInstruction;
 use yaxpeax_arch::{Decoder, U8Reader};
 
 fn main() {
+    let check_vec_signals = std::env::args().any(|arg| arg == "--check-vec-signals");
+
     let stdin = std::io::stdin();
     let mut lines: Vec<String> = Vec::new();
 
@@ -84,6 +86,16 @@ fn main() {
     eprintln!("→ bench_report/index.html  ({completed} benchmarks)");
     eprintln!("→ bench_report/results.json");
     eprintln!("→ bench_report/results.md");
+
+    if check_vec_signals {
+        match check_vec_scalar_signals(&vec_signals) {
+            Ok(summary) => eprintln!("PASS vec-signal check: {summary}"),
+            Err(details) => {
+                eprintln!("FAIL vec-signal check:\n{details}");
+                std::process::exit(2);
+            }
+        }
+    }
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -208,6 +220,63 @@ fn collect_vec_scalar_signals(sections: &[Section]) -> Vec<VecScalarSignalsRow> 
             ir: ir_signals,
         })
         .collect()
+}
+
+fn check_vec_scalar_signals(rows: &[VecScalarSignalsRow]) -> Result<String, String> {
+    if rows.is_empty() {
+        return Err("no vec scalar signals were collected".to_string());
+    }
+
+    let mut failures = Vec::<String>::new();
+    for row in rows {
+        let bench = row.bench_name;
+        if row.ir.regalloc_edits.is_none() {
+            failures.push(format!("{bench}: missing ir edit count"));
+        }
+
+        if let (Some(legacy_frame), Some(ir_frame)) =
+            (row.legacy.frame_size_bytes, row.ir.frame_size_bytes)
+            && ir_frame > legacy_frame
+        {
+            failures.push(format!(
+                "{bench}: ir frame {ir_frame}B is larger than legacy {legacy_frame}B"
+            ));
+        }
+
+        if row.legacy.stack_mem_ops == 0 {
+            failures.push(format!(
+                "{bench}: legacy stack_mem_ops is zero, ratio undefined"
+            ));
+            continue;
+        }
+        let ratio = row.ir.stack_mem_ops as f64 / row.legacy.stack_mem_ops as f64;
+        if ratio > 2.0 {
+            failures.push(format!(
+                "{bench}: ir/legacy stack-op ratio {ratio:.2}x exceeds 2.00x"
+            ));
+        }
+    }
+
+    if failures.is_empty() {
+        let ratios = rows
+            .iter()
+            .map(|row| {
+                if row.legacy.stack_mem_ops == 0 {
+                    0.0
+                } else {
+                    row.ir.stack_mem_ops as f64 / row.legacy.stack_mem_ops as f64
+                }
+            })
+            .collect::<Vec<_>>();
+        let worst_ratio = ratios.into_iter().fold(0.0_f64, f64::max);
+        Ok(format!(
+            "{} benches checked, worst stack-op ratio {:.2}x (limit 2.00x)",
+            rows.len(),
+            worst_ratio
+        ))
+    } else {
+        Err(failures.join("\n"))
+    }
 }
 
 fn has_postcard_deser_group(sections: &[Section], group_name: &str) -> bool {
