@@ -1060,6 +1060,39 @@ fn compile_linear_ir_aarch64(
             None
         }
 
+        fn linear_ir_use_count_in_function(
+            ir: &LinearIr,
+            op_index: usize,
+            v: crate::ir::VReg,
+        ) -> usize {
+            let mut start = op_index;
+            while start > 0 {
+                if matches!(ir.ops[start], LinearOp::FuncStart { .. }) {
+                    break;
+                }
+                start -= 1;
+            }
+            let mut end = op_index;
+            while end + 1 < ir.ops.len() {
+                if matches!(ir.ops[end], LinearOp::FuncEnd) {
+                    break;
+                }
+                end += 1;
+            }
+            ir.ops[start..=end]
+                .iter()
+                .filter(|op| Self::linear_op_uses_vreg(op, v))
+                .count()
+        }
+
+        fn allocs_for_linear_op(&self, linear_op_index: usize) -> Option<Vec<Allocation>> {
+            let lambda_id = self.current_func.as_ref()?.lambda_id.index() as u32;
+            self.allocs_by_lambda
+                .get(&lambda_id)
+                .and_then(|by_lambda| by_lambda.get(&linear_op_index))
+                .cloned()
+        }
+
         fn regalloc_extra_saved_pairs(alloc: &crate::regalloc_engine::AllocatedProgram) -> u32 {
             let mut max_pair = None::<u32>;
             let mut observe = |a: Allocation| {
@@ -2445,7 +2478,7 @@ fn compile_linear_ir_aarch64(
 
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
             let mut fused_cmpne_cond = None::<(usize, crate::ir::VReg)>;
-            let mut skipped_branch_ops = HashSet::<usize>::new();
+            let mut skipped_ops = HashSet::<usize>::new();
             for (op_index, op) in ir.ops.iter().enumerate() {
                 if let Some((expected_branch_op_index, expected_cond)) = fused_cmpne_cond {
                     if op_index > expected_branch_op_index {
@@ -2495,7 +2528,7 @@ fn compile_linear_ir_aarch64(
                     self.apply_regalloc_edits(linear_op_index, InstPosition::Before);
                 }
 
-                if skipped_branch_ops.contains(&op_index) {
+                if skipped_ops.contains(&op_index) {
                     // Branch was folded into the previous conditional branch.
                     // Keep linear-op accounting intact, but emit no machine code.
                 } else {
@@ -2603,7 +2636,7 @@ fn compile_linear_ir_aarch64(
                                         self.resolve_forwarded_label(*next_label);
                                     if resolved_fallthrough == resolved_false {
                                         self.emit_branch_if(*cond, taken_target, false);
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     } else if resolved_fallthrough == resolved_target {
                                         self.emit_branch_if(
@@ -2611,7 +2644,7 @@ fn compile_linear_ir_aarch64(
                                             self.label(resolved_false),
                                             true,
                                         );
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     }
                                 }
@@ -2631,14 +2664,14 @@ fn compile_linear_ir_aarch64(
                                         self.resolve_forwarded_label(*next_label);
                                     if resolved_fallthrough == resolved_false {
                                         self.emit_branch_on_last_cmp_ne(taken_target, false);
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     } else if resolved_fallthrough == resolved_target {
                                         self.emit_branch_on_last_cmp_ne(
                                             self.label(resolved_false),
                                             true,
                                         );
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     }
                                 }
@@ -2704,7 +2737,7 @@ fn compile_linear_ir_aarch64(
                                         self.resolve_forwarded_label(*next_label);
                                     if resolved_fallthrough == resolved_false {
                                         self.emit_branch_if(*cond, taken_target, true);
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     } else if resolved_fallthrough == resolved_target {
                                         self.emit_branch_if(
@@ -2712,7 +2745,7 @@ fn compile_linear_ir_aarch64(
                                             self.label(resolved_false),
                                             false,
                                         );
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     }
                                 }
@@ -2732,14 +2765,14 @@ fn compile_linear_ir_aarch64(
                                         self.resolve_forwarded_label(*next_label);
                                     if resolved_fallthrough == resolved_false {
                                         self.emit_branch_on_last_cmp_ne(taken_target, true);
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     } else if resolved_fallthrough == resolved_target {
                                         self.emit_branch_on_last_cmp_ne(
                                             self.label(resolved_false),
                                             false,
                                         );
-                                        skipped_branch_ops.insert(op_index + 1);
+                                        skipped_ops.insert(op_index + 1);
                                         emitted_cond_branch = true;
                                     }
                                 }
@@ -2786,15 +2819,90 @@ fn compile_linear_ir_aarch64(
                             self.set_const(*dst, self.const_of(*src));
                         }
                         LinearOp::BinOp { op, dst, lhs, rhs } => {
-                            self.emit_binop(
-                                *op,
-                                *dst,
-                                *lhs,
-                                *rhs,
-                                fuse_cmpne_to_branch_op_index.is_none(),
-                            );
-                            if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
-                                fused_cmpne_cond = Some((branch_op_index, *dst));
+                            let mut emitted_short_circuit_and_branch = false;
+                            if *op == BinOpKind::CmpNe
+                                && let Some(lin_idx) = linear_op_index
+                                && !self.has_inst_edits(lin_idx)
+                                && let (
+                                    Some(LinearOp::BinOp {
+                                        op: BinOpKind::CmpNe,
+                                        dst: cmp1_dst,
+                                        lhs: cmp1_lhs,
+                                        rhs: cmp1_rhs,
+                                    }),
+                                    Some(LinearOp::BinOp {
+                                        op: BinOpKind::And,
+                                        dst: and_dst,
+                                        lhs: and_lhs,
+                                        rhs: and_rhs,
+                                    }),
+                                    Some(LinearOp::BranchIf { cond, target }),
+                                ) = (
+                                    ir.ops.get(op_index + 1),
+                                    ir.ops.get(op_index + 2),
+                                    ir.ops.get(op_index + 3),
+                                )
+                            {
+                                let cmp_pair_used_by_and = (*and_lhs == *dst
+                                    && *and_rhs == *cmp1_dst)
+                                    || (*and_rhs == *dst && *and_lhs == *cmp1_dst);
+                                if cmp_pair_used_by_and
+                                    && *cond == *and_dst
+                                    && Self::linear_ir_use_count_in_function(ir, op_index, *dst)
+                                        == 1
+                                    && Self::linear_ir_use_count_in_function(
+                                        ir, op_index, *cmp1_dst,
+                                    ) == 1
+                                    && Self::linear_ir_use_count_in_function(ir, op_index, *and_dst)
+                                        == 1
+                                    && !self.has_inst_edits(lin_idx + 1)
+                                    && !self.has_inst_edits(lin_idx + 2)
+                                    && !self.has_inst_edits(lin_idx + 3)
+                                {
+                                    let false_path = self.ectx.new_label();
+                                    self.emit_binop(*op, *dst, *lhs, *rhs, false);
+                                    self.emit_branch_on_last_cmp_ne(false_path, true);
+
+                                    let saved_allocs = self.current_inst_allocs.clone();
+                                    self.current_inst_allocs =
+                                        self.allocs_for_linear_op(lin_idx + 1);
+                                    self.emit_binop(
+                                        BinOpKind::CmpNe,
+                                        *cmp1_dst,
+                                        *cmp1_lhs,
+                                        *cmp1_rhs,
+                                        false,
+                                    );
+                                    self.current_inst_allocs = saved_allocs;
+
+                                    let resolved_target = self.resolve_forwarded_label(*target);
+                                    let taken_target = self.edge_target_label(
+                                        lin_idx + 3,
+                                        0,
+                                        self.label(resolved_target),
+                                    );
+                                    self.emit_branch_on_last_cmp_ne(taken_target, false);
+                                    self.ectx.bind_label(false_path);
+                                    self.apply_fallthrough_edge_edits(lin_idx + 3, 1);
+                                    self.set_const(*and_dst, None);
+                                    skipped_ops.insert(op_index + 1);
+                                    skipped_ops.insert(op_index + 2);
+                                    skipped_ops.insert(op_index + 3);
+                                    emitted_short_circuit_and_branch = true;
+                                }
+                            }
+
+                            if !emitted_short_circuit_and_branch {
+                                self.emit_binop(
+                                    *op,
+                                    *dst,
+                                    *lhs,
+                                    *rhs,
+                                    fuse_cmpne_to_branch_op_index.is_none(),
+                                );
+                                if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
+                                    fused_cmpne_cond = Some((branch_op_index, *dst));
+                                }
                             }
                         }
                         LinearOp::UnaryOp { op, dst, src } => self.emit_unary(*op, *dst, *src),
