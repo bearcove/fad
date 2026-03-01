@@ -32,6 +32,7 @@ pub enum BinOpKind {
     Shr,
     Shl,
     Xor,
+    CmpNe,
 }
 
 /// Unary operation kind for linear IR.
@@ -381,6 +382,7 @@ impl<'a> Linearizer<'a> {
             IrOp::Shr => self.emit_binop(BinOpKind::Shr, node),
             IrOp::Shl => self.emit_binop(BinOpKind::Shl, node),
             IrOp::Xor => self.emit_binop(BinOpKind::Xor, node),
+            IrOp::CmpNe => self.emit_binop(BinOpKind::CmpNe, node),
 
             // ── Unary ──
             IrOp::ZigzagDecode { wide } => {

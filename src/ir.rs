@@ -469,6 +469,10 @@ pub enum IrOp {
     /// Inputs: [Data, Data]. Outputs: [Data].
     Xor,
 
+    /// Compare not-equal. Returns 1 if lhs != rhs, else 0.
+    /// Inputs: [Data, Data]. Outputs: [Data].
+    CmpNe,
+
     /// Zigzag decode for postcard signed integers.
     /// Inputs: [Data]. Outputs: [Data].
     ZigzagDecode { wide: bool },
@@ -543,6 +547,7 @@ impl IrOp {
             | IrOp::Shr
             | IrOp::Shl
             | IrOp::Xor
+            | IrOp::CmpNe
             | IrOp::ZigzagDecode { .. }
             | IrOp::SignExtend { .. }
             | IrOp::SlotAddr { .. }
@@ -1743,6 +1748,7 @@ impl IrFunc {
             IrOp::Shr => write!(f, "Shr"),
             IrOp::Shl => write!(f, "Shl"),
             IrOp::Xor => write!(f, "Xor"),
+            IrOp::CmpNe => write!(f, "CmpNe"),
             IrOp::ZigzagDecode { wide } => write!(f, "ZigzagDecode(wide={wide})"),
             IrOp::SignExtend { from_width } => write!(f, "SignExtend(from={from_width})"),
             IrOp::CallIntrinsic {

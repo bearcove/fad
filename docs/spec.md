@@ -240,7 +240,7 @@ r[ir.ops.arithmetic]
 Pure arithmetic ops have no state edges:
 
 - `Const { dst, value }` — load an immediate.
-- `Add`, `Sub`, `And`, `Or`, `Shr`, `Shl`, `Xor` — binary ops on VRegs.
+- `Add`, `Sub`, `And`, `Or`, `Shr`, `Shl`, `Xor`, `CmpNe` — binary ops on VRegs.
 - `ZigzagDecode { dst, src, wide }` — zigzag decode (postcard signed ints).
 - `SignExtend { dst, src, from_width }` — sign-extend narrow values.
 
@@ -286,7 +286,7 @@ Every op is classified by its effects. This classification determines
 which state edges are required:
 
 - **Pure**: no side effects. Data edges only. Can be reordered, CSE'd,
-  DCE'd freely. Examples: `Const`, `Add`, `ZigzagDecode`.
+  DCE'd freely. Examples: `Const`, `Add`, `CmpNe`, `ZigzagDecode`.
 - **Cursor**: reads or modifies input cursor state. Ordered relative to
   other cursor ops via cursor state edges. Examples: `ReadBytes`,
   `BoundsCheck`, `AdvanceCursor`.

@@ -205,6 +205,12 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
                 BinOpKind::And => dynasm!(self.ectx.ops ; .arch x64 ; and r10, [rsp + rhs_off]),
                 BinOpKind::Or => dynasm!(self.ectx.ops ; .arch x64 ; or r10, [rsp + rhs_off]),
                 BinOpKind::Xor => dynasm!(self.ectx.ops ; .arch x64 ; xor r10, [rsp + rhs_off]),
+                BinOpKind::CmpNe => dynasm!(self.ectx.ops
+                    ; .arch x64
+                    ; cmp r10, [rsp + rhs_off]
+                    ; setne r10b
+                    ; movzx r10, r10b
+                ),
                 BinOpKind::Shr => dynasm!(self.ectx.ops
                     ; .arch x64
                     ; mov rcx, [rsp + rhs_off]
@@ -1015,6 +1021,11 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 BinOpKind::And => dynasm!(self.ectx.ops ; .arch aarch64 ; and x9, x9, x10),
                 BinOpKind::Or => dynasm!(self.ectx.ops ; .arch aarch64 ; orr x9, x9, x10),
                 BinOpKind::Xor => dynasm!(self.ectx.ops ; .arch aarch64 ; eor x9, x9, x10),
+                BinOpKind::CmpNe => dynasm!(self.ectx.ops
+                    ; .arch aarch64
+                    ; cmp x9, x10
+                    ; cset x9, ne
+                ),
                 BinOpKind::Shr => dynasm!(self.ectx.ops ; .arch aarch64 ; lsr x9, x9, x10),
                 BinOpKind::Shl => dynasm!(self.ectx.ops ; .arch aarch64 ; lsl x9, x9, x10),
             }

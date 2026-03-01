@@ -611,10 +611,8 @@ fn ifn(f: *const u8) -> IntrinsicFn {
 }
 
 fn lower_nonzero_to_bool(builder: &mut RegionBuilder<'_>, value: PortSource) -> PortSource {
-    builder.gamma(value, &[], 2, |branch_idx, rb| {
-        let out = rb.const_val(if branch_idx == 0 { 0 } else { 1 });
-        rb.set_results(&[out]);
-    })[0]
+    let zero = builder.const_val(0);
+    builder.binop(IrOp::CmpNe, value, zero)
 }
 
 fn lower_error_if_nonzero(
@@ -622,7 +620,8 @@ fn lower_error_if_nonzero(
     value: PortSource,
     code: crate::context::ErrorCode,
 ) {
-    builder.gamma(value, &[], 2, |branch_idx, rb| {
+    let cond = lower_nonzero_to_bool(builder, value);
+    builder.gamma(cond, &[], 2, |branch_idx, rb| {
         if branch_idx == 1 {
             rb.error_exit(code);
         }
