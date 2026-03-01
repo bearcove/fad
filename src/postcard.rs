@@ -2,8 +2,11 @@ use dynasmrt::DynamicLabel;
 use facet::{MapDef, ScalarType};
 
 use crate::arch::{BASE_FRAME, EmitCtx};
-use crate::format::{Encoder, FieldEmitInfo, FieldEncodeInfo, Decoder, VariantEmitInfo};
+use crate::format::{
+    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, FieldLowerInfo, IrDecoder, VariantEmitInfo,
+};
 use crate::intrinsics;
+use crate::ir::{IntrinsicFn, RegionBuilder};
 use crate::malum::VecOffsets;
 use crate::recipe::{self, Width};
 
@@ -590,6 +593,299 @@ impl Encoder for FadPostcard {
         ectx.emit_enc_call_intrinsic_with_input(
             intrinsics::fad_encode_postcard_string as *const u8,
             offset as u32,
+        );
+    }
+}
+
+// =============================================================================
+// IR lowering — produce RVSDG nodes instead of machine code
+// =============================================================================
+
+/// Wrap a function pointer (as `*const u8`) into an `IntrinsicFn`.
+fn ifn(f: *const u8) -> IntrinsicFn {
+    IntrinsicFn(f as usize)
+}
+
+impl IrDecoder for FadPostcard {
+    // r[impl ir.format-trait.lower]
+
+    fn lower_struct_fields(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        fields: &[FieldLowerInfo],
+        _deny_unknown_fields: bool,
+        lower_field: &mut dyn FnMut(&mut RegionBuilder<'_>, &FieldLowerInfo),
+    ) {
+        // Postcard: fields in declaration order, no key dispatch.
+        for field in fields {
+            lower_field(builder, field);
+        }
+    }
+
+    fn lower_read_scalar(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        offset: usize,
+        scalar_type: ScalarType,
+    ) {
+        let offset = offset as u32;
+
+        // In the IR path, all scalar reads go through call_intrinsic.
+        // The varint fast-path inlining is an optimization that can be added
+        // as an IR pass later — for now, call the intrinsic unconditionally.
+        let func = match scalar_type {
+            ScalarType::Bool => ifn(intrinsics::fad_read_bool as _),
+            ScalarType::U8 => ifn(intrinsics::fad_read_u8 as _),
+            ScalarType::I8 => ifn(intrinsics::fad_read_i8 as _),
+            ScalarType::U16 => ifn(intrinsics::fad_read_u16 as _),
+            ScalarType::U32 => ifn(intrinsics::fad_read_varint_u32 as _),
+            ScalarType::U64 => ifn(intrinsics::fad_read_u64 as _),
+            ScalarType::I16 => ifn(intrinsics::fad_read_i16 as _),
+            ScalarType::I32 => ifn(intrinsics::fad_read_i32 as _),
+            ScalarType::I64 => ifn(intrinsics::fad_read_i64 as _),
+            ScalarType::F32 => ifn(intrinsics::fad_read_f32 as _),
+            ScalarType::F64 => ifn(intrinsics::fad_read_f64 as _),
+            ScalarType::U128 => ifn(intrinsics::fad_read_u128 as _),
+            ScalarType::I128 => ifn(intrinsics::fad_read_i128 as _),
+            ScalarType::USize => ifn(intrinsics::fad_read_usize as _),
+            ScalarType::ISize => ifn(intrinsics::fad_read_isize as _),
+            ScalarType::Char => ifn(intrinsics::fad_read_char as _),
+            _ => panic!("unsupported postcard scalar: {:?}", scalar_type),
+        };
+
+        builder.call_intrinsic(func, &[], offset, false);
+    }
+
+    fn lower_read_string(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        offset: usize,
+        scalar_type: ScalarType,
+    ) {
+        let offset = offset as u32;
+
+        let func = match scalar_type {
+            ScalarType::String => ifn(intrinsics::fad_read_postcard_string as _),
+            ScalarType::Str => ifn(intrinsics::fad_read_postcard_str as _),
+            ScalarType::CowStr => ifn(intrinsics::fad_read_postcard_cow_str as _),
+            _ => panic!("unsupported postcard string scalar: {:?}", scalar_type),
+        };
+
+        builder.call_intrinsic(func, &[], offset, false);
+    }
+}
+
+#[cfg(test)]
+mod ir_tests {
+    use super::*;
+    use crate::format::FieldLowerInfo;
+    use crate::ir::{IrBuilder, IrOp, NodeKind};
+
+    fn test_shape() -> &'static facet::Shape {
+        <u8 as facet::Facet>::SHAPE
+    }
+
+    /// Build IR for a flat struct with the given fields using postcard lowering.
+    fn build_postcard_struct(
+        fields: &[FieldLowerInfo],
+        lower_field: &mut dyn FnMut(&mut RegionBuilder<'_>, &FieldLowerInfo),
+    ) -> crate::ir::IrFunc {
+        let mut builder = IrBuilder::new(test_shape());
+        {
+            let mut rb = builder.root_region();
+            FadPostcard.lower_struct_fields(&mut rb, fields, false, lower_field);
+            rb.set_results(&[]);
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn postcard_ir_scalar_bool() {
+        let fields = vec![FieldLowerInfo {
+            offset: 0,
+            shape: <bool as facet::Facet>::SHAPE,
+            name: "flag",
+            required_index: 0,
+            has_default: false,
+        }];
+
+        let func = build_postcard_struct(&fields, &mut |builder, field| {
+            FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::Bool);
+        });
+
+        // One field → one CallIntrinsic node in the root region body.
+        let body = func.root_body();
+        let nodes = &func.regions[body].nodes;
+        assert_eq!(nodes.len(), 1);
+
+        let node = &func.nodes[nodes[0]];
+        match &node.kind {
+            NodeKind::Simple(IrOp::CallIntrinsic {
+                func: f,
+                field_offset,
+                has_result,
+                ..
+            }) => {
+                assert_eq!(f.0, intrinsics::fad_read_bool as usize);
+                assert_eq!(*field_offset, 0);
+                assert!(!has_result);
+            }
+            other => panic!("expected CallIntrinsic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn postcard_ir_flat_struct_two_fields() {
+        let fields = vec![
+            FieldLowerInfo {
+                offset: 0,
+                shape: <u32 as facet::Facet>::SHAPE,
+                name: "x",
+                required_index: 0,
+                has_default: false,
+            },
+            FieldLowerInfo {
+                offset: 4,
+                shape: <u8 as facet::Facet>::SHAPE,
+                name: "y",
+                required_index: 1,
+                has_default: false,
+            },
+        ];
+
+        let func = build_postcard_struct(&fields, &mut |builder, field| {
+            match field.name {
+                "x" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U32),
+                "y" => FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8),
+                _ => panic!("unexpected field"),
+            }
+        });
+
+        // Two fields → two CallIntrinsic nodes.
+        let body = func.root_body();
+        let nodes = &func.regions[body].nodes;
+        assert_eq!(nodes.len(), 2);
+
+        // First: fad_read_varint_u32 at offset 0
+        match &func.nodes[nodes[0]].kind {
+            NodeKind::Simple(IrOp::CallIntrinsic {
+                func: f,
+                field_offset,
+                ..
+            }) => {
+                assert_eq!(f.0, intrinsics::fad_read_varint_u32 as usize);
+                assert_eq!(*field_offset, 0);
+            }
+            other => panic!("expected CallIntrinsic for u32, got {:?}", other),
+        }
+
+        // Second: fad_read_u8 at offset 4
+        match &func.nodes[nodes[1]].kind {
+            NodeKind::Simple(IrOp::CallIntrinsic {
+                func: f,
+                field_offset,
+                ..
+            }) => {
+                assert_eq!(f.0, intrinsics::fad_read_u8 as usize);
+                assert_eq!(*field_offset, 4);
+            }
+            other => panic!("expected CallIntrinsic for u8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn postcard_ir_string() {
+        let fields = vec![FieldLowerInfo {
+            offset: 0,
+            shape: <String as facet::Facet>::SHAPE,
+            name: "name",
+            required_index: 0,
+            has_default: false,
+        }];
+
+        let func = build_postcard_struct(&fields, &mut |builder, field| {
+            FadPostcard.lower_read_string(builder, field.offset, ScalarType::String);
+        });
+
+        let body = func.root_body();
+        let nodes = &func.regions[body].nodes;
+        assert_eq!(nodes.len(), 1);
+
+        match &func.nodes[nodes[0]].kind {
+            NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. }) => {
+                assert_eq!(f.0, intrinsics::fad_read_postcard_string as usize);
+            }
+            other => panic!("expected CallIntrinsic for string, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn postcard_ir_state_threading() {
+        // Two sequential scalar reads should have chained state edges.
+        let fields = vec![
+            FieldLowerInfo {
+                offset: 0,
+                shape: <u8 as facet::Facet>::SHAPE,
+                name: "a",
+                required_index: 0,
+                has_default: false,
+            },
+            FieldLowerInfo {
+                offset: 1,
+                shape: <u8 as facet::Facet>::SHAPE,
+                name: "b",
+                required_index: 1,
+                has_default: false,
+            },
+        ];
+
+        let func = build_postcard_struct(&fields, &mut |builder, field| {
+            FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::U8);
+        });
+
+        let body = func.root_body();
+        let nodes = &func.regions[body].nodes;
+        assert_eq!(nodes.len(), 2);
+
+        // The second node's cursor-state input should reference the first node's
+        // cursor-state output — verifying state threading works through lowering.
+        let node1 = &func.nodes[nodes[1]];
+        let cursor_input = node1
+            .inputs
+            .iter()
+            .find(|i| i.kind == crate::ir::PortKind::StateCursor)
+            .expect("second node should have cursor state input");
+
+        // The source should be an OutputRef pointing at nodes[0].
+        match cursor_input.source {
+            crate::ir::PortSource::Node(crate::ir::OutputRef { node, .. }) => {
+                assert_eq!(node, nodes[0], "cursor state should chain from first node");
+            }
+            other => panic!("expected Node source, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn postcard_ir_display() {
+        // Verify the Display output for a simple struct lowering.
+        let fields = vec![FieldLowerInfo {
+            offset: 0,
+            shape: <bool as facet::Facet>::SHAPE,
+            name: "flag",
+            required_index: 0,
+            has_default: false,
+        }];
+
+        let func = build_postcard_struct(&fields, &mut |builder, field| {
+            FadPostcard.lower_read_scalar(builder, field.offset, ScalarType::Bool);
+        });
+
+        let display = format!("{}", func);
+        // Should contain a CallIntrinsic node with the function address.
+        assert!(
+            display.contains("CallIntrinsic"),
+            "display should show CallIntrinsic: {}",
+            display
         );
     }
 }
