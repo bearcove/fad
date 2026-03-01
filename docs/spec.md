@@ -96,62 +96,403 @@ postcard is non-self-describing.
 
 fad generates machine code at runtime via [dynasmrt](https://crates.io/crates/dynasmrt).
 
-## No IR
+## Intermediate representation
 
-fad has no intermediate representation. The compiler and format crates emit
-machine instructions directly via dynasmrt's `Assembler`. Format trait methods
-like `emit_field_loop` produce real `mov`, `cmp`, `b.eq`, `call` instructions
-for the target architecture.
+r[ir]
+fad compiles shapes through an intermediate representation before emitting
+machine code. The pipeline is:
 
-The Rust structs that drive compilation (shapes, field info, variant info,
-dispatch tables) serve as the intermediate representation. All "optimizations"
-(trie construction, untagged enum dispatch strategy) happen in Rust at
-JIT-compile time before any code is emitted.
+```
+Shape tree → Format::lower() → RVSDG (per shape) → [passes] → Linearizer → Backend → machine code
+```
 
-r[no-ir.two-backends]
-fad supports two backends — aarch64 and x86_64 — selected via
-`#[cfg(target_arch)]`. Format crates must emit for both.
+Formats produce IR. The compiler decides inlining. The backend decides
+instructions. These concerns are fully separated.
 
+### RVSDG
+
+r[ir.rvsdg]
+The IR is a Regionalized Value State Dependence Graph (RVSDG). Values flow
+through data edges. Effects (cursor movement, output writes, intrinsic calls)
+are ordered by state edges. Control flow is represented by structured region
+nodes, not a CFG.
+
+r[ir.rvsdg.regions]
+A region is an ordered set of nodes with explicit input and output ports.
+Every region has a set of argument ports (values entering the region) and
+result ports (values leaving the region). Regions nest — a node inside a
+region may itself contain sub-regions.
+
+r[ir.rvsdg.ports]
+Nodes communicate through ports. Each port carries either a data value
+(a VReg) or a state token. An output port of one node connects to an input
+port of another node via an edge. Every input port has exactly one source
+edge. Output ports may have zero or more consumers.
+
+### Node types
+
+r[ir.rvsdg.nodes.simple]
+A simple node represents a single operation (an `IrOp`). It has typed input
+ports and output ports. Pure ops have only data ports. Effectful ops consume
+and produce state tokens to enforce ordering.
+
+r[ir.rvsdg.nodes.gamma]
+A gamma node represents a conditional. It has a predicate input, N
+sub-regions (one per branch), and output ports that merge the results.
+Each sub-region receives the same set of passthrough inputs and produces
+the same number of outputs. At runtime, exactly one region executes based
+on the predicate.
+
+Untagged enum dispatch, externally tagged enum dispatch, and option
+deserialization all lower to gamma nodes.
+
+r[ir.rvsdg.nodes.theta]
+A theta node represents a tail-controlled loop. It has a single body region
+with a loop predicate output. The body region's non-predicate outputs feed
+back as inputs for the next iteration. When the predicate is false, the loop
+exits and the outputs flow to the theta node's output ports.
+
+Vec/array element loops, JSON field-dispatch loops, and varint byte loops
+all lower to theta nodes.
+
+r[ir.rvsdg.nodes.lambda]
+A lambda node represents a function. It contains a single body region.
+Each shape that requires its own emitted function (recursive types,
+non-inlined nested structs) gets a lambda node. The compiler produces
+one lambda per unique shape, same as today.
+
+r[ir.rvsdg.nodes.apply]
+An apply node calls a lambda. It passes arguments (out pointer, state
+tokens) and receives results. This is how inter-shape calls are represented
+before inlining.
+
+### Edges and state tokens
+
+r[ir.edges.data]
+Data edges carry values between ports. A data edge from node A's output
+to node B's input means B uses the value A produced. Data edges impose no
+ordering — if two nodes have no transitive data or state dependency, they
+are independent and may be scheduled in either order.
+
+r[ir.edges.state]
+State edges carry state tokens between ports. A state edge from node A to
+node B means A's effect must complete before B's effect begins. State tokens
+are not values — they carry no runtime data. They exist solely to order
+effects in the graph.
+
+r[ir.edges.state.cursor]
+Cursor state tokens order operations on the input cursor: reads, advances,
+bounds checks, saves, and restores. Any two ops that touch cursor state are
+connected by a cursor state edge (directly or transitively).
+
+r[ir.edges.state.output]
+Output state tokens order writes to the output struct. Writes to
+non-overlapping field offsets are independent and need not be ordered.
+Writes to the same offset (e.g., enum variant setup followed by field
+writes) must be ordered.
+
+r[ir.edges.state.barrier]
+Intrinsic calls are full barriers: they consume all live state tokens
+(cursor + output) and produce fresh ones. This is because intrinsics may
+read/write cursor state and output memory through the context pointer.
+
+### Op vocabulary
+
+r[ir.ops]
+The op vocabulary captures deserialization and serialization semantics.
+Ops are format-agnostic where possible (e.g., `WriteToField` is the same
+for postcard and JSON). Format-specific behavior lives in how formats
+compose ops, not in the ops themselves.
+
+r[ir.ops.cursor]
+Cursor ops read from or advance the input cursor:
+
+- `ReadBytes { dst, count }` — read N bytes from cursor into dst, advance.
+  Consumes and produces cursor state.
+- `PeekByte { dst }` — read one byte without advancing. Consumes and
+  produces cursor state.
+- `AdvanceCursor { count }` — skip N bytes. Consumes and produces cursor
+  state.
+- `BoundsCheck { count }` — assert N bytes remain. Consumes and produces
+  cursor state. On failure, triggers an error exit.
+- `SaveCursor { dst }` — snapshot cursor position into a data output.
+  Consumes cursor state, produces cursor state + data output.
+- `RestoreCursor { src }` — restore cursor from a saved snapshot.
+  Consumes cursor state + data input, produces cursor state.
+
+r[ir.ops.output]
+Output ops write to the output struct:
+
+- `WriteToField { src, offset, width }` — write src to out+offset.
+  Consumes and produces output state.
+- `ReadFromField { dst, offset, width }` — read from out+offset into dst.
+  Consumes and produces output state (ordered relative to writes).
+
+r[ir.ops.stack]
+Stack ops use abstract stack slots for scratch space:
+
+- `WriteToSlot { src, slot }` — write to a stack slot.
+- `ReadFromSlot { dst, slot }` — read from a stack slot.
+
+Stack slots are abstract — the backend assigns frame offsets.
+
+r[ir.ops.arithmetic]
+Pure arithmetic ops have no state edges:
+
+- `Const { dst, value }` — load an immediate.
+- `Add`, `Sub`, `And`, `Or`, `Shr`, `Shl`, `Xor` — binary ops on VRegs.
+- `ZigzagDecode { dst, src, wide }` — zigzag decode (postcard signed ints).
+- `SignExtend { dst, src, from_width }` — sign-extend narrow values.
+
+These ops can float freely within their containing region. The linearizer
+schedules them at the latest point before their first consumer.
+
+r[ir.ops.call]
+Call ops invoke functions:
+
+- `CallIntrinsic { func, args, dst }` — call an `extern "C"` intrinsic.
+  Full barrier: consumes all state tokens, produces fresh ones.
+- `CallPure { func, args, dst }` — call a pure function (no side effects).
+  No state edges.
+- `Apply { lambda, args, dst }` — call another compiled shape. Consumes
+  and produces cursor + output state.
+
+r[ir.ops.error]
+Error ops signal failure:
+
+- `ErrorExit { code }` — set the error code and abort the current
+  function. In the RVSDG, this terminates the containing region abnormally.
+  The linearizer emits it as a write to the context error fields followed
+  by a branch to the function's error cleanup path.
+
+r[ir.ops.simd]
+SIMD ops are opaque blocks that each backend implements natively:
+
+- `SimdStringScan { found_quote, found_escape, unterminated }` — scan
+  16 bytes at a time for `"` or `\`. Uses NEON `cmeq`/`umaxv` on aarch64,
+  SSE2 `pcmpeqb`/`pmovmskb` on x86_64.
+- `SimdWhitespaceSkip` — skip whitespace bytes using SIMD.
+
+These are not decomposed into scalar IR ops. The vectorized
+implementations are tightly coupled sequences of 30–40 platform-specific
+instructions. Representing them as scalar ops would require vector types,
+lane operations, and mask operations — complexity that pays off only when
+there are 3+ backends.
+
+### Effect classification
+
+r[ir.effects]
+Every op is classified by its effects. This classification determines
+which state edges are required:
+
+- **Pure**: no side effects. Data edges only. Can be reordered, CSE'd,
+  DCE'd freely. Examples: `Const`, `Add`, `ZigzagDecode`.
+- **Cursor**: reads or modifies input cursor state. Ordered relative to
+  other cursor ops via cursor state edges. Examples: `ReadBytes`,
+  `BoundsCheck`, `AdvanceCursor`.
+- **Output**: writes to the output struct. Ordered relative to other
+  output ops via output state edges. Examples: `WriteToField`.
+- **Barrier**: may touch any state. Consumes and produces all state
+  tokens. Examples: `CallIntrinsic`, `Apply`.
+
+r[ir.effects.independence]
+Ops with disjoint effect sets are independent and need not be ordered
+relative to each other. A pure op and a cursor op have no state edge
+between them (unless the pure op consumes the cursor op's data output).
+An output write to offset 0 and an output write to offset 8 are
+independent (different memory, no aliasing).
+
+### Virtual registers and stack slots
+
+r[ir.vregs]
+Values are named by virtual registers (VRegs). VRegs are unlimited — each
+op that produces a value gets a fresh VReg. The backend maps VRegs to
+physical registers or spill slots. There is no register allocator in the
+IR layer.
+
+r[ir.slots]
+Stack scratch space is named by abstract stack slots. The backend assigns
+each slot a frame offset. Formats request slots for scratch space
+(e.g., JSON needs slots for key pointer, key length, bitset, saved cursor).
+
+### Cursor model
+
+r[ir.cursor]
+The input cursor (current read position and end-of-input) is implicit
+mutable state, not an explicit value threaded through the graph. Cursor
+ops consume and produce cursor state tokens to enforce ordering, but the
+cursor "value" is not a VReg — it lives in a dedicated register at
+runtime.
+
+r[ir.cursor.register]
+The backend pins the cursor to callee-saved registers (x19/r12 for
+position, x20/r13 for end). Cursor state tokens in the RVSDG correspond
+to "the cursor is in a valid state at this point." The linearizer ensures
+cursor ops emit in state-edge order, which the backend translates to
+sequential register operations.
+
+r[ir.cursor.flush]
+Before barrier ops (intrinsic calls), the backend flushes the cursor
+register to the context struct. After the call returns, it reloads the
+cursor register. The IR does not represent flush/reload — the backend
+inserts them around every barrier op.
+
+r[ir.cursor.snapshot]
+Backtracking (for untagged enums, speculative parsing) uses
+`SaveCursor`/`RestoreCursor` ops. `SaveCursor` captures the cursor
+position as a data value (a VReg). `RestoreCursor` sets the cursor
+back to a previously saved position. These are explicit in the RVSDG
+and visible to optimization passes.
+
+### Error model
+
+r[ir.error]
+Errors use a branch-to-exit model. Fallible ops (bounds checks, intrinsic
+calls) may trigger an error exit: the error code and byte offset are
+written to the context struct, and control transfers to the function's
+error cleanup path.
+
+r[ir.error.in-rvsdg]
+In the RVSDG, error exits are modeled as abnormal region termination.
+A fallible op's cursor state output is only valid on success. If the op
+fails at runtime, the function exits without executing any downstream
+nodes. The RVSDG does not represent the error path explicitly — the
+linearizer generates it.
+
+r[ir.error.cleanup]
+The error cleanup path restores callee-saved registers and returns to the
+caller. For ops that have allocated resources (Vec buffers, String
+allocations), the cleanup path frees them before returning. The linearizer
+emits cleanup code at the end of each lambda.
+
+### Format trait
+
+r[ir.format-trait]
+Format crates implement a trait that the compiler calls to lower
+format-specific operations into RVSDG nodes. Formats produce IR — they
+do not emit machine code.
+
+r[ir.format-trait.lower]
+The Format trait provides lowering methods that take a mutable reference
+to a region builder and produce nodes within that region:
+
+- `lower_struct_fields(builder, fields)` — produce nodes for the field
+  iteration logic. Positional formats (postcard) emit sequential reads.
+  Keyed formats (JSON) emit a theta node containing key dispatch.
+- `lower_read_scalar(builder, scalar_type)` — produce nodes to read a
+  scalar value from the input. Returns a data output port.
+- `lower_read_string(builder)` — produce nodes to read a string from the
+  input, allocate it, and return a data output port.
+
+r[ir.format-trait.stateless]
+Format trait implementations are stateless at JIT-compile time: they
+produce IR nodes but hold no mutable state between calls. Runtime state
+lives in the `format_state` pointer inside `DeserContext`.
+
+### Inlining
+
+r[ir.inline]
+Inlining is an IR-level decision, not a format-level decision. The
+compiler can replace an `Apply` node with the callee lambda's body
+region, remapping input/output ports. This decouples "what to compute"
+from "whether to inline."
+
+r[ir.inline.decision]
+The inlining pass considers: node count in the callee, number of call
+sites, whether the type is recursive (back-edges are never inlined),
+and format hints (positional formats benefit more from inlining because
+their sequential reads fuse with the caller's reads).
+
+r[ir.inline.remap]
+Inlining remaps: VRegs are offset by the caller's vreg count, stack slots
+are offset similarly, and `WriteToField` offsets are adjusted by the
+field offset in the parent struct. State edges are spliced: the caller's
+cursor state before the `Apply` feeds into the inlined body's first
+cursor op, and the inlined body's final cursor state feeds the caller's
+next cursor op.
+
+### Linearization
+
+r[ir.linearize]
+The linearizer converts the RVSDG into a linear instruction sequence
+suitable for the backend. It walks the graph recursively:
+
+- **Simple nodes**: topological sort within each region, respecting state
+  edges. Pure nodes are scheduled at the latest point before their first
+  consumer (to minimize register pressure).
+- **Gamma nodes**: emit as a conditional branch — evaluate predicate,
+  branch to each region's code, merge outputs.
+- **Theta nodes**: emit as a loop — body code, evaluate predicate,
+  conditional back-edge.
+- **Lambda nodes**: emit as a function with prologue/epilogue.
+
+r[ir.linearize.error-paths]
+Error exits are placed at the end of each function, after all
+success-path code. This keeps the hot path straight-line and
+branch-free where possible.
+
+r[ir.linearize.schedule]
+Within a region, independent nodes (no transitive state or data
+dependency) may be scheduled in any order. The linearizer uses a
+reverse-post-order traversal of the data/state dependency graph.
+This produces good instruction locality without a full scheduling
+algorithm.
+
+### Backends
+
+r[ir.backends]
+fad supports two backends — aarch64 and x86_64 — selected at compile
+time via `#[cfg(target_arch)]`. Both backends consume the same linearized
+IR and produce native machine code via dynasmrt.
+
+r[ir.backends.native-only]
 The emitted code is always native machine code. There is no interpreter
-fallback.
+fallback. dynasmrt handles label management, relocation, memory
+protection (RW→RX), and cache flushing on aarch64.
 
-dynasmrt handles label management, relocation, memory protection (RW→RX),
-and cache flushing on aarch64.
+r[ir.backends.cursor-registers]
+The backend pins the cursor to fixed callee-saved registers and inserts
+flush/reload sequences around barrier ops. The mapping is:
 
-r[no-ir.intrinsics]
-Operations too complex to emit inline (allocation, string growth, error
-reporting) are implemented as Rust functions with `extern "C"` ABI, called
-from emitted code via the platform's C calling convention.
+- **aarch64**: x19=cursor, x20=end, x21=out, x22=ctx
+- **x86_64**: r12=cursor, r13=end, r14=out, r15=ctx
 
-r[no-ir.format-trait]
-Format crates implement a trait that the fad compiler calls to emit machine
-code for format-specific operations.
+r[ir.backends.simd]
+Each backend implements SIMD ops natively. The linearized IR contains
+opaque SIMD op references; the backend expands them into platform-specific
+instruction sequences.
 
-r[no-ir.format-trait.methods]
-The Format trait provides the following methods:
+### Intrinsics
 
-- `emit_struct_fields(ectx, fields, callback)` — emit the field iteration
-  logic for a struct. The format controls field ordering: positional formats
-  emit fields in declaration order, keyed formats emit a key-matching loop.
-- `emit_read_scalar(ectx, offset, scalar_type)` — emit code to read a
-  scalar value from the input and store it at `out + offset`.
-- `emit_read_string(ectx, offset)` — emit code to read a string from the
-  input, allocate it, and store it at `out + offset`.
-- `extra_stack_space(fields)` — return the number of bytes of additional
-  stack space the format needs per emitted function (e.g., JSON needs space
-  for key pointer/length and bitset; postcard needs zero).
-- `supports_inline_nested()` — return whether nested struct fields can be
-  flattened into the parent function instead of emitting separate functions.
+r[ir.intrinsics]
+Operations too complex to represent as IR nodes (allocation, string
+growth, UTF-8 validation, complex number parsing) are implemented as
+Rust functions with `extern "C"` ABI. The IR represents these as
+`CallIntrinsic` nodes. The backend emits calls using the platform's
+C calling convention.
 
-r[no-ir.format-trait.inline-nested]
-`supports_inline_nested()` controls how the compiler handles nested struct
-fields. When true, nested fields are flattened into the parent function with
-adjusted offsets. When false, each struct shape gets its own emitted function.
+### Optimization passes
 
-r[no-ir.format-trait.stateless]
-Format trait implementations are stateless at JIT-compile time: they emit
-code but hold no mutable state between calls. Runtime state lives in the
-`format_state` pointer inside `DeserContext`.
+r[ir.passes]
+The compiler starts with zero optimization passes — RVSDG is lowered
+to a linear sequence and emitted directly. Passes are added one at a
+time as the need arises.
+
+r[ir.passes.planned]
+Planned passes, in rough priority order:
+
+1. **Bounds check coalescing**: merge adjacent `BoundsCheck` nodes within
+   a region into a single check for the combined byte count. Enabled by
+   state edge analysis — two bounds checks with only cursor reads between
+   them can be merged.
+2. **Inlining**: replace `Apply` nodes with callee lambda bodies.
+3. **Dead node elimination**: remove nodes with no consumers. Trivial in
+   RVSDG — a node with no outgoing data or state edges is dead.
+4. **Common subexpression elimination**: merge nodes with identical ops
+   and identical input edges. Pure nodes are always candidates. Cursor
+   ops are candidates only if they have the same state predecessor.
+5. **Cold path sinking**: move error-construction nodes into error-only
+   regions so they don't pollute the hot path's register pressure.
 
 ## Scalar types
 
