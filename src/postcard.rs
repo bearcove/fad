@@ -6,7 +6,7 @@ use crate::format::{
     Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, FieldLowerInfo, IrDecoder, VariantEmitInfo,
 };
 use crate::intrinsics;
-use crate::ir::{IntrinsicFn, RegionBuilder};
+use crate::ir::{IntrinsicFn, RegionBuilder, SlotId};
 use crate::malum::VecOffsets;
 use crate::recipe::{self, Width};
 
@@ -685,6 +685,7 @@ impl IrDecoder for FadPostcard {
         offset: usize,
         init_none_fn: *const u8,
         init_some_fn: *const u8,
+        scratch_slot: SlotId,
         lower_inner: &mut dyn FnMut(&mut RegionBuilder<'_>),
     ) {
         let offset = offset as u32;
@@ -701,7 +702,7 @@ impl IrDecoder for FadPostcard {
                     // None path: call init_none(init_none_fn, out + offset).
                     let init_fn = rb.const_val(init_none_fn as u64);
                     rb.call_intrinsic(
-                        ifn(intrinsics::fad_option_init_none as _),
+                        ifn(intrinsics::fad_option_init_none_ctx as _),
                         &[init_fn],
                         offset,
                         false,
@@ -709,12 +710,16 @@ impl IrDecoder for FadPostcard {
                     rb.set_results(&[]);
                 }
                 1 => {
-                    // Some path: deserialize inner T, then init_some.
+                    // Some path: deserialize inner T into stack scratch, then init_some.
+                    let saved_out = rb.save_out_ptr();
+                    let scratch_ptr = rb.slot_addr(scratch_slot);
+                    rb.set_out_ptr(scratch_ptr);
                     lower_inner(rb);
+                    rb.set_out_ptr(saved_out);
                     let init_fn = rb.const_val(init_some_fn as u64);
                     rb.call_intrinsic(
-                        ifn(intrinsics::fad_option_init_some as _),
-                        &[init_fn],
+                        ifn(intrinsics::fad_option_init_some_ctx as _),
+                        &[init_fn, scratch_ptr],
                         offset,
                         false,
                     );
@@ -1078,7 +1083,8 @@ mod ir_tests {
             let mut rb = builder.root_region();
             let none_fn = intrinsics::fad_option_init_none as *const u8;
             let some_fn = intrinsics::fad_option_init_some as *const u8;
-            FadPostcard.lower_option(&mut rb, 0, none_fn, some_fn, &mut |rb| {
+            let scratch = rb.alloc_slot();
+            FadPostcard.lower_option(&mut rb, 0, none_fn, some_fn, scratch, &mut |rb| {
                 // Inner: read a u8.
                 FadPostcard.lower_read_scalar(rb, 0, ScalarType::U8);
             });
@@ -1114,12 +1120,13 @@ mod ir_tests {
                 let none_nodes = &func.regions[regions[0]].nodes;
                 assert_eq!(none_nodes.len(), 2, "None branch: const + call_intrinsic");
 
-                // Branch 1 (Some): should have a CallIntrinsic (read_u8) + Const + CallIntrinsic (init_some).
+                // Branch 1 (Some): save/redirect out ptr, read_u8 in scratch,
+                // restore out ptr, then init_some.
                 let some_nodes = &func.regions[regions[1]].nodes;
                 assert_eq!(
                     some_nodes.len(),
-                    3,
-                    "Some branch: read_u8 + const + call_intrinsic"
+                    7,
+                    "Some branch: save/slot_addr/set_out/read_u8/restore/const/call"
                 );
             }
             other => panic!("expected Gamma, got {:?}", other),

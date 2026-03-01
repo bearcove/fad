@@ -111,8 +111,18 @@ pub enum LinearOp {
         offset: u32,
         width: Width,
     },
+    SaveOutPtr {
+        dst: VReg,
+    },
+    SetOutPtr {
+        src: VReg,
+    },
 
     // ── Stack ──
+    SlotAddr {
+        dst: VReg,
+        slot: SlotId,
+    },
     WriteToSlot {
         slot: SlotId,
         src: VReg,
@@ -429,8 +439,20 @@ impl<'a> Linearizer<'a> {
                     width: *width,
                 });
             }
+            IrOp::SaveOutPtr => {
+                self.emit(LinearOp::SaveOutPtr { dst: data_dst(0) });
+            }
+            IrOp::SetOutPtr => {
+                self.emit(LinearOp::SetOutPtr { src: data_in(0) });
+            }
 
             // ── Stack ops ──
+            IrOp::SlotAddr { slot } => {
+                self.emit(LinearOp::SlotAddr {
+                    dst: data_dst(0),
+                    slot: *slot,
+                });
+            }
             IrOp::WriteToSlot { slot } => {
                 self.emit(LinearOp::WriteToSlot {
                     slot: *slot,
@@ -911,6 +933,18 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &LinearOp) -> fmt::Result {
         LinearOp::ReadFromField { dst, offset, width } => {
             fmt_vreg(f, *dst)?;
             write!(f, " = load [{offset}:{width}]")
+        }
+        LinearOp::SaveOutPtr { dst } => {
+            fmt_vreg(f, *dst)?;
+            write!(f, " = save_out_ptr")
+        }
+        LinearOp::SetOutPtr { src } => {
+            write!(f, "set_out_ptr ")?;
+            fmt_vreg(f, *src)
+        }
+        LinearOp::SlotAddr { dst, slot } => {
+            fmt_vreg(f, *dst)?;
+            write!(f, " = slot_addr {}", slot.index())
         }
         LinearOp::WriteToSlot { slot, src } => {
             write!(f, "slot[{}] = ", slot.index())?;

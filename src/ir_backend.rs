@@ -144,6 +144,32 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
             }
         }
 
+        fn emit_save_out_ptr(&mut self, dst: crate::ir::VReg) {
+            let off = self.vreg_off(dst) as i32;
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov [rsp + off], r14
+            );
+        }
+
+        fn emit_set_out_ptr(&mut self, src: crate::ir::VReg) {
+            let off = self.vreg_off(src) as i32;
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov r14, [rsp + off]
+            );
+        }
+
+        fn emit_slot_addr(&mut self, dst: crate::ir::VReg, slot: crate::ir::SlotId) {
+            let dst_off = self.vreg_off(dst) as i32;
+            let slot_off = self.slot_off(slot) as i32;
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; lea r10, [rsp + slot_off]
+                ; mov [rsp + dst_off], r10
+            );
+        }
+
         fn emit_read_bytes(&mut self, dst: crate::ir::VReg, count: u32) {
             self.emit_recipe_ops(vec![Op::BoundsCheck { count }]);
             match count {
@@ -574,6 +600,15 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
                     LinearOp::ReadFromField { dst, offset, width } => {
                         self.emit_read_from_field(*dst, *offset, *width);
                     }
+                    LinearOp::SaveOutPtr { dst } => {
+                        self.emit_save_out_ptr(*dst);
+                    }
+                    LinearOp::SetOutPtr { src } => {
+                        self.emit_set_out_ptr(*src);
+                    }
+                    LinearOp::SlotAddr { dst, slot } => {
+                        self.emit_slot_addr(*dst, *slot);
+                    }
                     LinearOp::WriteToSlot { slot, src } => {
                         self.emit_recipe_ops(vec![
                             Op::LoadFromStack {
@@ -771,6 +806,32 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 Width::W4 => dynasm!(self.ectx.ops ; .arch aarch64 ; str w9, [x21, #offset]),
                 Width::W8 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [x21, #offset]),
             }
+        }
+
+        fn emit_save_out_ptr(&mut self, dst: crate::ir::VReg) {
+            let off = self.vreg_off(dst);
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; str x21, [sp, #off]
+            );
+        }
+
+        fn emit_set_out_ptr(&mut self, src: crate::ir::VReg) {
+            let off = self.vreg_off(src);
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; ldr x21, [sp, #off]
+            );
+        }
+
+        fn emit_slot_addr(&mut self, dst: crate::ir::VReg, slot: crate::ir::SlotId) {
+            let dst_off = self.vreg_off(dst);
+            let slot_off = self.slot_off(slot);
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; add x9, sp, #slot_off
+                ; str x9, [sp, #dst_off]
+            );
         }
 
         fn emit_read_bytes(&mut self, dst: crate::ir::VReg, count: u32) {
@@ -1177,6 +1238,15 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     }
                     LinearOp::ReadFromField { dst, offset, width } => {
                         self.emit_read_from_field(*dst, *offset, *width);
+                    }
+                    LinearOp::SaveOutPtr { dst } => {
+                        self.emit_save_out_ptr(*dst);
+                    }
+                    LinearOp::SetOutPtr { src } => {
+                        self.emit_set_out_ptr(*src);
+                    }
+                    LinearOp::SlotAddr { dst, slot } => {
+                        self.emit_slot_addr(*dst, *slot);
                     }
                     LinearOp::WriteToSlot { slot, src } => {
                         self.emit_recipe_ops(vec![

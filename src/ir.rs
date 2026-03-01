@@ -413,8 +413,20 @@ pub enum IrOp {
     /// Inputs: [StateOutput]. Outputs: [Data, StateOutput].
     ReadFromField { offset: u32, width: Width },
 
+    /// Save the current output pointer (`out` base) as a data value.
+    /// Inputs: [StateOutput]. Outputs: [Data, StateOutput].
+    SaveOutPtr,
+
+    /// Set the current output pointer (`out` base) from a data value.
+    /// Inputs: [Data, StateOutput]. Outputs: [StateOutput].
+    SetOutPtr,
+
     // ── Stack ops ───────────────────────────────────────────────────
     // r[impl ir.ops.stack]
+    /// Compute the address of a stack slot (`sp + slot_offset`).
+    /// Inputs: []. Outputs: [Data].
+    SlotAddr { slot: SlotId },
+
     /// Write to an abstract stack slot.
     /// Inputs: [Data]. Outputs: [].
     WriteToSlot { slot: SlotId },
@@ -533,6 +545,7 @@ impl IrOp {
             | IrOp::Xor
             | IrOp::ZigzagDecode { .. }
             | IrOp::SignExtend { .. }
+            | IrOp::SlotAddr { .. }
             | IrOp::WriteToSlot { .. }
             | IrOp::ReadFromSlot { .. }
             | IrOp::CallPure { .. } => Effect::Pure,
@@ -550,7 +563,10 @@ impl IrOp {
             | IrOp::ErrorExit { .. } => Effect::Cursor,
 
             // Output ops
-            IrOp::WriteToField { .. } | IrOp::ReadFromField { .. } => Effect::Output,
+            IrOp::WriteToField { .. }
+            | IrOp::ReadFromField { .. }
+            | IrOp::SaveOutPtr
+            | IrOp::SetOutPtr => Effect::Output,
 
             // Barrier ops
             IrOp::CallIntrinsic { .. } => Effect::Barrier,
@@ -982,6 +998,54 @@ impl<'a> RegionBuilder<'a> {
             kind: NodeKind::Simple(IrOp::ReadFromField { offset, width }),
         });
         self.output_state = PortSource::Node(OutputRef { node, index: 1 });
+        PortSource::Node(OutputRef { node, index: 0 })
+    }
+
+    /// Save the current output pointer (`out` base). Returns data output.
+    pub fn save_out_ptr(&mut self) -> PortSource {
+        let data_out = self.data_output();
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs: vec![InputPort {
+                kind: PortKind::StateOutput,
+                source: self.output_state,
+            }],
+            outputs: vec![data_out, Self::output_output()],
+            kind: NodeKind::Simple(IrOp::SaveOutPtr),
+        });
+        self.output_state = PortSource::Node(OutputRef { node, index: 1 });
+        PortSource::Node(OutputRef { node, index: 0 })
+    }
+
+    /// Set the current output pointer (`out` base).
+    pub fn set_out_ptr(&mut self, ptr: PortSource) {
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs: vec![
+                InputPort {
+                    kind: PortKind::Data,
+                    source: ptr,
+                },
+                InputPort {
+                    kind: PortKind::StateOutput,
+                    source: self.output_state,
+                },
+            ],
+            outputs: vec![Self::output_output()],
+            kind: NodeKind::Simple(IrOp::SetOutPtr),
+        });
+        self.output_state = PortSource::Node(OutputRef { node, index: 0 });
+    }
+
+    /// Compute the address of a stack slot (`sp + slot_offset`).
+    pub fn slot_addr(&mut self, slot: SlotId) -> PortSource {
+        let data_out = self.data_output();
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs: vec![],
+            outputs: vec![data_out],
+            kind: NodeKind::Simple(IrOp::SlotAddr { slot }),
+        });
         PortSource::Node(OutputRef { node, index: 0 })
     }
 
@@ -1537,6 +1601,9 @@ impl IrFunc {
             IrOp::ReadFromField { offset, width } => {
                 write!(f, "ReadFromField(offset={offset}, {width})")
             }
+            IrOp::SaveOutPtr => write!(f, "SaveOutPtr"),
+            IrOp::SetOutPtr => write!(f, "SetOutPtr"),
+            IrOp::SlotAddr { slot } => write!(f, "SlotAddr({})", slot.index()),
             IrOp::WriteToSlot { slot } => write!(f, "WriteToSlot({})", slot.index()),
             IrOp::ReadFromSlot { slot } => write!(f, "ReadFromSlot({})", slot.index()),
             IrOp::Const { value } => write!(f, "Const({value:#x})"),

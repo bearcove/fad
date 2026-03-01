@@ -1611,11 +1611,31 @@ fn lower_shape_via_ir<F: IrDecoder + ?Sized>(
         return;
     }
 
-    if get_option_def(shape).is_some() {
-        panic!(
-            "IR path does not support Option lowering yet: {}",
-            shape.type_identifier
+    if let Some(opt_def) = get_option_def(shape) {
+        let init_none_fn = opt_def.vtable.init_none as *const u8;
+        let init_some_fn = opt_def.vtable.init_some as *const u8;
+        let inner_layout = opt_def
+            .t
+            .layout
+            .sized_layout()
+            .expect("Option inner type must be Sized");
+        let bytes = inner_layout.size().max(1);
+        let slots = bytes.div_ceil(8);
+        let scratch_slot = rb.alloc_slot();
+        for _ in 1..slots {
+            let _ = rb.alloc_slot();
+        }
+        decoder.lower_option(
+            rb,
+            base_offset,
+            init_none_fn,
+            init_some_fn,
+            scratch_slot,
+            &mut |inner_rb| {
+                lower_shape_via_ir(decoder, inner_rb, opt_def.t, 0);
+            },
         );
+        return;
     }
 
     if get_pointer_def(shape).is_some() {

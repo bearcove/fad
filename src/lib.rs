@@ -1971,6 +1971,48 @@ mod tests {
         assert_eq!(result, WithOptU32 { value: None });
     }
 
+    #[test]
+    fn postcard_option_some_scalar_via_ir() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptU32 {
+            value: Option<u32>,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptU32Serde {
+            value: Option<u32>,
+        }
+
+        let source = WithOptU32Serde { value: Some(42) };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_decoder_via_ir(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptU32 { value: Some(42) });
+    }
+
+    #[test]
+    fn postcard_option_none_scalar_via_ir() {
+        use serde::Serialize;
+
+        #[derive(Facet, Debug, PartialEq)]
+        struct WithOptU32 {
+            value: Option<u32>,
+        }
+
+        #[derive(Serialize)]
+        struct WithOptU32Serde {
+            value: Option<u32>,
+        }
+
+        let source = WithOptU32Serde { value: None };
+        let encoded = ::postcard::to_allocvec(&source).unwrap();
+        let deser = compile_decoder_via_ir(WithOptU32::SHAPE, &postcard::FadPostcard);
+        let result: WithOptU32 = deserialize(&deser, &encoded).unwrap();
+        assert_eq!(result, WithOptU32 { value: None });
+    }
+
     // r[verify deser.postcard.option]
     #[test]
     fn postcard_option_some_string() {

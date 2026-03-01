@@ -324,7 +324,7 @@ pub trait Decoder {
 // IR decoder — RVSDG lowering (coexists with Decoder during migration)
 // =============================================================================
 
-use crate::ir::RegionBuilder;
+use crate::ir::{RegionBuilder, SlotId};
 
 /// Information about a struct field needed during IR lowering.
 ///
@@ -452,6 +452,7 @@ pub trait IrDecoder {
         _offset: usize,
         _init_none_fn: *const u8,
         _init_some_fn: *const u8,
+        _scratch_slot: SlotId,
         _lower_inner: &mut dyn FnMut(&mut RegionBuilder<'_>),
     ) {
         panic!("option lowering not yet implemented for this format");
