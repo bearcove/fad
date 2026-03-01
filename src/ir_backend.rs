@@ -838,7 +838,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
     use crate::arch::{BASE_FRAME, EmitCtx};
     use crate::ir::Width;
     use crate::linearize::{BinOpKind, LabelId, LinearOp, UnaryOpKind};
-    use crate::recipe::{Op, Recipe, Slot};
+    use crate::recipe::{Op, Recipe};
 
     struct FunctionCtx {
         error_exit: DynamicLabel,
@@ -853,8 +853,12 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         vreg_base: u32,
         entry: Option<AssemblyOffset>,
         current_func: Option<FunctionCtx>,
-        x9_cached_vreg: Option<crate::ir::VReg>,
         const_vregs: Vec<Option<u64>>,
+        vreg_regs: Vec<Option<AllocReg>>,
+        reg_vregs: [Option<crate::ir::VReg>; 5],
+        reg_dirty: [bool; 5],
+        use_positions: Vec<Vec<usize>>,
+        use_cursor: Vec<usize>,
     }
 
     #[derive(Clone, Copy)]
@@ -864,7 +868,78 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         OutStack(u32),
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum AllocReg {
+        X11,
+        X12,
+        X13,
+        X14,
+        X15,
+    }
+
+    impl AllocReg {
+        const ALL: [AllocReg; 5] = [
+            AllocReg::X11,
+            AllocReg::X12,
+            AllocReg::X13,
+            AllocReg::X14,
+            AllocReg::X15,
+        ];
+
+        const fn index(self) -> usize {
+            match self {
+                AllocReg::X11 => 0,
+                AllocReg::X12 => 1,
+                AllocReg::X13 => 2,
+                AllocReg::X14 => 3,
+                AllocReg::X15 => 4,
+            }
+        }
+    }
+
     impl Lowerer {
+        fn push_op_uses(op: &LinearOp, out: &mut Vec<crate::ir::VReg>) {
+            match op {
+                LinearOp::BinOp { lhs, rhs, .. } => {
+                    out.push(*lhs);
+                    out.push(*rhs);
+                }
+                LinearOp::UnaryOp { src, .. }
+                | LinearOp::Copy { src, .. }
+                | LinearOp::AdvanceCursorBy { src }
+                | LinearOp::RestoreCursor { src }
+                | LinearOp::WriteToField { src, .. }
+                | LinearOp::SetOutPtr { src }
+                | LinearOp::WriteToSlot { src, .. }
+                | LinearOp::BranchIf { cond: src, .. }
+                | LinearOp::BranchIfZero { cond: src, .. } => out.push(*src),
+                LinearOp::JumpTable { predicate, .. } => out.push(*predicate),
+                LinearOp::CallIntrinsic { args, .. }
+                | LinearOp::CallPure { args, .. }
+                | LinearOp::CallLambda { args, .. } => out.extend(args.iter().copied()),
+                LinearOp::SimdStringScan { pos, kind } => {
+                    out.push(*pos);
+                    out.push(*kind);
+                }
+                LinearOp::Const { .. }
+                | LinearOp::BoundsCheck { .. }
+                | LinearOp::ReadBytes { .. }
+                | LinearOp::PeekByte { .. }
+                | LinearOp::AdvanceCursor { .. }
+                | LinearOp::SaveCursor { .. }
+                | LinearOp::ReadFromField { .. }
+                | LinearOp::SaveOutPtr { .. }
+                | LinearOp::SlotAddr { .. }
+                | LinearOp::ReadFromSlot { .. }
+                | LinearOp::Label(_)
+                | LinearOp::Branch(_)
+                | LinearOp::ErrorExit { .. }
+                | LinearOp::SimdWhitespaceSkip
+                | LinearOp::FuncStart { .. }
+                | LinearOp::FuncEnd => {}
+            }
+        }
+
         fn new(ir: &LinearIr) -> Self {
             let slot_base = BASE_FRAME;
             let slot_bytes = ir.slot_count * 8;
@@ -890,6 +965,16 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             let lambda_labels: Vec<DynamicLabel> =
                 (0..=lambda_max).map(|_| ectx.new_label()).collect();
 
+            let mut use_positions: Vec<Vec<usize>> = vec![Vec::new(); ir.vreg_count as usize];
+            let mut used = Vec::new();
+            for (op_index, op) in ir.ops.iter().enumerate() {
+                used.clear();
+                Self::push_op_uses(op, &mut used);
+                for &v in &used {
+                    use_positions[v.index()].push(op_index);
+                }
+            }
+
             Self {
                 ectx,
                 labels,
@@ -898,8 +983,12 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 vreg_base,
                 entry: None,
                 current_func: None,
-                x9_cached_vreg: None,
                 const_vregs: vec![None; ir.vreg_count as usize],
+                vreg_regs: vec![None; ir.vreg_count as usize],
+                reg_vregs: [None; 5],
+                reg_dirty: [false; 5],
+                use_positions,
+                use_cursor: vec![0; ir.vreg_count as usize],
             }
         }
 
@@ -915,9 +1004,133 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             self.labels[label.index() as usize]
         }
 
+        fn next_use(&self, v: crate::ir::VReg) -> Option<usize> {
+            let idx = self.use_cursor[v.index()];
+            self.use_positions[v.index()].get(idx).copied()
+        }
+
+        fn consume_use(&mut self, v: crate::ir::VReg, op_index: usize) {
+            let cursor = &mut self.use_cursor[v.index()];
+            let positions = &self.use_positions[v.index()];
+            while *cursor < positions.len() && positions[*cursor] < op_index {
+                *cursor += 1;
+            }
+            if *cursor < positions.len() && positions[*cursor] == op_index {
+                *cursor += 1;
+            }
+        }
+
+        fn consume_op_uses(&mut self, op_index: usize, op: &LinearOp) {
+            let mut used = Vec::new();
+            Self::push_op_uses(op, &mut used);
+            for v in used {
+                self.consume_use(v, op_index);
+            }
+        }
+
+        fn emit_mov_x9_from_alloc(&mut self, reg: AllocReg) {
+            match reg {
+                AllocReg::X11 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x11),
+                AllocReg::X12 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x12),
+                AllocReg::X13 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x13),
+                AllocReg::X14 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x14),
+                AllocReg::X15 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x15),
+            }
+        }
+
+        fn emit_mov_x10_from_alloc(&mut self, reg: AllocReg) {
+            match reg {
+                AllocReg::X11 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, x11),
+                AllocReg::X12 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, x12),
+                AllocReg::X13 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, x13),
+                AllocReg::X14 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, x14),
+                AllocReg::X15 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, x15),
+            }
+        }
+
+        fn emit_mov_alloc_from_x9(&mut self, reg: AllocReg) {
+            match reg {
+                AllocReg::X11 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x11, x9),
+                AllocReg::X12 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x12, x9),
+                AllocReg::X13 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x13, x9),
+                AllocReg::X14 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x14, x9),
+                AllocReg::X15 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x15, x9),
+            }
+        }
+
+        fn emit_store_alloc_to_stack(&mut self, reg: AllocReg, sp_off: u32) {
+            match reg {
+                AllocReg::X11 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x11, [sp, #sp_off]),
+                AllocReg::X12 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x12, [sp, #sp_off]),
+                AllocReg::X13 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x13, [sp, #sp_off]),
+                AllocReg::X14 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x14, [sp, #sp_off]),
+                AllocReg::X15 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x15, [sp, #sp_off]),
+            }
+        }
+
+        fn spill_reg(&mut self, reg: AllocReg) {
+            let idx = reg.index();
+            if let Some(v) = self.reg_vregs[idx] {
+                if self.reg_dirty[idx] {
+                    self.emit_store_alloc_to_stack(reg, self.vreg_off(v));
+                }
+                self.vreg_regs[v.index()] = None;
+                self.reg_vregs[idx] = None;
+                self.reg_dirty[idx] = false;
+            }
+        }
+
+        fn flush_all_vregs(&mut self) {
+            for &reg in &AllocReg::ALL {
+                self.spill_reg(reg);
+            }
+            self.const_vregs.fill(None);
+        }
+
+        fn pick_victim_reg(&self) -> AllocReg {
+            let mut best: Option<(AllocReg, bool, Option<usize>)> = None;
+            for &reg in &AllocReg::ALL {
+                let idx = reg.index();
+                match self.reg_vregs[idx] {
+                    None => return reg,
+                    Some(v) => {
+                        let next = self.next_use(v);
+                        let clean = !self.reg_dirty[idx];
+                        if best.is_none() {
+                            best = Some((reg, clean, next));
+                            continue;
+                        }
+                        let (_, best_clean, best_next) = best.expect("just set");
+                        let better = match (next, best_next) {
+                            (None, None) => clean && !best_clean,
+                            (None, Some(_)) => true,
+                            (Some(_), None) => false,
+                            (Some(a), Some(b)) => a > b || (a == b && clean && !best_clean),
+                        };
+                        if better {
+                            best = Some((reg, clean, next));
+                        }
+                    }
+                }
+            }
+            best.expect("allocator must have at least one register").0
+        }
+
+        fn ensure_dst_reg(&mut self, dst: crate::ir::VReg) -> AllocReg {
+            if let Some(reg) = self.vreg_regs[dst.index()] {
+                return reg;
+            }
+
+            let reg = self.pick_victim_reg();
+            self.spill_reg(reg);
+            self.vreg_regs[dst.index()] = Some(reg);
+            self.reg_vregs[reg.index()] = Some(dst);
+            self.reg_dirty[reg.index()] = false;
+            reg
+        }
+
         fn emit_recipe_ops(&mut self, ops: Vec<Op>) {
-            // Recipes use scratch registers; invalidate any cached value register.
-            self.x9_cached_vreg = None;
+            self.flush_all_vregs();
             self.ectx.emit_recipe(&Recipe {
                 ops,
                 label_count: 0,
@@ -925,24 +1138,33 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         }
 
         fn emit_load_vreg_x9(&mut self, v: crate::ir::VReg) {
-            if self.x9_cached_vreg == Some(v) {
-                return;
+            if let Some(reg) = self.vreg_regs[v.index()] {
+                self.emit_mov_x9_from_alloc(reg);
+            } else {
+                let off = self.vreg_off(v);
+                dynasm!(self.ectx.ops
+                    ; .arch aarch64
+                    ; ldr x9, [sp, #off]
+                );
             }
-            let off = self.vreg_off(v);
-            dynasm!(self.ectx.ops
-                ; .arch aarch64
-                ; ldr x9, [sp, #off]
-            );
-            self.x9_cached_vreg = Some(v);
+        }
+
+        fn emit_load_vreg_x10(&mut self, v: crate::ir::VReg) {
+            if let Some(reg) = self.vreg_regs[v.index()] {
+                self.emit_mov_x10_from_alloc(reg);
+            } else {
+                let off = self.vreg_off(v);
+                dynasm!(self.ectx.ops
+                    ; .arch aarch64
+                    ; ldr x10, [sp, #off]
+                );
+            }
         }
 
         fn emit_store_x9_to_vreg(&mut self, v: crate::ir::VReg) {
-            let off = self.vreg_off(v);
-            dynasm!(self.ectx.ops
-                ; .arch aarch64
-                ; str x9, [sp, #off]
-            );
-            self.x9_cached_vreg = Some(v);
+            let reg = self.ensure_dst_reg(v);
+            self.emit_mov_alloc_from_x9(reg);
+            self.reg_dirty[reg.index()] = true;
         }
 
         fn emit_load_u32_w10(&mut self, value: u32) {
@@ -969,6 +1191,11 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             if p3 != 0 {
                 dynasm!(self.ectx.ops ; .arch aarch64 ; movk x10, #p3, LSL #48);
             }
+        }
+
+        fn emit_load_u64_x9(&mut self, value: u64) {
+            self.emit_load_u64_x10(value);
+            dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x10);
         }
 
         fn const_of(&self, v: crate::ir::VReg) -> Option<u64> {
@@ -1001,20 +1228,14 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         }
 
         fn emit_save_out_ptr(&mut self, dst: crate::ir::VReg) {
-            let off = self.vreg_off(dst);
-            dynasm!(self.ectx.ops
-                ; .arch aarch64
-                ; str x21, [sp, #off]
-            );
+            dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x21);
+            self.emit_store_x9_to_vreg(dst);
             self.set_const(dst, None);
         }
 
         fn emit_set_out_ptr(&mut self, src: crate::ir::VReg) {
-            let off = self.vreg_off(src);
-            dynasm!(self.ectx.ops
-                ; .arch aarch64
-                ; ldr x21, [sp, #off]
-            );
+            self.emit_load_vreg_x9(src);
+            dynasm!(self.ectx.ops ; .arch aarch64 ; mov x21, x9);
         }
 
         fn emit_slot_addr(&mut self, dst: crate::ir::VReg, slot: crate::ir::SlotId) {
@@ -1064,8 +1285,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     {
                         dynasm!(self.ectx.ops ; .arch aarch64 ; add x9, x9, c as u32);
                     } else {
-                        let rhs_off = self.vreg_off(rhs);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                        self.emit_load_vreg_x10(rhs);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; add x9, x9, x10);
                     }
                 }
@@ -1075,8 +1295,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     {
                         dynasm!(self.ectx.ops ; .arch aarch64 ; sub x9, x9, c as u32);
                     } else {
-                        let rhs_off = self.vreg_off(rhs);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                        self.emit_load_vreg_x10(rhs);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; sub x9, x9, x10);
                     }
                 }
@@ -1085,19 +1304,16 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         let c = rhs_const.expect("just matched Some");
                         dynasm!(self.ectx.ops ; .arch aarch64 ; and x9, x9, c);
                     } else {
-                        let rhs_off = self.vreg_off(rhs);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                        self.emit_load_vreg_x10(rhs);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; and x9, x9, x10);
                     }
                 }
                 BinOpKind::Or => {
-                    let rhs_off = self.vreg_off(rhs);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                    self.emit_load_vreg_x10(rhs);
                     dynasm!(self.ectx.ops ; .arch aarch64 ; orr x9, x9, x10);
                 }
                 BinOpKind::Xor => {
-                    let rhs_off = self.vreg_off(rhs);
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                    self.emit_load_vreg_x10(rhs);
                     dynasm!(self.ectx.ops ; .arch aarch64 ; eor x9, x9, x10);
                 }
                 BinOpKind::CmpNe => {
@@ -1109,8 +1325,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         self.emit_load_u64_x10(c);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, x10);
                     } else {
-                        let rhs_off = self.vreg_off(rhs);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                        self.emit_load_vreg_x10(rhs);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; cmp x9, x10);
                     }
                     dynasm!(self.ectx.ops ; .arch aarch64 ; cset x9, ne);
@@ -1121,8 +1336,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     {
                         dynasm!(self.ectx.ops ; .arch aarch64 ; lsr x9, x9, c as u32);
                     } else {
-                        let rhs_off = self.vreg_off(rhs);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                        self.emit_load_vreg_x10(rhs);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; lsr x9, x9, x10);
                     }
                 }
@@ -1132,8 +1346,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     {
                         dynasm!(self.ectx.ops ; .arch aarch64 ; lsl x9, x9, c as u32);
                     } else {
-                        let rhs_off = self.vreg_off(rhs);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #rhs_off]);
+                        self.emit_load_vreg_x10(rhs);
                         dynasm!(self.ectx.ops ; .arch aarch64 ; lsl x9, x9, x10);
                     }
                 }
@@ -1149,18 +1362,18 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     dynasm!(self.ectx.ops
                         ; .arch aarch64
                         ; lsr x10, x9, #1
-                        ; and x11, x9, #1
-                        ; neg x11, x11
-                        ; eor x9, x10, x11
+                        ; and x16, x9, #1
+                        ; neg x16, x16
+                        ; eor x9, x10, x16
                     );
                 }
                 UnaryOpKind::ZigzagDecode { wide: false } => {
                     dynasm!(self.ectx.ops
                         ; .arch aarch64
                         ; lsr w10, w9, #1
-                        ; and w11, w9, #1
-                        ; neg w11, w11
-                        ; eor w9, w10, w11
+                        ; and w16, w9, #1
+                        ; neg w16, w16
+                        ; eor w9, w10, w16
                     );
                 }
                 UnaryOpKind::SignExtend { from_width } => match from_width {
@@ -1175,6 +1388,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         }
 
         fn emit_branch_if(&mut self, cond: crate::ir::VReg, target: DynamicLabel, invert: bool) {
+            self.flush_all_vregs();
             self.emit_load_vreg_x9(cond);
             if invert {
                 dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x9, =>target);
@@ -1189,6 +1403,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             labels: &[LabelId],
             default: LabelId,
         ) {
+            self.flush_all_vregs();
             self.emit_load_vreg_x9(predicate);
             for (index, label) in labels.iter().enumerate() {
                 let target = self.label(*label);
@@ -1323,6 +1538,8 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 .expect("CallIntrinsic outside function")
                 .error_exit;
 
+            self.flush_all_vregs();
+
             // Flush cursor before call.
             dynasm!(self.ectx.ops
                 ; .arch aarch64
@@ -1376,7 +1593,6 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 ; ldr w9, [x22, #CTX_ERROR_CODE]
                 ; cbnz w9, =>error_exit
             );
-            self.x9_cached_vreg = None;
         }
 
         // r[impl ir.intrinsics]
@@ -1398,16 +1614,15 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                             fn_ptr,
                             &[IntrinsicArg::OutStack(out_offset)],
                         );
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #out_offset]);
+                        self.emit_store_x9_to_vreg(dst);
                     } else {
                         // Return-value intrinsic ABI: fn(ctx, args...) -> value
                         let call_args: Vec<IntrinsicArg> =
                             args.iter().copied().map(IntrinsicArg::VReg).collect();
                         self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
-                        let out_offset = self.vreg_off(dst);
-                        dynasm!(self.ectx.ops
-                            ; .arch aarch64
-                            ; str x0, [sp, #out_offset]
-                        );
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x0);
+                        self.emit_store_x9_to_vreg(dst);
                     }
                 }
                 None => {
@@ -1488,6 +1703,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 .as_ref()
                 .expect("CallLambda outside function")
                 .error_exit;
+            self.flush_all_vregs();
             dynasm!(self.ectx.ops
                 ; .arch aarch64
                 ; str x19, [x22, #CTX_INPUT_PTR]
@@ -1518,20 +1734,19 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                 ; ldr w9, [x22, #CTX_ERROR_CODE]
                 ; cbnz w9, =>error_exit
             );
-            self.x9_cached_vreg = None;
 
             if let Some(&dst) = results.first() {
-                let off = self.vreg_off(dst);
-                dynasm!(self.ectx.ops ; .arch aarch64 ; str x0, [sp, #off]);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x0);
+                self.emit_store_x9_to_vreg(dst);
             }
             if let Some(&dst) = results.get(1) {
-                let off = self.vreg_off(dst);
-                dynasm!(self.ectx.ops ; .arch aarch64 ; str x1, [sp, #off]);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x1);
+                self.emit_store_x9_to_vreg(dst);
             }
         }
 
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
-            for op in &ir.ops {
+            for (op_index, op) in ir.ops.iter().enumerate() {
                 match op {
                     LinearOp::FuncStart {
                         lambda_id,
@@ -1539,6 +1754,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         data_results,
                         ..
                     } => {
+                        self.flush_all_vregs();
                         let label = self.lambda_labels[lambda_id.index() as usize];
                         self.ectx.bind_label(label);
                         let (entry_offset, error_exit) = self.ectx.begin_func();
@@ -1552,6 +1768,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         self.emit_store_incoming_lambda_args(data_args);
                     }
                     LinearOp::FuncEnd => {
+                        self.flush_all_vregs();
                         let func = self
                             .current_func
                             .take()
@@ -1559,8 +1776,14 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         self.emit_load_lambda_results_to_ret_regs(&func.data_results);
                         self.ectx.end_func(func.error_exit);
                     }
-                    LinearOp::Label(label) => self.ectx.bind_label(self.label(*label)),
-                    LinearOp::Branch(target) => self.ectx.emit_branch(self.label(*target)),
+                    LinearOp::Label(label) => {
+                        self.flush_all_vregs();
+                        self.ectx.bind_label(self.label(*label));
+                    }
+                    LinearOp::Branch(target) => {
+                        self.flush_all_vregs();
+                        self.ectx.emit_branch(self.label(*target));
+                    }
                     LinearOp::BranchIf { cond, target } => {
                         self.emit_branch_if(*cond, self.label(*target), false);
                     }
@@ -1576,30 +1799,14 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     }
 
                     LinearOp::Const { dst, value } => {
-                        self.ectx
-                            .emit_store_imm64_to_stack(self.vreg_off(*dst), *value);
+                        self.emit_load_u64_x9(*value);
+                        self.emit_store_x9_to_vreg(*dst);
                         self.set_const(*dst, Some(*value));
-                        if self.x9_cached_vreg == Some(*dst) {
-                            self.x9_cached_vreg = None;
-                        }
                     }
                     LinearOp::Copy { dst, src } => {
-                        self.emit_recipe_ops(vec![
-                            Op::LoadFromStack {
-                                dst: Slot::A,
-                                sp_offset: self.vreg_off(*src),
-                                width: crate::recipe::Width::W8,
-                            },
-                            Op::StoreToStack {
-                                src: Slot::A,
-                                sp_offset: self.vreg_off(*dst),
-                                width: crate::recipe::Width::W8,
-                            },
-                        ]);
+                        self.emit_load_vreg_x9(*src);
+                        self.emit_store_x9_to_vreg(*dst);
                         self.set_const(*dst, self.const_of(*src));
-                        if self.x9_cached_vreg == Some(*dst) {
-                            self.x9_cached_vreg = None;
-                        }
                     }
                     LinearOp::BinOp { op, dst, lhs, rhs } => self.emit_binop(*op, *dst, *lhs, *rhs),
                     LinearOp::UnaryOp { op, dst, src } => self.emit_unary(*op, *dst, *src),
@@ -1611,25 +1818,17 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     LinearOp::PeekByte { dst } => self.emit_peek_byte(*dst),
                     LinearOp::AdvanceCursor { count } => self.ectx.emit_advance_cursor_by(*count),
                     LinearOp::AdvanceCursorBy { src } => {
-                        self.emit_recipe_ops(vec![
-                            Op::LoadFromStack {
-                                dst: Slot::A,
-                                sp_offset: self.vreg_off(*src),
-                                width: crate::recipe::Width::W8,
-                            },
-                            Op::AdvanceCursorBySlot { slot: Slot::A },
-                        ]);
+                        self.emit_load_vreg_x9(*src);
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; add x19, x19, x9);
                     }
                     LinearOp::SaveCursor { dst } => {
-                        self.ectx.emit_save_cursor_to_stack(self.vreg_off(*dst));
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x19);
+                        self.emit_store_x9_to_vreg(*dst);
                         self.set_const(*dst, None);
-                        if self.x9_cached_vreg == Some(*dst) {
-                            self.x9_cached_vreg = None;
-                        }
                     }
                     LinearOp::RestoreCursor { src } => {
-                        self.ectx.emit_restore_input_ptr(self.vreg_off(*src));
-                        self.x9_cached_vreg = None;
+                        self.emit_load_vreg_x9(*src);
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; mov x19, x9);
                     }
 
                     LinearOp::WriteToField { src, offset, width } => {
@@ -1642,49 +1841,24 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     LinearOp::SaveOutPtr { dst } => {
                         self.emit_save_out_ptr(*dst);
                         self.set_const(*dst, None);
-                        if self.x9_cached_vreg == Some(*dst) {
-                            self.x9_cached_vreg = None;
-                        }
                     }
                     LinearOp::SetOutPtr { src } => {
                         self.emit_set_out_ptr(*src);
-                        self.x9_cached_vreg = None;
                     }
                     LinearOp::SlotAddr { dst, slot } => {
                         self.emit_slot_addr(*dst, *slot);
                         self.set_const(*dst, None);
                     }
                     LinearOp::WriteToSlot { slot, src } => {
-                        self.emit_recipe_ops(vec![
-                            Op::LoadFromStack {
-                                dst: Slot::A,
-                                sp_offset: self.vreg_off(*src),
-                                width: crate::recipe::Width::W8,
-                            },
-                            Op::StoreToStack {
-                                src: Slot::A,
-                                sp_offset: self.slot_off(*slot),
-                                width: crate::recipe::Width::W8,
-                            },
-                        ]);
+                        self.emit_load_vreg_x9(*src);
+                        let off = self.slot_off(*slot);
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]);
                     }
                     LinearOp::ReadFromSlot { dst, slot } => {
-                        self.emit_recipe_ops(vec![
-                            Op::LoadFromStack {
-                                dst: Slot::A,
-                                sp_offset: self.slot_off(*slot),
-                                width: crate::recipe::Width::W8,
-                            },
-                            Op::StoreToStack {
-                                src: Slot::A,
-                                sp_offset: self.vreg_off(*dst),
-                                width: crate::recipe::Width::W8,
-                            },
-                        ]);
+                        let off = self.slot_off(*slot);
+                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
+                        self.emit_store_x9_to_vreg(*dst);
                         self.set_const(*dst, None);
-                        if self.x9_cached_vreg == Some(*dst) {
-                            self.x9_cached_vreg = None;
-                        }
                     }
 
                     LinearOp::CallIntrinsic {
@@ -1703,6 +1877,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                     }
 
                     LinearOp::ErrorExit { code } => {
+                        self.flush_all_vregs();
                         self.ectx.emit_error(*code);
                     }
 
@@ -1722,6 +1897,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         }
                     }
                 }
+                self.consume_op_uses(op_index, op);
             }
 
             if self.current_func.is_some() {
@@ -1744,6 +1920,12 @@ mod tests {
     use crate::context::{DeserContext, ErrorCode};
     use crate::ir::{IntrinsicFn, IrBuilder, IrOp, Width};
     use crate::linearize::linearize;
+    use facet::Facet;
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Facet, PartialEq)]
+    struct ScalarVec {
+        values: Vec<u32>,
+    }
 
     fn run_u32_decoder(ir: &LinearIr, input: &[u8]) -> (u32, DeserContext) {
         let deser = compiler::compile_linear_ir_decoder(ir, false);
@@ -1968,5 +2150,25 @@ mod tests {
 
         assert_eq!(ctx.error.code, 0);
         assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn linear_backend_vec_u32_matches_legacy_and_serde() {
+        let expected = ScalarVec {
+            values: (0..2048).map(|i| i as u32).collect(),
+        };
+        let bytes = postcard::to_allocvec(&expected).expect("serialize vec");
+
+        let legacy = crate::compile_decoder_legacy(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+        let ir = crate::compile_decoder_via_ir(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+
+        let legacy_out = crate::deserialize::<ScalarVec>(&legacy, &bytes).expect("legacy decode");
+        let ir_out = crate::deserialize::<ScalarVec>(&ir, &bytes).expect("ir decode");
+        let serde_out = postcard::from_bytes::<ScalarVec>(&bytes).expect("serde decode");
+
+        assert_eq!(legacy_out, expected);
+        assert_eq!(ir_out, expected);
+        assert_eq!(serde_out, expected);
+        assert_eq!(ir_out, legacy_out);
     }
 }
