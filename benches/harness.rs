@@ -111,14 +111,23 @@ pub fn run_benchmarks(benchmarks: Vec<Bench>) {
         })
         .collect();
 
+    let total = filtered.len();
+
+    // Suite header
+    println!(r#"{{"type":"suite","total":{total}}}"#);
     eprintln!(
-        "running {} benchmarks (of {} registered)",
-        filtered.len(),
+        "running {total} benchmarks (of {} registered)",
         benchmarks.len()
     );
 
-    for bench in &filtered {
+    for (index, bench) in filtered.iter().enumerate() {
+        // Start event
+        println!(
+            r#"{{"type":"start","name":"{}","index":{index},"total":{total}}}"#,
+            bench.name,
+        );
         eprint!("  {} ... ", bench.name);
+
         let runner = Runner::new();
         (bench.func)(&runner);
 
@@ -128,9 +137,9 @@ pub fn run_benchmarks(benchmarks: Vec<Bench>) {
             .take()
             .expect("bench did not call runner.run()");
 
-        // NDJSON to stdout
+        // Result event (NDJSON to stdout)
         println!(
-            r#"{{"name":"{}","median_ns":{:.1},"p5_ns":{:.1},"p95_ns":{:.1},"min_ns":{:.1},"max_ns":{:.1},"samples":{},"iters_per_sample":{}}}"#,
+            r#"{{"type":"result","name":"{}","index":{index},"total":{total},"median_ns":{:.1},"p5_ns":{:.1},"p95_ns":{:.1},"min_ns":{:.1},"max_ns":{:.1},"samples":{},"iters_per_sample":{}}}"#,
             bench.name,
             result.median_ns,
             result.p5_ns,

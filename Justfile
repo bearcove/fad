@@ -41,13 +41,7 @@ bench:
 
 # Run all benchmarks and generate bench_report/index.html
 bench-report:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo bench --bench synthetic 2>/dev/null > /tmp/bench_out.txt
-    cargo bench --bench canada 2>/dev/null >> /tmp/bench_out.txt
-    cargo bench --bench twitter 2>/dev/null >> /tmp/bench_out.txt
-    cargo bench --bench citm_catalog 2>/dev/null >> /tmp/bench_out.txt
-    cargo run --example bench_report < /tmp/bench_out.txt
+    cargo bench 2>/dev/null | cargo run --example bench_report
 
 # Check + clippy
 check:

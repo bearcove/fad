@@ -1,16 +1,65 @@
 //! Parse NDJSON bench output from stdin and generate bench_report/{index.html,results.json,results.md}.
 //!
-//!   cargo bench --bench synthetic 2>/dev/null | cargo run --example bench_report
-//!   # or all benchmarks:
+//! Reads line-by-line, showing live progress on stderr.
+//!
 //!   cargo bench 2>/dev/null | cargo run --example bench_report
 
 use std::fmt::Write as _;
-use std::io::Read as _;
+use std::io::BufRead as _;
 
 fn main() {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input).expect("failed to read stdin");
+    let stdin = std::io::stdin();
+    let mut lines: Vec<String> = Vec::new();
 
+    // Progress state
+    let mut total_expected: usize = 0;
+    let mut completed: usize = 0;
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            continue;
+        }
+
+        // Parse for progress display
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            match v["type"].as_str() {
+                Some("suite") => {
+                    let n = v["total"].as_u64().unwrap_or(0) as usize;
+                    total_expected += n;
+                    eprint!("\r\x1b[2K  [{completed}/{total_expected}] waiting...");
+                }
+                Some("start") => {
+                    if let Some(name) = v["name"].as_str() {
+                        eprint!("\r\x1b[2K  [{completed}/{total_expected}] {name}");
+                    }
+                }
+                Some("result") => {
+                    completed += 1;
+                    if let (Some(name), Some(median)) =
+                        (v["name"].as_str(), v["median_ns"].as_f64())
+                    {
+                        eprint!(
+                            "\r\x1b[2K  [{completed}/{total_expected}] {name} ... {}",
+                            fmt_time(median)
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        lines.push(line);
+    }
+
+    // Clear progress line
+    eprint!("\r\x1b[2K");
+
+    let input = lines.join("\n");
     let sections = parse_ndjson(&input);
 
     if sections.is_empty() || sections.iter().all(|s| s.groups.is_empty()) {
@@ -26,7 +75,7 @@ fn main() {
     std::fs::write("bench_report/index.html", &html).unwrap();
     std::fs::write("bench_report/results.json", &json).unwrap();
     std::fs::write("bench_report/results.md", &md).unwrap();
-    eprintln!("→ bench_report/index.html");
+    eprintln!("→ bench_report/index.html  ({completed} benchmarks)");
     eprintln!("→ bench_report/results.json");
     eprintln!("→ bench_report/results.md");
 }
@@ -103,6 +152,11 @@ fn parse_ndjson(input: &str) -> Vec<Section> {
             Ok(v) => v,
             Err(_) => continue,
         };
+        // Only process result events (skip suite/start)
+        match v["type"].as_str() {
+            Some("suite") | Some("start") => continue,
+            _ => {}
+        }
         let Some(name) = v["name"].as_str() else { continue };
         let Some(median_ns) = v["median_ns"].as_f64() else { continue };
 
