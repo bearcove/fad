@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ir::{
-    InputPort, IrFunc, IrOp, LambdaId, Node, NodeId, NodeKind, OutputRef, PortSource, Region,
-    RegionArgRef, RegionId, RegionResult,
+    InputPort, IrFunc, IrOp, LambdaId, Node, NodeId, NodeKind, OutputRef, PortKind, PortSource,
+    Region, RegionArgRef, RegionId, RegionResult,
 };
 
 const MAX_INLINE_NODES_SINGLE_USE: usize = 256;
@@ -11,8 +11,128 @@ const MAX_INLINE_CALL_SITES_MULTI_USE: usize = 4;
 
 // r[impl ir.passes]
 pub fn run_default_passes(func: &mut IrFunc) {
+    bounds_check_coalescing_pass(func);
     hoist_theta_loop_invariant_setup_pass(func);
     inline_apply_pass(func);
+}
+
+// r[impl ir.passes.planned]
+fn bounds_check_coalescing_pass(func: &mut IrFunc) {
+    loop {
+        let region_ids: Vec<RegionId> = func.regions.iter().map(|(rid, _)| rid).collect();
+        let mut changed = false;
+        for rid in region_ids {
+            if coalesce_bounds_checks_in_region(func, rid) {
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn coalesce_bounds_checks_in_region(func: &mut IrFunc, region_id: RegionId) -> bool {
+    let nodes = func.regions[region_id].nodes.clone();
+    for (i, first) in nodes.iter().copied().enumerate() {
+        let Some(first_count) = bounds_check_count(func, first) else {
+            continue;
+        };
+        let Some(first_cursor_out) = state_cursor_output_ref(func, first) else {
+            continue;
+        };
+        let mut chain_source = PortSource::Node(first_cursor_out);
+        let mut consumed_bytes = 0u32;
+
+        for second in nodes.iter().copied().skip(i + 1) {
+            let Some(second_cursor_in) = state_cursor_input_source(func, second) else {
+                break;
+            };
+            if second_cursor_in != chain_source {
+                break;
+            }
+
+            if let Some(second_count) = bounds_check_count(func, second) {
+                let combined = first_count.max(consumed_bytes.saturating_add(second_count));
+                if let NodeKind::Simple(IrOp::BoundsCheck { count }) = &mut func.nodes[first].kind {
+                    *count = combined;
+                }
+
+                let Some(second_cursor_out) = state_cursor_output_ref(func, second) else {
+                    break;
+                };
+                replace_output_use(func, second_cursor_out, second_cursor_in);
+                if let Some(pos) = func.regions[region_id]
+                    .nodes
+                    .iter()
+                    .position(|&nid| nid == second)
+                {
+                    func.regions[region_id].nodes.remove(pos);
+                    return true;
+                }
+                break;
+            }
+
+            let Some((advance, next_source)) = cursor_chain_step(func, second, second_cursor_in)
+            else {
+                break;
+            };
+            consumed_bytes = consumed_bytes.saturating_add(advance);
+            chain_source = next_source;
+        }
+    }
+    false
+}
+
+fn bounds_check_count(func: &IrFunc, node_id: NodeId) -> Option<u32> {
+    match &func.nodes[node_id].kind {
+        NodeKind::Simple(IrOp::BoundsCheck { count }) => Some(*count),
+        _ => None,
+    }
+}
+
+fn state_cursor_input_source(func: &IrFunc, node_id: NodeId) -> Option<PortSource> {
+    func.nodes[node_id]
+        .inputs
+        .iter()
+        .find(|inp| inp.kind == PortKind::StateCursor)
+        .map(|inp| inp.source)
+}
+
+fn state_cursor_output_ref(func: &IrFunc, node_id: NodeId) -> Option<OutputRef> {
+    func.nodes[node_id]
+        .outputs
+        .iter()
+        .position(|out| out.kind == PortKind::StateCursor)
+        .map(|idx| OutputRef {
+            node: node_id,
+            index: idx as u16,
+        })
+}
+
+fn cursor_chain_step(
+    func: &IrFunc,
+    node_id: NodeId,
+    state_in: PortSource,
+) -> Option<(u32, PortSource)> {
+    let node = &func.nodes[node_id];
+    let input = state_cursor_input_source(func, node_id)?;
+    if input != state_in {
+        return None;
+    }
+    let out = PortSource::Node(state_cursor_output_ref(func, node_id)?);
+    let NodeKind::Simple(op) = &node.kind else {
+        return None;
+    };
+
+    let advance = match op {
+        IrOp::ReadBytes { count } => *count,
+        IrOp::AdvanceCursor { count } => *count,
+        IrOp::PeekByte | IrOp::SaveCursor => 0,
+        _ => return None,
+    };
+    Some((advance, out))
 }
 
 // r[impl ir.passes.pre-regalloc.loop-invariants]
@@ -738,6 +858,22 @@ mod tests {
     // r[verify ir.passes.pre-regalloc.loop-invariants]
     #[test]
     fn hoists_theta_invariant_expression_tree_out_of_body() {
+        let is_invariant_tree_node = |func: &IrFunc, nid: NodeId| {
+            match &func.nodes[nid].kind {
+                NodeKind::Simple(IrOp::Const { .. }) | NodeKind::Simple(IrOp::Xor) => true,
+                NodeKind::Simple(IrOp::Add) => func.nodes[nid].inputs.iter().all(|inp| match inp.source {
+                    PortSource::Node(out) => matches!(
+                        func.nodes[out.node].kind,
+                        NodeKind::Simple(IrOp::Const { .. })
+                            | NodeKind::Simple(IrOp::Add)
+                            | NodeKind::Simple(IrOp::Xor)
+                    ),
+                    PortSource::RegionArg(_) => false,
+                }),
+                _ => false,
+            }
+        };
+
         let mut builder = IrBuilder::new(<u8 as facet::Facet>::SHAPE);
         {
             let mut rb = builder.root_region();
@@ -774,14 +910,7 @@ mod tests {
         let invariant_tree_nodes_before = func.regions[body_before]
             .nodes
             .iter()
-            .filter(|&&nid| {
-                matches!(
-                    func.nodes[nid].kind,
-                    NodeKind::Simple(IrOp::Const { .. })
-                        | NodeKind::Simple(IrOp::Add)
-                        | NodeKind::Simple(IrOp::Xor)
-                )
-            })
+            .filter(|&&nid| is_invariant_tree_node(&func, nid))
             .count();
         assert!(
             invariant_tree_nodes_before >= 4,
@@ -803,14 +932,7 @@ mod tests {
         let invariant_tree_nodes_after = func.regions[body_after]
             .nodes
             .iter()
-            .filter(|&&nid| {
-                matches!(
-                    func.nodes[nid].kind,
-                    NodeKind::Simple(IrOp::Const { .. })
-                        | NodeKind::Simple(IrOp::Add)
-                        | NodeKind::Simple(IrOp::Xor)
-                )
-            })
+            .filter(|&&nid| is_invariant_tree_node(&func, nid))
             .count();
         assert_eq!(
             invariant_tree_nodes_after, 0,
