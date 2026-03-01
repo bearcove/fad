@@ -136,12 +136,14 @@ struct Group {
 struct Row {
     name: String,
     median_ns: f64,
+    p5_ns: f64,
+    p95_ns: f64,
 }
 
 // ── Parser (NDJSON) ───────────────────────────────────────────────────────
 
 fn parse_ndjson(input: &str) -> Vec<Section> {
-    let mut entries: Vec<(Vec<String>, f64)> = Vec::new();
+    let mut entries: Vec<(Vec<String>, f64, f64, f64)> = Vec::new();
 
     for line in input.lines() {
         let line = line.trim();
@@ -159,9 +161,11 @@ fn parse_ndjson(input: &str) -> Vec<Section> {
         }
         let Some(name) = v["name"].as_str() else { continue };
         let Some(median_ns) = v["median_ns"].as_f64() else { continue };
+        let p5_ns = v["p5_ns"].as_f64().unwrap_or(median_ns);
+        let p95_ns = v["p95_ns"].as_f64().unwrap_or(median_ns);
 
         let parts: Vec<String> = name.split('/').map(String::from).collect();
-        entries.push((parts, median_ns));
+        entries.push((parts, median_ns, p5_ns, p95_ns));
     }
 
     organize_entries(&entries)
@@ -175,10 +179,10 @@ fn parse_ndjson(input: &str) -> Vec<Section> {
 ///   infer format from group name prefix, same routing
 /// - 1-component paths `[fn]` from flat benchmarks:
 ///   section = "json deser", group = first component, row = fn
-fn organize_entries(entries: &[(Vec<String>, f64)]) -> Vec<Section> {
+fn organize_entries(entries: &[(Vec<String>, f64, f64, f64)]) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
 
-    for (path, median_ns) in entries {
+    for (path, median_ns, p5_ns, p95_ns) in entries {
         let (section_label, group_name, row_name) = match path.len() {
             3 => {
                 let direction = if path[2].ends_with("_ser") { "ser" } else { "deser" };
@@ -218,7 +222,7 @@ fn organize_entries(entries: &[(Vec<String>, f64)]) -> Vec<Section> {
             }
         };
 
-        group.rows.push(Row { name: row_name, median_ns: *median_ns });
+        group.rows.push(Row { name: row_name, median_ns: *median_ns, p5_ns: *p5_ns, p95_ns: *p95_ns });
     }
 
     sections
@@ -272,7 +276,7 @@ fn render_json(sections: &[Section], meta: &Meta) -> String {
             j.push('\n');
             for (ri, row) in group.rows.iter().enumerate() {
                 let comma = if ri + 1 < group.rows.len() { "," } else { "" };
-                write!(j, r#"            {{ "name": "{}", "median_ns": {:.1} }}{comma}"#, row.name, row.median_ns).unwrap();
+                write!(j, r#"            {{ "name": "{}", "median_ns": {:.1}, "p5_ns": {:.1}, "p95_ns": {:.1} }}{comma}"#, row.name, row.median_ns, row.p5_ns, row.p95_ns).unwrap();
                 j.push('\n');
             }
             j.push_str("          ]\n");
@@ -378,13 +382,10 @@ fn group_sort_key(group: &Group) -> f64 {
     }
 }
 
-/// Compute delta bar fill: returns (fill_pct of one half, fad_wins).
-/// ratio = ref_ns / fad_ns; >1 means fad is faster.
-fn delta_fill(ratio: f64) -> (f64, bool) {
-    let fad_wins = ratio >= 1.0;
-    let r = if fad_wins { ratio } else { 1.0 / ratio };
-    let fill = ((r - 1.0) / 3.0 * 50.0_f64).min(50.0);
-    (fill, fad_wins)
+/// Map a ratio to a fill percentage of one half of the bar (0–50%).
+fn ratio_to_fill(ratio: f64) -> f64 {
+    let r = if ratio >= 1.0 { ratio } else { 1.0 / ratio };
+    ((r - 1.0) / 3.0 * 50.0_f64).min(50.0)
 }
 
 fn render(sections: &[Section], meta: &Meta) -> String {
@@ -456,16 +457,19 @@ body{
 /* bar cell */
 .delta-track{
   position:relative;height:8px;
-  background:var(--track);border-radius:4px;
+  background:var(--track);
 }
 .delta-track::after{
   content:'';position:absolute;
   left:calc(50% - 0.5px);top:0;bottom:0;width:1px;
   background:rgba(255,255,255,0.2);z-index:1;pointer-events:none;
 }
-.delta-fill{position:absolute;top:0;bottom:0}
-.delta-fill.fad-side{right:50%;border-radius:4px 0 0 4px;background:var(--fad)}
-.delta-fill.ref-side{left:50%;border-radius:0 4px 4px 0;background:var(--ref)}
+.delta-fill{position:absolute;top:0;bottom:0;opacity:0.55}
+.delta-fill.fad-side{right:50%;background:var(--fad)}
+.delta-fill.ref-side{left:50%;background:var(--ref)}
+/* error bar whiskers */
+.whisker{position:absolute;top:0;bottom:0;width:1px;z-index:2;background:rgba(255,255,255,0.8)}
+.whisker-line{position:absolute;top:50%;height:1px;z-index:2;background:rgba(255,255,255,0.5)}
 /* summary row — lives in the bar column */
 .summary-cell{
   font-family:var(--sans);font-size:13px;font-weight:700;
@@ -547,14 +551,57 @@ footer{
             if fad_rows.is_empty() { continue; }
 
             for fad_row in &fad_rows {
-                let (bar_fill, ratio_html) = match ref_row {
+                let (bar_inner, ratio_html) = match ref_row {
                     Some(rr) => {
                         let ratio = rr.median_ns / fad_row.median_ns;
-                        let (fill, fad_wins) = delta_fill(ratio);
+                        let fad_wins = ratio >= 1.0;
+                        let fill = ratio_to_fill(ratio);
                         let fill_class = if fad_wins { "delta-fill fad-side" } else { "delta-fill ref-side" };
                         let ratio_cls = if fad_wins { "win" } else { "lose" };
+
+                        // Whiskers: best/worst case ratios from p5/p95
+                        let ratio_best = rr.p95_ns / fad_row.p5_ns; // best case for fad
+                        let ratio_worst = rr.p5_ns / fad_row.p95_ns; // worst case for fad
+                        let best_wins = ratio_best >= 1.0;
+                        let worst_wins = ratio_worst >= 1.0;
+                        let best_fill = ratio_to_fill(ratio_best);
+                        let worst_fill = ratio_to_fill(ratio_worst);
+
+                        let mut bar = format!(r#"<div class="{fill_class}" style="width:{fill:.1}%"></div>"#);
+
+                        // Whisker line connecting worst to best case
+                        if best_wins == worst_wins {
+                            // Both on same side
+                            let side = if best_wins { "fad-side" } else { "ref-side" };
+                            let (lo, hi) = if worst_fill < best_fill { (worst_fill, best_fill) } else { (best_fill, worst_fill) };
+                            if best_wins {
+                                // fad side: right-anchored from 50%
+                                write!(bar, r#"<div class="whisker-line {side}" style="right:calc(50% + {lo:.1}%);width:{:.1}%"></div>"#, hi - lo).unwrap();
+                                write!(bar, r#"<div class="whisker {side}" style="right:calc(50% + {hi:.1}%)"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker {side}" style="right:calc(50% + {lo:.1}%)"></div>"#).unwrap();
+                            } else {
+                                // ref side: left-anchored from 50%
+                                write!(bar, r#"<div class="whisker-line {side}" style="left:calc(50% + {lo:.1}%);width:{:.1}%"></div>"#, hi - lo).unwrap();
+                                write!(bar, r#"<div class="whisker {side}" style="left:calc(50% + {hi:.1}%)"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker {side}" style="left:calc(50% + {lo:.1}%)"></div>"#).unwrap();
+                            }
+                        } else {
+                            // Straddles the center line — draw each side separately
+                            if best_wins {
+                                write!(bar, r#"<div class="whisker-line fad-side" style="right:50%;width:{best_fill:.1}%"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker fad-side" style="right:calc(50% + {best_fill:.1}%)"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker-line ref-side" style="left:50%;width:{worst_fill:.1}%"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker ref-side" style="left:calc(50% + {worst_fill:.1}%)"></div>"#).unwrap();
+                            } else {
+                                write!(bar, r#"<div class="whisker-line ref-side" style="left:50%;width:{best_fill:.1}%"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker ref-side" style="left:calc(50% + {best_fill:.1}%)"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker-line fad-side" style="right:50%;width:{worst_fill:.1}%"></div>"#).unwrap();
+                                write!(bar, r#"<div class="whisker fad-side" style="right:calc(50% + {worst_fill:.1}%)"></div>"#).unwrap();
+                            }
+                        }
+
                         (
-                            format!(r#"<div class="{fill_class}" style="width:{fill:.1}%"></div>"#),
+                            bar,
                             format!(r#"<span class="ratio-col {ratio_cls}">{:.2}×</span>"#, ratio),
                         )
                     }
@@ -567,7 +614,7 @@ footer{
                 let ref_time = ref_row.map(|r| fmt_time_html(r.median_ns)).unwrap_or_else(|| "—".to_string());
 
                 write!(h,
-                    r#"<div class="bench-row"><span class="bname">{}</span>{ratio_html}<span class="t-fad">{}</span><div class="delta-track">{bar_fill}</div><span class="t-ref">{ref_time}</span></div>"#,
+                    r#"<div class="bench-row"><span class="bname">{}</span>{ratio_html}<span class="t-fad">{}</span><div class="delta-track">{bar_inner}</div><span class="t-ref">{ref_time}</span></div>"#,
                     esc(&group.name), fmt_time_html(fad_row.median_ns),
                 ).unwrap();
             }
