@@ -234,7 +234,7 @@ fn main() {
     bench!(v, flat_struct, Friend, Friend {
         age: 42,
         name: "Alice".into(),
-    }, +ser);
+    }, +ser, +ir);
 
     bench!(v, nested_struct, Person, Person {
         name: "Alice".into(),
@@ -245,7 +245,7 @@ fn main() {
     bench!(v, deep_struct, Outer, Outer {
         middle: Middle { inner: Inner { x: 1 }, y: 2 },
         z: 3,
-    }, +ser);
+    }, +ser, +ir);
 
     bench!(v, many_strings, ManyStrings, ManyStrings {
         first: "Alice".into(),
@@ -362,7 +362,7 @@ fn main() {
             }),
         });
         v.push(harness::Bench {
-            name: "postcard_enum/fad_deser".into(),
+            name: "postcard_enum/fad_dynasm_deser".into(),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;
@@ -403,7 +403,7 @@ fn main() {
             LazyLock::new(|| fad::compile_decoder(Document::SHAPE, &fad::postcard::FadPostcard));
 
         v.push(harness::Bench {
-            name: "postcard_flatten/fad_deser".into(),
+            name: "postcard_flatten/fad_dynasm_deser".into(),
             func: Box::new(|runner| {
                 let data = &*DATA;
                 let deser = &*DECODER;

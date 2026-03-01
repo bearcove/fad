@@ -78,7 +78,7 @@ fn main() {
     let mut v: Vec<harness::Bench> = Vec::new();
 
     v.push(harness::Bench {
-        name: "canada/serde_json".into(),
+        name: "canada/serde_deser".into(),
         func: Box::new(|runner| {
             let data = &*CANADA_JSON;
             runner.run(|| {
@@ -88,7 +88,7 @@ fn main() {
     });
 
     v.push(harness::Bench {
-        name: "canada/fad".into(),
+        name: "canada/fad_dynasm_deser".into(),
         func: Box::new(|runner| {
             let data = &*CANADA_JSON;
             let deser = &*FAD_CANADA;

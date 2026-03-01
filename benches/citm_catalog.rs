@@ -146,7 +146,7 @@ fn main() {
     let mut v: Vec<harness::Bench> = Vec::new();
 
     v.push(harness::Bench {
-        name: "citm_catalog/serde_json".into(),
+        name: "citm_catalog/serde_deser".into(),
         func: Box::new(|runner| {
             let data = &*CITM_STR;
             runner.run(|| {
@@ -156,7 +156,7 @@ fn main() {
     });
 
     v.push(harness::Bench {
-        name: "citm_catalog/fad".into(),
+        name: "citm_catalog/fad_dynasm_deser".into(),
         func: Box::new(|runner| {
             let data = &*CITM_STR;
             let deser = &*FAD_CITM;
