@@ -42,15 +42,16 @@ impl Runner {
 
     /// Run the measurement lifecycle: warmup → calibrate → measure → stats.
     pub fn run<F: Fn()>(&self, f: F) {
-        // Phase 1: Warmup — 500ms or 1000 iters, whichever comes first.
-        let warmup_deadline = Instant::now() + Duration::from_millis(500);
+        // Phase 1: Warmup — 50ms or 200 iters for cache/branch-predictor warming.
+        // JIT compilation already happened in LazyLock before we get here.
+        let warmup_deadline = Instant::now() + Duration::from_millis(50);
         let mut warmup_iters = 0u64;
-        while Instant::now() < warmup_deadline && warmup_iters < 1000 {
+        while Instant::now() < warmup_deadline && warmup_iters < 200 {
             black_box(&f)();
             warmup_iters += 1;
         }
 
-        // Phase 2: Calibrate — find iters_per_sample so each sample takes ≥1ms.
+        // Phase 2: Calibrate — find iters_per_sample so each sample takes ≥500µs.
         let mut iters_per_sample = 1usize;
         loop {
             let start = Instant::now();
@@ -58,14 +59,14 @@ impl Runner {
                 black_box(&f)();
             }
             let elapsed = start.elapsed();
-            if elapsed >= Duration::from_millis(1) || iters_per_sample >= 1_000_000 {
+            if elapsed >= Duration::from_micros(500) || iters_per_sample >= 1_000_000 {
                 break;
             }
             iters_per_sample *= 2;
         }
 
-        // Phase 3: Collect 100 samples.
-        let num_samples = 100;
+        // Phase 3: Collect 51 samples (odd count for exact median).
+        let num_samples = 51;
         let mut durations = Vec::with_capacity(num_samples);
         for _ in 0..num_samples {
             let start = Instant::now();
