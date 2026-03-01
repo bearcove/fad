@@ -23,14 +23,17 @@ macro_rules! load_imm64 {
     }};
 }
 
-/// Base frame size: 3 pairs of callee-saved registers = 48 bytes.
+/// Base frame size for legacy lowering: 3 pairs of callee-saved registers = 48 bytes.
 pub const BASE_FRAME: u32 = 48;
+/// Base frame size for regalloc-aware lowering: 6 pairs of callee-saved registers = 96 bytes.
+pub const REGALLOC_BASE_FRAME: u32 = 96;
 
 /// Emission context — wraps the assembler plus bookkeeping labels.
 pub struct EmitCtx {
     pub ops: Assembler,
     pub error_exit: DynamicLabel,
     pub entry: AssemblyOffset,
+    pub base_frame: u32,
     /// Total frame size (base + extra, 16-byte aligned).
     pub frame_size: u32,
 }
@@ -50,7 +53,17 @@ impl EmitCtx {
     ///
     /// Call `begin_func()` to emit a function prologue.
     pub fn new(extra_stack: u32) -> Self {
-        let frame_size = (BASE_FRAME + extra_stack + 15) & !15;
+        Self::new_with_base(extra_stack, BASE_FRAME)
+    }
+
+    /// Create an EmitCtx for regalloc-driven lowering that keeps extra
+    /// callee-saved registers available as allocatable GPRs.
+    pub fn new_regalloc(extra_stack: u32) -> Self {
+        Self::new_with_base(extra_stack, REGALLOC_BASE_FRAME)
+    }
+
+    fn new_with_base(extra_stack: u32, base_frame: u32) -> Self {
+        let frame_size = (base_frame + extra_stack + 15) & !15;
         let mut ops = Assembler::new().expect("failed to create assembler");
         let error_exit = ops.new_dynamic_label();
         let entry = AssemblyOffset(0);
@@ -59,6 +72,7 @@ impl EmitCtx {
             ops,
             error_exit,
             entry,
+            base_frame,
             frame_size,
         }
     }
@@ -138,22 +152,44 @@ impl EmitCtx {
         // We emit the prologue with sub sp + stp instead of the pre-index form,
         // because frame_size is dynamic and dynasm doesn't support runtime
         // immediates in pre-index stp.
-        dynasm!(self.ops
-            ; .arch aarch64
-            ; sub sp, sp, #frame_size
-            ; stp x29, x30, [sp]
-            ; stp x19, x20, [sp, #16]
-            ; stp x21, x22, [sp, #32]
-            ; add x29, sp, #0
+        if self.base_frame == REGALLOC_BASE_FRAME {
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; sub sp, sp, #frame_size
+                ; stp x29, x30, [sp]
+                ; stp x19, x20, [sp, #16]
+                ; stp x21, x22, [sp, #32]
+                ; stp x23, x24, [sp, #48]
+                ; stp x25, x26, [sp, #64]
+                ; stp x27, x28, [sp, #80]
+                ; add x29, sp, #0
 
-            // Save arguments to callee-saved registers
-            ; mov x21, x0              // x21 = out
-            ; mov x22, x1              // x22 = ctx
+                // Save arguments to callee-saved registers
+                ; mov x21, x0              // x21 = out
+                ; mov x22, x1              // x22 = ctx
 
-            // Cache input cursor from ctx
-            ; ldr x19, [x22, #CTX_INPUT_PTR]  // x19 = ctx.input_ptr
-            ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
-        );
+                // Cache input cursor from ctx
+                ; ldr x19, [x22, #CTX_INPUT_PTR]  // x19 = ctx.input_ptr
+                ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
+            );
+        } else {
+            dynasm!(self.ops
+                ; .arch aarch64
+                ; sub sp, sp, #frame_size
+                ; stp x29, x30, [sp]
+                ; stp x19, x20, [sp, #16]
+                ; stp x21, x22, [sp, #32]
+                ; add x29, sp, #0
+
+                // Save arguments to callee-saved registers
+                ; mov x21, x0              // x21 = out
+                ; mov x22, x1              // x22 = ctx
+
+                // Cache input cursor from ctx
+                ; ldr x19, [x22, #CTX_INPUT_PTR]  // x19 = ctx.input_ptr
+                ; ldr x20, [x22, #CTX_INPUT_END]  // x20 = ctx.input_end
+            );
+        }
 
         self.error_exit = error_exit;
         (entry, error_exit)
@@ -165,24 +201,51 @@ impl EmitCtx {
     pub fn end_func(&mut self, error_exit: DynamicLabel) {
         let frame_size = self.frame_size;
 
-        dynasm!(self.ops
-            ; .arch aarch64
-            // Success path: flush cursor, restore registers, return
-            ; str x19, [x22, #CTX_INPUT_PTR]
-            ; ldp x21, x22, [sp, #32]
-            ; ldp x19, x20, [sp, #16]
-            ; ldp x29, x30, [sp]
-            ; add sp, sp, #frame_size
-            ; ret
+        if self.base_frame == REGALLOC_BASE_FRAME {
+            dynasm!(self.ops
+                ; .arch aarch64
+                // Success path: flush cursor, restore registers, return
+                ; str x19, [x22, #CTX_INPUT_PTR]
+                ; ldp x27, x28, [sp, #80]
+                ; ldp x25, x26, [sp, #64]
+                ; ldp x23, x24, [sp, #48]
+                ; ldp x21, x22, [sp, #32]
+                ; ldp x19, x20, [sp, #16]
+                ; ldp x29, x30, [sp]
+                ; add sp, sp, #frame_size
+                ; ret
 
-            // Error exit: just restore and return (error is already in ctx.error)
-            ; =>error_exit
-            ; ldp x21, x22, [sp, #32]
-            ; ldp x19, x20, [sp, #16]
-            ; ldp x29, x30, [sp]
-            ; add sp, sp, #frame_size
-            ; ret
-        );
+                // Error exit: just restore and return (error is already in ctx.error)
+                ; =>error_exit
+                ; ldp x27, x28, [sp, #80]
+                ; ldp x25, x26, [sp, #64]
+                ; ldp x23, x24, [sp, #48]
+                ; ldp x21, x22, [sp, #32]
+                ; ldp x19, x20, [sp, #16]
+                ; ldp x29, x30, [sp]
+                ; add sp, sp, #frame_size
+                ; ret
+            );
+        } else {
+            dynasm!(self.ops
+                ; .arch aarch64
+                // Success path: flush cursor, restore registers, return
+                ; str x19, [x22, #CTX_INPUT_PTR]
+                ; ldp x21, x22, [sp, #32]
+                ; ldp x19, x20, [sp, #16]
+                ; ldp x29, x30, [sp]
+                ; add sp, sp, #frame_size
+                ; ret
+
+                // Error exit: just restore and return (error is already in ctx.error)
+                ; =>error_exit
+                ; ldp x21, x22, [sp, #32]
+                ; ldp x19, x20, [sp, #16]
+                ; ldp x29, x30, [sp]
+                ; add sp, sp, #frame_size
+                ; ret
+            );
+        }
     }
 
     /// Emit a call to another emitted function.

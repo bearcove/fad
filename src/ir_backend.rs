@@ -857,7 +857,7 @@ fn compile_linear_ir_aarch64(
     use regalloc2::{Allocation, Edit, InstPosition};
     use std::collections::HashMap;
 
-    use crate::arch::{BASE_FRAME, EmitCtx};
+    use crate::arch::{EmitCtx, REGALLOC_BASE_FRAME};
     use crate::ir::Width;
     use crate::linearize::{BinOpKind, LabelId, LinearOp, UnaryOpKind};
     use crate::recipe::{Op, Recipe};
@@ -898,7 +898,6 @@ fn compile_linear_ir_aarch64(
         edits_by_lambda: HashMap<u32, LambdaEditMap>,
         edge_edits_by_lambda: HashMap<u32, LambdaEdgeEditMap>,
         allocs_by_lambda: HashMap<u32, HashMap<usize, Vec<Allocation>>>,
-        entry_arg_allocs_by_lambda: HashMap<u32, Vec<Vec<Allocation>>>,
         return_result_allocs_by_lambda: HashMap<u32, Vec<Allocation>>,
         edge_trampoline_labels: HashMap<(u32, usize, usize), DynamicLabel>,
         edge_trampolines: Vec<EdgeTrampoline>,
@@ -921,13 +920,13 @@ fn compile_linear_ir_aarch64(
             max_spillslots: usize,
             alloc: &crate::regalloc_engine::AllocatedProgram,
         ) -> Self {
-            let slot_base = BASE_FRAME;
+            let slot_base = REGALLOC_BASE_FRAME;
             let slot_bytes = ir.slot_count * 8;
             let spill_base = slot_base + slot_bytes;
             let spill_bytes = max_spillslots as u32 * 8;
             let extra_stack = slot_bytes + spill_bytes + 8;
 
-            let mut ectx = EmitCtx::new(extra_stack);
+            let mut ectx = EmitCtx::new_regalloc(extra_stack);
             let labels: Vec<DynamicLabel> = (0..ir.label_count).map(|_| ectx.new_label()).collect();
 
             let mut lambda_max = 0usize;
@@ -996,78 +995,6 @@ fn compile_linear_ir_aarch64(
                     allocs_entry.insert(linear_op_index, inst_allocs.clone());
                 }
             }
-            let mut entry_arg_allocs_by_lambda = HashMap::<u32, Vec<Vec<Allocation>>>::new();
-            let ra_program = crate::regalloc_mir::lower_linear_ir(ir);
-            for ra_func in &ra_program.funcs {
-                let lambda_id = ra_func.lambda_id.index() as u32;
-                let mut per_arg_allocs = vec![Vec::new(); ra_func.data_args.len()];
-                if let Some(allocs_for_lambda) = allocs_by_lambda.get(&lambda_id) {
-                    let mut arg_pos_by_vreg = HashMap::<usize, usize>::new();
-                    for (arg_pos, vreg) in ra_func.data_args.iter().copied().enumerate() {
-                        arg_pos_by_vreg.insert(vreg.index(), arg_pos);
-                    }
-
-                    for block in &ra_func.blocks {
-                        for inst in &block.insts {
-                            let Some(inst_allocs) = allocs_for_lambda.get(&inst.linear_op_index)
-                            else {
-                                continue;
-                            };
-                            for (operand_index, operand) in inst.operands.iter().enumerate() {
-                                if operand.kind != crate::regalloc_mir::OperandKind::Use {
-                                    continue;
-                                }
-                                let Some(&arg_pos) = arg_pos_by_vreg.get(&operand.vreg.index())
-                                else {
-                                    continue;
-                                };
-                                let Some(&alloc) = inst_allocs.get(operand_index) else {
-                                    continue;
-                                };
-                                if alloc.is_none() {
-                                    continue;
-                                }
-                                if !per_arg_allocs[arg_pos].contains(&alloc) {
-                                    per_arg_allocs[arg_pos].push(alloc);
-                                }
-                            }
-                        }
-
-                        if let Some(term_linear_op_index) = block.term_linear_op_index
-                            && let Some(term_allocs) = allocs_for_lambda.get(&term_linear_op_index)
-                        {
-                            let term_uses: Vec<crate::ir::VReg> = match &block.term {
-                                crate::regalloc_mir::RaTerminator::BranchIf { cond, .. }
-                                | crate::regalloc_mir::RaTerminator::BranchIfZero {
-                                    cond, ..
-                                } => vec![*cond],
-                                crate::regalloc_mir::RaTerminator::JumpTable {
-                                    predicate, ..
-                                } => vec![*predicate],
-                                crate::regalloc_mir::RaTerminator::Return
-                                | crate::regalloc_mir::RaTerminator::ErrorExit { .. }
-                                | crate::regalloc_mir::RaTerminator::Branch { .. } => Vec::new(),
-                            };
-                            for (operand_index, vreg) in term_uses.into_iter().enumerate() {
-                                let Some(&arg_pos) = arg_pos_by_vreg.get(&vreg.index()) else {
-                                    continue;
-                                };
-                                let Some(&alloc) = term_allocs.get(operand_index) else {
-                                    continue;
-                                };
-                                if alloc.is_none() {
-                                    continue;
-                                }
-                                if !per_arg_allocs[arg_pos].contains(&alloc) {
-                                    per_arg_allocs[arg_pos].push(alloc);
-                                }
-                            }
-                        }
-                    }
-                }
-                entry_arg_allocs_by_lambda.insert(lambda_id, per_arg_allocs);
-            }
-
             Self {
                 ectx,
                 labels,
@@ -1080,7 +1007,6 @@ fn compile_linear_ir_aarch64(
                 edits_by_lambda,
                 edge_edits_by_lambda,
                 allocs_by_lambda,
-                entry_arg_allocs_by_lambda,
                 return_result_allocs_by_lambda,
                 edge_trampoline_labels: HashMap::new(),
                 edge_trampolines: Vec::new(),
@@ -1913,34 +1839,8 @@ fn compile_linear_ir_aarch64(
                     data_args.len()
                 );
             }
-
-            // Seed regalloc locations for entry block params directly from ABI arg regs x2..x7.
-            let lambda_id = self
-                .current_func
-                .as_ref()
-                .expect("emit_store_incoming_lambda_args without active function")
-                .lambda_id
-                .index() as u32;
-            for arg_index in 0..data_args.len() {
-                match arg_index {
-                    0 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x2),
-                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x3),
-                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x4),
-                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x5),
-                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x6),
-                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x7),
-                    _ => unreachable!(),
-                }
-                let per_arg_allocs = self
-                    .entry_arg_allocs_by_lambda
-                    .get(&lambda_id)
-                    .and_then(|all| all.get(arg_index))
-                    .cloned()
-                    .unwrap_or_default();
-                for alloc in per_arg_allocs {
-                    let _ = self.emit_store_x9_to_allocation(alloc);
-                }
-            }
+            // Incoming lambda args already arrive in ABI arg regs x2..x7.
+            // Regalloc edits around the first mapped linear op place them as needed.
         }
 
         fn emit_load_lambda_results_to_ret_regs(

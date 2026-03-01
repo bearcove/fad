@@ -244,6 +244,12 @@ fn caller_saved_simd() -> PRegSet {
 #[cfg(target_arch = "aarch64")]
 fn machine_env() -> MachineEnv {
     let preferred_int = set_from_regs(&[
+        preg_int(23),
+        preg_int(24),
+        preg_int(25),
+        preg_int(26),
+        preg_int(27),
+        preg_int(28),
         preg_int(11),
         preg_int(12),
         preg_int(13),
