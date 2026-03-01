@@ -462,6 +462,54 @@ Each backend implements SIMD ops natively. The linearized IR contains
 opaque SIMD op references; the backend expands them into platform-specific
 instruction sequences.
 
+### Register allocation
+
+r[ir.regalloc]
+Backends must use CFG-aware whole-function register allocation for hot-path
+code generation. Register location decisions must remain valid across control
+flow edges and joins without relying on blanket boundary flushes.
+
+r[ir.regalloc.ra-mir]
+Before machine emission, linearized IR is lowered to an allocator-oriented
+machine IR (RA-MIR) with explicit basic blocks and instruction order.
+
+r[ir.regalloc.ra-mir.operands]
+Each RA-MIR instruction declares virtual-register uses/defs, register class
+requirements (at minimum GPR vs SIMD), and any fixed-register constraints.
+
+r[ir.regalloc.ra-mir.block-params]
+Control-flow merges are represented with block parameters and branch
+arguments, so loop-carried and join-carried values are explicit allocator
+inputs rather than implicit stack state.
+
+r[ir.regalloc.ra-mir.calls]
+Call instructions declare ABI constraints: fixed argument/return registers
+and clobbered registers. Values live across calls must be placed in locations
+that satisfy these clobber rules.
+
+r[ir.regalloc.engine]
+The register allocation engine consumes RA-MIR and returns final locations
+plus edit operations (moves, spills, reloads) required to satisfy constraints.
+
+r[ir.regalloc.edits]
+Machine emission applies allocator-provided edits at the exact program points
+required by the allocation result; spill placement is allocator-directed, not
+implemented as unconditional boundary spilling.
+
+r[ir.regalloc.no-boundary-flush]
+Steady-state hot-path code generation must not depend on unconditional
+flush-all behavior at every branch, label, or call boundary. Any required
+materialization must be justified by liveness and clobber constraints.
+
+r[ir.regalloc.checker]
+The allocation pipeline includes checker-backed validation in test/debug
+configuration to ensure allocated code preserves virtual-register semantics.
+
+r[ir.regalloc.regressions]
+Regression coverage includes loop-heavy postcard deserialization paths
+(notably medium/large scalar `Vec` decoding) and checks IR output parity
+against legacy backend and serde reference decoding.
+
 ### Intrinsics
 
 r[ir.intrinsics]
@@ -509,6 +557,9 @@ Planned passes, in rough priority order:
    ops are candidates only if they have the same state predecessor.
 5. **Cold path sinking**: move error-construction nodes into error-only
    regions so they don't pollute the hot path's register pressure.
+6. **Global register allocation**: lower linearized IR to a CFG-oriented
+   allocator input form, run a whole-function allocator, and apply
+   allocator-provided move/spill/reload edits during machine emission.
 
 r[ir.passes.lower-to-core]
 Normalization passes may rewrite format-lowering helper forms into the core
