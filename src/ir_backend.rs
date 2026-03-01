@@ -3209,6 +3209,234 @@ mod tests {
         }
     }
 
+    fn run_decoder<'input, T: facet::Facet<'input>>(
+        ir: &LinearIr,
+        input: &'input [u8],
+    ) -> (T, DeserContext) {
+        let deser = compiler::compile_linear_ir_decoder(ir, false);
+        let mut out = core::mem::MaybeUninit::<T>::uninit();
+        let mut ctx = DeserContext::from_bytes(input);
+        unsafe {
+            (deser.func())(out.as_mut_ptr() as *mut u8, &mut ctx);
+            (out.assume_init(), ctx)
+        }
+    }
+
+    fn assert_ir_micro_snapshot(case_label: &str, ir: &LinearIr) {
+        let deser = compiler::compile_linear_ir_decoder(ir, false);
+        let mut out = String::new();
+        out.push_str(&disasm_bytes(deser.code(), Some(deser.entry_offset())));
+        insta::assert_snapshot!(
+            format!("linear_ir_micro_{}_{}", case_label, std::env::consts::ARCH),
+            out
+        );
+    }
+
+    fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
+        let mut out = String::new();
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            use std::fmt::Write;
+            use yaxpeax_arch::{Decoder, U8Reader};
+            use yaxpeax_arm::armv8::a64::InstDecoder;
+
+            let decoder = InstDecoder::default();
+            let mut reader = U8Reader::new(code);
+            let mut offset = 0usize;
+            let mut ret_count = 0u32;
+
+            while offset + 4 <= code.len() {
+                let prefix = if marker_offset == Some(offset) {
+                    "> "
+                } else {
+                    "  "
+                };
+                match decoder.decode(&mut reader) {
+                    Ok(inst) => {
+                        let text = normalize_inst(&format!("{inst}"));
+                        writeln!(&mut out, "{prefix}{text}").unwrap();
+                        if text.trim() == "ret" {
+                            ret_count += 1;
+                            if ret_count >= 2 {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let word = u32::from_le_bytes(code[offset..offset + 4].try_into().unwrap());
+                        writeln!(&mut out, "{prefix}<{e}> (0x{word:08x})").unwrap();
+                    }
+                }
+                offset += 4;
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::fmt::Write;
+            use yaxpeax_arch::{Decoder, U8Reader};
+            use yaxpeax_x86::amd64::InstDecoder;
+            use yaxpeax_arch::LengthedInstruction;
+
+            let decoder = InstDecoder::default();
+            let mut reader = U8Reader::new(code);
+            let mut offset = 0usize;
+            let mut ret_count = 0u32;
+
+            while offset < code.len() {
+                let prefix = if marker_offset == Some(offset) {
+                    "> "
+                } else {
+                    "  "
+                };
+                match decoder.decode(&mut reader) {
+                    Ok(inst) => {
+                        let len = inst.len().to_const() as usize;
+                        let text = normalize_inst(&format!("{inst}"));
+                        writeln!(&mut out, "{prefix}{text}").unwrap();
+                        if text.trim() == "ret" {
+                            ret_count += 1;
+                            if ret_count >= 2 {
+                                break;
+                            }
+                        }
+                        offset += len;
+                    }
+                    Err(_) => {
+                        writeln!(&mut out, "{prefix}<decode error> (0x{:02x})", code[offset])
+                            .unwrap();
+                        offset += 1;
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    fn normalize_inst(text: &str) -> String {
+        if let Some(rest) = text.strip_prefix("mov ") {
+            if let Some((reg, imm)) = rest.split_once(", 0x") {
+                let hex_len = imm.len();
+                if reg.starts_with('r') && hex_len >= 10 {
+                    return format!("mov {reg}, 0x<imm>");
+                }
+            }
+        }
+
+        for op in ["mov", "movk"] {
+            let op_prefix = format!("{op} ");
+            if let Some(rest) = text.strip_prefix(&op_prefix) {
+                if let Some((reg, imm_tail)) = rest.split_once(", #") {
+                    if !reg.starts_with('x') {
+                        continue;
+                    }
+                    if let Some((_, suffix)) = imm_tail.split_once(',') {
+                        return format!("{op_prefix}{reg}, #<imm>,{suffix}");
+                    }
+                    return format!("{op_prefix}{reg}, #<imm>");
+                }
+            }
+        }
+
+        text.to_owned()
+    }
+
+    macro_rules! ir_micro_cases {
+        (
+            $(
+                $name:ident => {
+                    output: $out_ty:ty,
+                    input: $input:expr,
+                    expected: $expected:expr,
+                    build: |$rb:ident| $build:block
+                }
+            ),+ $(,)?
+        ) => {
+            $(
+                #[test]
+                fn $name() {
+                    let mut builder = IrBuilder::new(<$out_ty as facet::Facet>::SHAPE);
+                    {
+                        let mut $rb = builder.root_region();
+                        $build
+                    }
+                    let mut func = builder.finish();
+                    crate::ir_passes::run_default_passes(&mut func);
+                    let lin = linearize(&mut func);
+                    assert_ir_micro_snapshot(stringify!($name), &lin);
+
+                    let (value, ctx): ($out_ty, DeserContext) = run_decoder(&lin, $input);
+                    assert_eq!(ctx.error.code, 0);
+                    assert_eq!(value, $expected);
+                }
+            )+
+        };
+    }
+
+    unsafe extern "C" fn add3_intrinsic(
+        _ctx: *mut crate::context::DeserContext,
+        a: u64,
+        b: u64,
+        c: u64,
+    ) -> u64 {
+        a + b + c
+    }
+
+    ir_micro_cases! {
+        linear_ir_micro_const_u32 => {
+            output: u32,
+            input: &[],
+            expected: 42u32,
+            build: |rb| {
+                let v = rb.const_val(42);
+                rb.write_to_field(v, 0, Width::W4);
+                rb.set_results(&[]);
+            }
+        },
+        linear_ir_micro_read_u32 => {
+            output: u32,
+            input: &[0x78, 0x56, 0x34, 0x12],
+            expected: 0x1234_5678u32,
+            build: |rb| {
+                rb.bounds_check(4);
+                let v = rb.read_bytes(4);
+                rb.write_to_field(v, 0, Width::W4);
+                rb.set_results(&[]);
+            }
+        },
+        linear_ir_micro_gamma_u32 => {
+            output: u32,
+            input: &[],
+            expected: 20u32,
+            build: |rb| {
+                let pred = rb.const_val(1);
+                rb.gamma(pred, &[], 2, |branch_idx, br| {
+                    let v = br.const_val(if branch_idx == 0 { 10 } else { 20 });
+                    br.write_to_field(v, 0, Width::W4);
+                    br.set_results(&[]);
+                });
+                rb.set_results(&[]);
+            }
+        },
+        linear_ir_micro_intrinsic_u64 => {
+            output: u64,
+            input: &[],
+            expected: 23u64,
+            build: |rb| {
+                let a = rb.const_val(11);
+                let b = rb.const_val(7);
+                let c = rb.const_val(5);
+                let out = rb
+                    .call_intrinsic(IntrinsicFn(add3_intrinsic as *const () as usize), &[a, b, c], 0, true)
+                    .expect("return-value intrinsic should produce output");
+                rb.write_to_field(out, 0, Width::W8);
+                rb.set_results(&[]);
+            }
+        }
+    }
+
     #[test]
     fn linear_backend_reads_u32_from_cursor() {
         let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
