@@ -1058,28 +1058,16 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             }
         }
 
-        fn emit_store_alloc_to_stack(&mut self, reg: AllocReg, sp_off: u32) {
-            match reg {
-                AllocReg::X11 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x11, [sp, #sp_off]),
-                AllocReg::X12 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x12, [sp, #sp_off]),
-                AllocReg::X13 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x13, [sp, #sp_off]),
-                AllocReg::X14 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x14, [sp, #sp_off]),
-                AllocReg::X15 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x15, [sp, #sp_off]),
-            }
-        }
-
         fn spill_reg(&mut self, reg: AllocReg) {
             let idx = reg.index();
             if let Some(v) = self.reg_vregs[idx] {
-                if self.reg_dirty[idx] {
-                    self.emit_store_alloc_to_stack(reg, self.vreg_off(v));
-                }
                 self.vreg_regs[v.index()] = None;
                 self.reg_vregs[idx] = None;
                 self.reg_dirty[idx] = false;
             }
         }
 
+        // r[impl ir.regalloc.no-boundary-flush]
         fn flush_all_vregs(&mut self) {
             for &reg in &AllocReg::ALL {
                 self.spill_reg(reg);
@@ -1162,9 +1150,11 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
         }
 
         fn emit_store_x9_to_vreg(&mut self, v: crate::ir::VReg) {
+            let off = self.vreg_off(v);
+            dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]);
             let reg = self.ensure_dst_reg(v);
             self.emit_mov_alloc_from_x9(reg);
-            self.reg_dirty[reg.index()] = true;
+            self.reg_dirty[reg.index()] = false;
         }
 
         fn emit_load_u32_w10(&mut self, value: u32) {
