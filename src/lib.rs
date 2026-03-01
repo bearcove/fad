@@ -5,6 +5,7 @@ pub mod format;
 pub mod intrinsics;
 pub mod ir;
 pub mod ir_backend;
+pub mod ir_passes;
 pub mod jit_debug;
 pub mod jit_f64;
 pub mod json;
