@@ -110,9 +110,9 @@ expression: out
   str x10, [sp, #0x40]
   add x19, x19, #0x1
   b $+0x54
+  str x19, [x22]
   ldr x9, [sp, #0x38]
   sub x10, x19, x9
-  str x19, [x22]
   mov x0, x22
   mov x1, x9
   mov x2, x10
@@ -235,10 +235,10 @@ expression: out
   b.eq $+0x5c
   add x19, x19, #0x1
   b $-0x20
+  str x19, [x22]
   ldr x9, [sp, #0x50]
   sub x10, x19, x9
   str x10, [sp, #0x58]
-  str x19, [x22]
   mov x0, x22
   mov x1, x9
   mov w2, w10
@@ -255,9 +255,9 @@ expression: out
   str x9, [x21]
   add x19, x19, #0x1
   b $+0x50
+  str x19, [x22]
   ldr x9, [sp, #0x50]
   sub x10, x19, x9
-  str x19, [x22]
   mov x0, x22
   add x1, x21, #0x0
   mov x2, x9
