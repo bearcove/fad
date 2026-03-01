@@ -1153,6 +1153,62 @@ fn compile_linear_ir_aarch64(
             true
         }
 
+        fn emit_store_stack_from_preg(&mut self, preg: regalloc2::PReg, off: u32) -> bool {
+            if preg.class() != regalloc2::RegClass::Int {
+                return false;
+            }
+            match preg.hw_enc() {
+                0 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x0, [sp, #off]),
+                1 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x1, [sp, #off]),
+                2 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x2, [sp, #off]),
+                3 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x3, [sp, #off]),
+                4 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x4, [sp, #off]),
+                5 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x5, [sp, #off]),
+                6 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x6, [sp, #off]),
+                7 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x7, [sp, #off]),
+                8 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x8, [sp, #off]),
+                9 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]),
+                10 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x10, [sp, #off]),
+                11 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x11, [sp, #off]),
+                12 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x12, [sp, #off]),
+                13 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x13, [sp, #off]),
+                14 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x14, [sp, #off]),
+                15 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x15, [sp, #off]),
+                16 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x16, [sp, #off]),
+                17 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x17, [sp, #off]),
+                _ => return false,
+            }
+            true
+        }
+
+        fn emit_load_preg_from_stack(&mut self, preg: regalloc2::PReg, off: u32) -> bool {
+            if preg.class() != regalloc2::RegClass::Int {
+                return false;
+            }
+            match preg.hw_enc() {
+                0 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x0, [sp, #off]),
+                1 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x1, [sp, #off]),
+                2 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x2, [sp, #off]),
+                3 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x3, [sp, #off]),
+                4 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x4, [sp, #off]),
+                5 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x5, [sp, #off]),
+                6 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x6, [sp, #off]),
+                7 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x7, [sp, #off]),
+                8 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x8, [sp, #off]),
+                9 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]),
+                10 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x10, [sp, #off]),
+                11 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x11, [sp, #off]),
+                12 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x12, [sp, #off]),
+                13 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x13, [sp, #off]),
+                14 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x14, [sp, #off]),
+                15 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x15, [sp, #off]),
+                16 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x16, [sp, #off]),
+                17 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x17, [sp, #off]),
+                _ => return false,
+            }
+            true
+        }
+
         fn spill_off(&self, slot: regalloc2::SpillSlot) -> u32 {
             self.spill_base + (slot.index() as u32) * 8
         }
@@ -1167,20 +1223,34 @@ fn compile_linear_ir_aarch64(
                     if from_reg == to_reg {
                         return;
                     }
+                    if from_reg.hw_enc() == 9 {
+                        let _ = self.emit_mov_preg_from_x9(to_reg);
+                        return;
+                    }
+                    if to_reg.hw_enc() == 9 {
+                        let _ = self.emit_mov_x9_from_preg(from_reg);
+                        return;
+                    }
                     if !self.emit_mov_x9_from_preg(from_reg) {
                         return;
                     }
                     let _ = self.emit_mov_preg_from_x9(to_reg);
                 }
                 (Some(from_reg), None, None, Some(to_stack)) => {
+                    let off = self.spill_off(to_stack);
+                    if self.emit_store_stack_from_preg(from_reg, off) {
+                        return;
+                    }
                     if !self.emit_mov_x9_from_preg(from_reg) {
                         return;
                     }
-                    let off = self.spill_off(to_stack);
                     dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]);
                 }
                 (None, Some(from_stack), Some(to_reg), None) => {
                     let off = self.spill_off(from_stack);
+                    if self.emit_load_preg_from_stack(to_reg, off) {
+                        return;
+                    }
                     dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
                     let _ = self.emit_mov_preg_from_x9(to_reg);
                 }
@@ -1630,12 +1700,66 @@ fn compile_linear_ir_aarch64(
         }
 
         fn emit_branch_if(&mut self, cond: crate::ir::VReg, target: DynamicLabel, invert: bool) {
-            self.emit_load_use_x9(cond, 0);
-            if invert {
-                dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x9, =>target);
-            } else {
-                dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x9, =>target);
+            let _ = cond;
+            let alloc = self.current_alloc(0);
+            if let Some(reg) = alloc.as_reg() {
+                assert!(
+                    reg.class() == regalloc2::RegClass::Int,
+                    "unsupported register allocation class {:?} for branch condition",
+                    reg.class()
+                );
+                match (reg.hw_enc(), invert) {
+                    (0, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x0, =>target),
+                    (0, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x0, =>target),
+                    (1, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x1, =>target),
+                    (1, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x1, =>target),
+                    (2, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x2, =>target),
+                    (2, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x2, =>target),
+                    (3, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x3, =>target),
+                    (3, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x3, =>target),
+                    (4, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x4, =>target),
+                    (4, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x4, =>target),
+                    (5, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x5, =>target),
+                    (5, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x5, =>target),
+                    (6, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x6, =>target),
+                    (6, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x6, =>target),
+                    (7, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x7, =>target),
+                    (7, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x7, =>target),
+                    (8, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x8, =>target),
+                    (8, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x8, =>target),
+                    (9, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x9, =>target),
+                    (9, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x9, =>target),
+                    (10, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x10, =>target),
+                    (10, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x10, =>target),
+                    (11, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x11, =>target),
+                    (11, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x11, =>target),
+                    (12, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x12, =>target),
+                    (12, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x12, =>target),
+                    (13, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x13, =>target),
+                    (13, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x13, =>target),
+                    (14, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x14, =>target),
+                    (14, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x14, =>target),
+                    (15, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x15, =>target),
+                    (15, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x15, =>target),
+                    (16, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x16, =>target),
+                    (16, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x16, =>target),
+                    (17, false) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x17, =>target),
+                    (17, true) => dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x17, =>target),
+                    _ => panic!("unsupported hw_enc {} for branch condition", reg.hw_enc()),
+                }
+                return;
             }
+            if let Some(slot) = alloc.as_stack() {
+                let off = self.spill_off(slot);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
+                if invert {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; cbz x9, =>target);
+                } else {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; cbnz x9, =>target);
+                }
+                return;
+            }
+            panic!("unexpected none allocation for branch condition");
         }
 
         fn emit_jump_table(
@@ -2136,8 +2260,9 @@ fn compile_linear_ir_aarch64(
                         self.set_const(*dst, Some(*value));
                     }
                     LinearOp::Copy { dst, src } => {
-                        self.emit_load_use_x9(*src, 0);
-                        self.emit_store_def_x9(*dst, 1);
+                        let from = self.current_alloc(0);
+                        let to = self.current_alloc(1);
+                        self.emit_edit_move(from, to);
                         self.set_const(*dst, self.const_of(*src));
                     }
                     LinearOp::BinOp { op, dst, lhs, rhs } => self.emit_binop(*op, *dst, *lhs, *rhs),
