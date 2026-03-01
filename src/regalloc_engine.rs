@@ -31,6 +31,7 @@ pub struct AllocatedFunction {
     pub inst_allocs: Vec<Vec<Allocation>>,
     pub inst_linear_op_indices: Vec<Option<usize>>,
     pub edge_edits: Vec<EdgeEdit>,
+    pub return_result_allocs: Vec<Allocation>,
 }
 
 /// Materialized allocation result for a full RA-MIR program.
@@ -68,6 +69,8 @@ struct AdapterInst {
     clobbers: PRegSet,
     is_branch: bool,
     is_ret: bool,
+    ret_value_operand_start: usize,
+    ret_value_operand_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +92,7 @@ enum BlockTermKind {
 struct WorkBlock {
     raw_insts: Vec<crate::regalloc_mir::RaInst>,
     term_kind: BlockTermKind,
+    term_returns_data_results: bool,
     term_linear_op_index: Option<usize>,
     term_uses: Vec<crate::ir::VReg>,
     succs: Vec<usize>,
@@ -353,9 +357,12 @@ fn split_critical_edges(func: &RaFunction) -> (Vec<WorkBlock>, Vec<Option<EdgeBl
                 | crate::regalloc_mir::RaTerminator::ErrorExit { .. } => BlockTermKind::Ret,
                 _ => BlockTermKind::BranchLike,
             };
+            let term_returns_data_results =
+                matches!(b.term, crate::regalloc_mir::RaTerminator::Return);
             WorkBlock {
                 raw_insts: b.insts.clone(),
                 term_kind,
+                term_returns_data_results,
                 term_linear_op_index: b.term_linear_op_index,
                 term_uses: lower_term_uses(&b.term),
                 succs: b.succs.iter().map(|s| s.to.0 as usize).collect(),
@@ -383,6 +390,7 @@ fn split_critical_edges(func: &RaFunction) -> (Vec<WorkBlock>, Vec<Option<EdgeBl
             let edge_block = WorkBlock {
                 raw_insts: Vec::new(),
                 term_kind: BlockTermKind::BranchLike,
+                term_returns_data_results: false,
                 term_linear_op_index: None,
                 term_uses: Vec::new(),
                 succs: vec![to],
@@ -446,6 +454,8 @@ impl AdapterFunction {
                         clobbers: PRegSet::empty(),
                         is_branch: false,
                         is_ret: false,
+                        ret_value_operand_start: 0,
+                        ret_value_operand_count: 0,
                     });
                     inst_linear_op_indices.push(entry_linear_op_index);
                     inst_edge_infos.push(None);
@@ -474,18 +484,36 @@ impl AdapterFunction {
                     clobbers,
                     is_branch: false,
                     is_ret: false,
+                    ret_value_operand_start: 0,
+                    ret_value_operand_count: 0,
                 });
                 inst_linear_op_indices.push(Some(inst.linear_op_index));
                 inst_edge_infos.push(None);
             }
 
-            let term_operands = b
+            let mut term_operands = b
                 .term_uses
                 .iter()
                 .copied()
                 .map(int_vreg)
                 .map(Operand::reg_use)
                 .collect::<Vec<_>>();
+            let mut ret_value_operand_start = 0usize;
+            let mut ret_value_operand_count = 0usize;
+            if b.term_returns_data_results {
+                ret_value_operand_start = term_operands.len();
+                ret_value_operand_count = func.data_results.len();
+                for (i, &result) in func.data_results.iter().enumerate() {
+                    let fixed = fixed_preg(FixedReg::AbiRet(i as u8))
+                        .expect("return data result has unsupported ABI register index");
+                    term_operands.push(Operand::new(
+                        int_vreg(result),
+                        OperandConstraint::FixedReg(fixed),
+                        OperandKind::Use,
+                        OperandPos::Early,
+                    ));
+                }
+            }
             let is_branch = matches!(b.term_kind, BlockTermKind::BranchLike);
             let is_ret = matches!(b.term_kind, BlockTermKind::Ret);
             adapter_insts.push(AdapterInst {
@@ -493,6 +521,8 @@ impl AdapterFunction {
                 clobbers: PRegSet::empty(),
                 is_branch,
                 is_ret,
+                ret_value_operand_start,
+                ret_value_operand_count,
             });
             inst_linear_op_indices.push(b.term_linear_op_index);
             inst_edge_infos.push(edge_infos[block_index]);
@@ -600,6 +630,30 @@ fn materialize_output(
     for i in 0..adapter.insts.len() {
         inst_allocs.push(out.inst_allocs(Inst::new(i)).to_vec());
     }
+    let mut return_result_allocs = Vec::<Allocation>::new();
+    for (inst_index, inst) in adapter.insts.iter().enumerate() {
+        if inst.ret_value_operand_count == 0 {
+            continue;
+        }
+        let term_allocs = &inst_allocs[inst_index];
+        let start = inst.ret_value_operand_start;
+        let end = start + inst.ret_value_operand_count;
+        assert!(
+            end <= term_allocs.len(),
+            "missing return alloc operands for lambda {:?}: expected range {start}..{end}, got {}",
+            lambda_id,
+            term_allocs.len()
+        );
+        let candidate = term_allocs[start..end].to_vec();
+        if return_result_allocs.is_empty() {
+            return_result_allocs = candidate;
+        } else if return_result_allocs != candidate {
+            panic!(
+                "inconsistent return allocs for lambda {:?}: {:?} vs {:?}",
+                lambda_id, return_result_allocs, candidate
+            );
+        }
+    }
     let mut edge_edits = Vec::new();
     for (prog_point, edit) in &out.edits {
         let inst_index = prog_point.inst().index();
@@ -626,6 +680,7 @@ fn materialize_output(
         inst_allocs,
         inst_linear_op_indices: adapter.inst_linear_op_indices.clone(),
         edge_edits,
+        return_result_allocs,
     }
 }
 

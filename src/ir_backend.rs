@@ -900,6 +900,7 @@ fn compile_linear_ir_aarch64(
         edge_edits_by_lambda: HashMap<u32, LambdaEdgeEditMap>,
         allocs_by_lambda: HashMap<u32, HashMap<usize, Vec<Allocation>>>,
         entry_arg_allocs_by_lambda: HashMap<u32, Vec<Vec<Allocation>>>,
+        return_result_allocs_by_lambda: HashMap<u32, Vec<Allocation>>,
         edge_trampoline_labels: HashMap<(u32, usize, usize), DynamicLabel>,
         edge_trampolines: Vec<EdgeTrampoline>,
         current_inst_allocs: Option<Vec<Allocation>>,
@@ -951,11 +952,15 @@ fn compile_linear_ir_aarch64(
             let mut edits_by_lambda = HashMap::<u32, LambdaEditMap>::new();
             let mut edge_edits_by_lambda = HashMap::<u32, LambdaEdgeEditMap>::new();
             let mut allocs_by_lambda = HashMap::<u32, HashMap<usize, Vec<Allocation>>>::new();
+            let mut return_result_allocs_by_lambda = HashMap::<u32, Vec<Allocation>>::new();
             for func in &alloc.functions {
                 let lambda_id = func.lambda_id.index() as u32;
                 let lambda_entry = edits_by_lambda.entry(lambda_id).or_default();
                 let lambda_edge_entry = edge_edits_by_lambda.entry(lambda_id).or_default();
                 let allocs_entry = allocs_by_lambda.entry(lambda_id).or_default();
+                return_result_allocs_by_lambda
+                    .entry(lambda_id)
+                    .or_insert_with(|| func.return_result_allocs.clone());
                 for (prog_point, edit) in &func.edits {
                     let Some(Some(linear_op_index)) =
                         func.inst_linear_op_indices.get(prog_point.inst().index())
@@ -1081,6 +1086,7 @@ fn compile_linear_ir_aarch64(
                 edge_edits_by_lambda,
                 allocs_by_lambda,
                 entry_arg_allocs_by_lambda,
+                return_result_allocs_by_lambda,
                 edge_trampoline_labels: HashMap::new(),
                 edge_trampolines: Vec::new(),
                 current_inst_allocs: None,
@@ -1933,29 +1939,23 @@ fn compile_linear_ir_aarch64(
                 );
             }
 
-            for (i, &arg) in data_args.iter().enumerate() {
-                let off = self.vreg_off(arg);
-                match i {
-                    0 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x2, [sp, #off]),
-                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x3, [sp, #off]),
-                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x4, [sp, #off]),
-                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x5, [sp, #off]),
-                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x6, [sp, #off]),
-                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x7, [sp, #off]),
-                    _ => unreachable!(),
-                }
-            }
-
-            // Seed regalloc locations for entry block params from the canonical arg snapshot.
+            // Seed regalloc locations for entry block params directly from ABI arg regs x2..x7.
             let lambda_id = self
                 .current_func
                 .as_ref()
                 .expect("emit_store_incoming_lambda_args without active function")
                 .lambda_id
                 .index() as u32;
-            for (arg_index, &arg) in data_args.iter().enumerate() {
-                let off = self.vreg_off(arg);
-                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
+            for arg_index in 0..data_args.len() {
+                match arg_index {
+                    0 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x2),
+                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x3),
+                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x4),
+                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x5),
+                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x6),
+                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x7),
+                    _ => unreachable!(),
+                }
                 let per_arg_allocs = self
                     .entry_arg_allocs_by_lambda
                     .get(&lambda_id)
@@ -1968,7 +1968,11 @@ fn compile_linear_ir_aarch64(
             }
         }
 
-        fn emit_load_lambda_results_to_ret_regs(&mut self, data_results: &[crate::ir::VReg]) {
+        fn emit_load_lambda_results_to_ret_regs(
+            &mut self,
+            lambda_id: crate::ir::LambdaId,
+            data_results: &[crate::ir::VReg],
+        ) {
             if data_results.len() > 2 {
                 panic!(
                     "aarch64 CallLambda supports at most 2 data results, got {}",
@@ -1976,13 +1980,26 @@ fn compile_linear_ir_aarch64(
                 );
             }
 
-            if let Some(&v) = data_results.first() {
-                let off = self.vreg_off(v);
-                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x0, [sp, #off]);
+            let result_allocs = self
+                .return_result_allocs_by_lambda
+                .get(&(lambda_id.index() as u32))
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                result_allocs.len() >= data_results.len(),
+                "missing return allocation mapping for lambda {:?}: need {}, got {}",
+                lambda_id,
+                data_results.len(),
+                result_allocs.len()
+            );
+
+            if let Some(&alloc) = result_allocs.first() {
+                self.emit_load_x9_from_allocation(alloc);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x0, x9);
             }
-            if let Some(&v) = data_results.get(1) {
-                let off = self.vreg_off(v);
-                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x1, [sp, #off]);
+            if let Some(&alloc) = result_allocs.get(1) {
+                self.emit_load_x9_from_allocation(alloc);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x1, x9);
             }
         }
 
@@ -2103,7 +2120,10 @@ fn compile_linear_ir_aarch64(
                             .current_func
                             .take()
                             .expect("FuncEnd without active function");
-                        self.emit_load_lambda_results_to_ret_regs(&func.data_results);
+                        self.emit_load_lambda_results_to_ret_regs(
+                            func.lambda_id,
+                            &func.data_results,
+                        );
                         self.ectx.end_func(func.error_exit);
                     }
                     LinearOp::Label(label) => {
