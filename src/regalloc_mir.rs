@@ -464,6 +464,9 @@ fn lower_function(
             })
             .collect();
     }
+    for block in &mut blocks {
+        coalesce_uncond_branch_tail_copies(block);
+    }
     for (from, succs) in succ_lists.iter().enumerate() {
         for succ in succs {
             blocks[succ.index()].preds.push(BlockId(from as u32));
@@ -527,6 +530,55 @@ fn resolve_term(
         TempTerm::Fallthrough(next_idx) => RaTerminator::Branch {
             target: BlockId(*next_idx as u32),
         },
+    }
+}
+
+// r[impl ir.passes.pre-regalloc.coalescing]
+fn coalesce_uncond_branch_tail_copies(block: &mut RaBlock) {
+    let RaTerminator::Branch { target } = block.term else {
+        return;
+    };
+    if target.index() == 0 || block.succs.len() != 1 {
+        // Keep entry/backedge behavior conservative for now.
+        return;
+    }
+
+    let mut tail_start = block.insts.len();
+    while tail_start > 0 && matches!(block.insts[tail_start - 1].op, LinearOp::Copy { .. }) {
+        tail_start -= 1;
+    }
+    if tail_start == block.insts.len() {
+        return;
+    }
+    if block.insts.len() - tail_start != 1 {
+        return;
+    }
+
+    let inst = &mut block.insts[tail_start];
+    let LinearOp::Copy { dst, src } = inst.op else {
+        unreachable!("tail range should only contain copy ops");
+    };
+    if dst == src {
+        return;
+    }
+
+    let edge = &mut block.succs[0];
+    let mut rewrote = false;
+    for arg in &mut edge.args {
+        if *arg == dst {
+            *arg = src;
+            rewrote = true;
+        }
+    }
+    if !rewrote {
+        return;
+    }
+
+    // Keep allocation-index stability for backend mapping while making the
+    // coalesced tail copy semantically inert for regalloc.
+    inst.op = LinearOp::Copy { dst: src, src };
+    if inst.operands.len() >= 2 {
+        inst.operands[1].vreg = src;
     }
 }
 
@@ -730,6 +782,57 @@ mod tests {
                 .any(|b| b.preds.len() >= 2 && !b.params.is_empty()),
             "expected loop header with params; got: {:#?}",
             root.blocks
+        );
+    }
+
+    // r[verify ir.passes.pre-regalloc.coalescing]
+    #[test]
+    fn ra_mir_coalesces_tail_copies_on_uncond_branch_edges() {
+        let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let pred = rb.const_val(0);
+            let out = rb.gamma(pred, &[], 2, |branch_idx, bb| {
+                let val = if branch_idx == 0 {
+                    bb.const_val(42)
+                } else {
+                    bb.const_val(99)
+                };
+                bb.set_results(&[val]);
+            });
+            rb.write_to_field(out[0], 0, Width::W4);
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        assert!(
+            lin.ops.iter().any(|op| matches!(op, LinearOp::Copy { .. })),
+            "expected linearized copies"
+        );
+
+        let ra = lower_linear_ir(&lin);
+        let root = &ra.funcs[0];
+        let merge = root
+            .blocks
+            .iter()
+            .find(|b| b.preds.len() >= 2 && !b.params.is_empty())
+            .expect("missing merge block with params");
+        let mut saw_non_identity_edge = false;
+        for pred in &merge.preds {
+            let pred_block = &root.blocks[pred.index()];
+            let edge = pred_block
+                .succs
+                .iter()
+                .find(|e| e.to == merge.id)
+                .expect("pred should have edge to merge");
+            assert_eq!(edge.args.len(), merge.params.len());
+            if edge.args != merge.params {
+                saw_non_identity_edge = true;
+            }
+        }
+        assert!(
+            saw_non_identity_edge,
+            "expected at least one coalesced edge argument to differ from merge params"
         );
     }
 
