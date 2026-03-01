@@ -30,6 +30,7 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
 
     struct FunctionCtx {
         error_exit: DynamicLabel,
+        data_results: Vec<crate::ir::VReg>,
     }
 
     struct Lowerer {
@@ -515,23 +516,159 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
             }
         }
 
+        fn emit_store_incoming_lambda_args(&mut self, data_args: &[crate::ir::VReg]) {
+            #[cfg(not(windows))]
+            const MAX_LAMBDA_DATA_ARGS: usize = 4;
+            #[cfg(windows)]
+            const MAX_LAMBDA_DATA_ARGS: usize = 2;
+
+            if data_args.len() > MAX_LAMBDA_DATA_ARGS {
+                panic!(
+                    "x64 CallLambda supports at most {MAX_LAMBDA_DATA_ARGS} data args, got {}",
+                    data_args.len()
+                );
+            }
+
+            for (i, &arg) in data_args.iter().enumerate() {
+                let off = self.vreg_off(arg) as i32;
+                #[cfg(not(windows))]
+                match i {
+                    0 => dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], rdx),
+                    1 => dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], rcx),
+                    2 => dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], r8),
+                    3 => dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], r9),
+                    _ => unreachable!(),
+                }
+                #[cfg(windows)]
+                match i {
+                    0 => dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], r8),
+                    1 => dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], r9),
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        fn emit_load_lambda_results_to_ret_regs(&mut self, data_results: &[crate::ir::VReg]) {
+            if data_results.len() > 2 {
+                panic!(
+                    "x64 CallLambda supports at most 2 data results, got {}",
+                    data_results.len()
+                );
+            }
+
+            if let Some(&v) = data_results.first() {
+                let off = self.vreg_off(v) as i32;
+                dynasm!(self.ectx.ops ; .arch x64 ; mov rax, [rsp + off]);
+            }
+            if let Some(&v) = data_results.get(1) {
+                let off = self.vreg_off(v) as i32;
+                dynasm!(self.ectx.ops ; .arch x64 ; mov rdx, [rsp + off]);
+            }
+        }
+
+        fn emit_call_lambda(
+            &mut self,
+            label: DynamicLabel,
+            args: &[crate::ir::VReg],
+            results: &[crate::ir::VReg],
+        ) {
+            use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR};
+
+            #[cfg(not(windows))]
+            const MAX_LAMBDA_DATA_ARGS: usize = 4;
+            #[cfg(windows)]
+            const MAX_LAMBDA_DATA_ARGS: usize = 2;
+            if args.len() > MAX_LAMBDA_DATA_ARGS {
+                panic!(
+                    "x64 CallLambda supports at most {MAX_LAMBDA_DATA_ARGS} data args, got {}",
+                    args.len()
+                );
+            }
+            if results.len() > 2 {
+                panic!(
+                    "x64 CallLambda supports at most 2 data results, got {}",
+                    results.len()
+                );
+            }
+
+            let error_exit = self
+                .current_func
+                .as_ref()
+                .expect("CallLambda outside function")
+                .error_exit;
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov [r15 + CTX_INPUT_PTR as i32], r12
+            );
+            #[cfg(not(windows))]
+            dynasm!(self.ectx.ops ; .arch x64 ; lea rdi, [r14] ; mov rsi, r15);
+            #[cfg(windows)]
+            dynasm!(self.ectx.ops ; .arch x64 ; lea rcx, [r14] ; mov rdx, r15);
+
+            for (i, &arg) in args.iter().enumerate() {
+                let off = self.vreg_off(arg) as i32;
+                #[cfg(not(windows))]
+                match i {
+                    0 => dynasm!(self.ectx.ops ; .arch x64 ; mov rdx, [rsp + off]),
+                    1 => dynasm!(self.ectx.ops ; .arch x64 ; mov rcx, [rsp + off]),
+                    2 => dynasm!(self.ectx.ops ; .arch x64 ; mov r8, [rsp + off]),
+                    3 => dynasm!(self.ectx.ops ; .arch x64 ; mov r9, [rsp + off]),
+                    _ => unreachable!(),
+                }
+                #[cfg(windows)]
+                match i {
+                    0 => dynasm!(self.ectx.ops ; .arch x64 ; mov r8, [rsp + off]),
+                    1 => dynasm!(self.ectx.ops ; .arch x64 ; mov r9, [rsp + off]),
+                    _ => unreachable!(),
+                }
+            }
+
+            dynasm!(self.ectx.ops ; .arch x64 ; call =>label);
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+                ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+                ; test r10d, r10d
+                ; jnz =>error_exit
+            );
+
+            if let Some(&dst) = results.first() {
+                let off = self.vreg_off(dst) as i32;
+                dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], rax);
+            }
+            if let Some(&dst) = results.get(1) {
+                let off = self.vreg_off(dst) as i32;
+                dynasm!(self.ectx.ops ; .arch x64 ; mov [rsp + off], rdx);
+            }
+        }
+
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
             for op in &ir.ops {
                 match op {
-                    LinearOp::FuncStart { lambda_id, .. } => {
+                    LinearOp::FuncStart {
+                        lambda_id,
+                        data_args,
+                        data_results,
+                        ..
+                    } => {
                         let label = self.lambda_labels[lambda_id.index() as usize];
                         self.ectx.bind_label(label);
                         let (entry_offset, error_exit) = self.ectx.begin_func();
                         if lambda_id.index() == 0 {
                             self.entry = Some(entry_offset);
                         }
-                        self.current_func = Some(FunctionCtx { error_exit });
+                        self.current_func = Some(FunctionCtx {
+                            error_exit,
+                            data_results: data_results.clone(),
+                        });
+                        self.emit_store_incoming_lambda_args(data_args);
                     }
                     LinearOp::FuncEnd => {
                         let func = self
                             .current_func
                             .take()
                             .expect("FuncEnd without active function");
+                        self.emit_load_lambda_results_to_ret_regs(&func.data_results);
                         self.ectx.end_func(func.error_exit);
                     }
                     LinearOp::Label(label) => self.ectx.bind_label(self.label(*label)),
@@ -663,15 +800,8 @@ fn compile_linear_ir_x64(ir: &LinearIr) -> LinearBackendResult {
                         args,
                         results,
                     } => {
-                        if !args.is_empty() || !results.is_empty() {
-                            panic!(
-                                "CallLambda with data args/results is not supported yet: args={}, results={}",
-                                args.len(),
-                                results.len()
-                            );
-                        }
                         let label = self.lambda_labels[target.index() as usize];
-                        self.ectx.emit_call_emitted_func(label, 0);
+                        self.emit_call_lambda(label, args, results);
                     }
                 }
             }
@@ -700,6 +830,7 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
 
     struct FunctionCtx {
         error_exit: DynamicLabel,
+        data_results: Vec<crate::ir::VReg>,
     }
 
     struct Lowerer {
@@ -1166,23 +1297,142 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
             }
         }
 
+        fn emit_store_incoming_lambda_args(&mut self, data_args: &[crate::ir::VReg]) {
+            const MAX_LAMBDA_DATA_ARGS: usize = 6;
+            if data_args.len() > MAX_LAMBDA_DATA_ARGS {
+                panic!(
+                    "aarch64 CallLambda supports at most {MAX_LAMBDA_DATA_ARGS} data args, got {}",
+                    data_args.len()
+                );
+            }
+
+            for (i, &arg) in data_args.iter().enumerate() {
+                let off = self.vreg_off(arg);
+                match i {
+                    0 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x2, [sp, #off]),
+                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x3, [sp, #off]),
+                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x4, [sp, #off]),
+                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x5, [sp, #off]),
+                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x6, [sp, #off]),
+                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; str x7, [sp, #off]),
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        fn emit_load_lambda_results_to_ret_regs(&mut self, data_results: &[crate::ir::VReg]) {
+            if data_results.len() > 2 {
+                panic!(
+                    "aarch64 CallLambda supports at most 2 data results, got {}",
+                    data_results.len()
+                );
+            }
+
+            if let Some(&v) = data_results.first() {
+                let off = self.vreg_off(v);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x0, [sp, #off]);
+            }
+            if let Some(&v) = data_results.get(1) {
+                let off = self.vreg_off(v);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x1, [sp, #off]);
+            }
+        }
+
+        fn emit_call_lambda(
+            &mut self,
+            label: DynamicLabel,
+            args: &[crate::ir::VReg],
+            results: &[crate::ir::VReg],
+        ) {
+            use crate::context::{CTX_ERROR_CODE, CTX_INPUT_PTR};
+
+            const MAX_LAMBDA_DATA_ARGS: usize = 6;
+            if args.len() > MAX_LAMBDA_DATA_ARGS {
+                panic!(
+                    "aarch64 CallLambda supports at most {MAX_LAMBDA_DATA_ARGS} data args, got {}",
+                    args.len()
+                );
+            }
+            if results.len() > 2 {
+                panic!(
+                    "aarch64 CallLambda supports at most 2 data results, got {}",
+                    results.len()
+                );
+            }
+
+            let error_exit = self
+                .current_func
+                .as_ref()
+                .expect("CallLambda outside function")
+                .error_exit;
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; str x19, [x22, #CTX_INPUT_PTR]
+            );
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; mov x0, x21
+                ; mov x1, x22
+            );
+
+            for (i, &arg) in args.iter().enumerate() {
+                let off = self.vreg_off(arg);
+                match i {
+                    0 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x2, [sp, #off]),
+                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x3, [sp, #off]),
+                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x4, [sp, #off]),
+                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x5, [sp, #off]),
+                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x6, [sp, #off]),
+                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x7, [sp, #off]),
+                    _ => unreachable!(),
+                }
+            }
+
+            dynasm!(self.ectx.ops ; .arch aarch64 ; bl =>label);
+            dynasm!(self.ectx.ops
+                ; .arch aarch64
+                ; ldr x19, [x22, #CTX_INPUT_PTR]
+                ; ldr w9, [x22, #CTX_ERROR_CODE]
+                ; cbnz w9, =>error_exit
+            );
+
+            if let Some(&dst) = results.first() {
+                let off = self.vreg_off(dst);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; str x0, [sp, #off]);
+            }
+            if let Some(&dst) = results.get(1) {
+                let off = self.vreg_off(dst);
+                dynasm!(self.ectx.ops ; .arch aarch64 ; str x1, [sp, #off]);
+            }
+        }
+
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
             for op in &ir.ops {
                 match op {
-                    LinearOp::FuncStart { lambda_id, .. } => {
+                    LinearOp::FuncStart {
+                        lambda_id,
+                        data_args,
+                        data_results,
+                        ..
+                    } => {
                         let label = self.lambda_labels[lambda_id.index() as usize];
                         self.ectx.bind_label(label);
                         let (entry_offset, error_exit) = self.ectx.begin_func();
                         if lambda_id.index() == 0 {
                             self.entry = Some(entry_offset);
                         }
-                        self.current_func = Some(FunctionCtx { error_exit });
+                        self.current_func = Some(FunctionCtx {
+                            error_exit,
+                            data_results: data_results.clone(),
+                        });
+                        self.emit_store_incoming_lambda_args(data_args);
                     }
                     LinearOp::FuncEnd => {
                         let func = self
                             .current_func
                             .take()
                             .expect("FuncEnd without active function");
+                        self.emit_load_lambda_results_to_ret_regs(&func.data_results);
                         self.ectx.end_func(func.error_exit);
                     }
                     LinearOp::Label(label) => self.ectx.bind_label(self.label(*label)),
@@ -1314,15 +1564,8 @@ fn compile_linear_ir_aarch64(ir: &LinearIr) -> LinearBackendResult {
                         args,
                         results,
                     } => {
-                        if !args.is_empty() || !results.is_empty() {
-                            panic!(
-                                "CallLambda with data args/results is not supported yet: args={}, results={}",
-                                args.len(),
-                                results.len()
-                            );
-                        }
                         let label = self.lambda_labels[target.index() as usize];
-                        self.ectx.emit_call_emitted_func(label, 0);
+                        self.emit_call_lambda(label, args, results);
                     }
                 }
             }
@@ -1345,7 +1588,7 @@ mod tests {
     use super::*;
     use crate::compiler;
     use crate::context::{DeserContext, ErrorCode};
-    use crate::ir::{IntrinsicFn, IrBuilder, Width};
+    use crate::ir::{IntrinsicFn, IrBuilder, IrOp, Width};
     use crate::linearize::linearize;
 
     fn run_u32_decoder(ir: &LinearIr, input: &[u8]) -> (u32, DeserContext) {
@@ -1544,5 +1787,32 @@ mod tests {
 
         assert_eq!(ctx.error.code, 0);
         assert_eq!(value, 94);
+    }
+
+    #[test]
+    fn linear_backend_call_lambda_with_data_args_and_results() {
+        let mut builder = IrBuilder::new(<u64 as facet::Facet>::SHAPE);
+        let child = builder.create_lambda_with_data_args(<u64 as facet::Facet>::SHAPE, 1);
+        {
+            let mut rb = builder.lambda_region(child);
+            let arg = rb.region_args(1)[0];
+            let one = rb.const_val(1);
+            let sum = rb.binop(IrOp::Add, arg, one);
+            rb.set_results(&[sum]);
+        }
+        {
+            let mut rb = builder.root_region();
+            let x = rb.const_val(41);
+            let out = rb.apply(child, &[x], 1);
+            rb.write_to_field(out[0], 0, Width::W8);
+            rb.set_results(&[]);
+        }
+
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let (value, ctx) = run_u64_decoder(&lin, &[]);
+
+        assert_eq!(ctx.error.code, 0);
+        assert_eq!(value, 42);
     }
 }

@@ -181,6 +181,8 @@ pub enum LinearOp {
     FuncStart {
         lambda_id: LambdaId,
         shape: &'static facet::Shape,
+        data_args: Vec<VReg>,
+        data_results: Vec<VReg>,
     },
     FuncEnd,
     CallLambda {
@@ -720,7 +722,25 @@ impl<'a> Linearizer<'a> {
         shape: &'static facet::Shape,
         lambda_id: LambdaId,
     ) {
-        self.emit(LinearOp::FuncStart { lambda_id, shape });
+        let region = &self.func.regions[body];
+        let data_args: Vec<VReg> = region
+            .args
+            .iter()
+            .filter(|a| a.kind == PortKind::Data)
+            .map(|a| a.vreg.expect("lambda data arg must have vreg assigned"))
+            .collect();
+        let data_results: Vec<VReg> = region
+            .results
+            .iter()
+            .filter(|r| r.kind == PortKind::Data)
+            .map(|r| self.resolve_vreg(r.source))
+            .collect();
+        self.emit(LinearOp::FuncStart {
+            lambda_id,
+            shape,
+            data_args,
+            data_results,
+        });
         self.linearize_region(body);
         self.emit(LinearOp::FuncEnd);
     }
@@ -862,7 +882,9 @@ impl fmt::Display for LinearIr {
                 LinearOp::Label(label) => {
                     writeln!(f, "L{}:", label.index())?;
                 }
-                LinearOp::FuncStart { lambda_id, shape } => {
+                LinearOp::FuncStart {
+                    lambda_id, shape, ..
+                } => {
                     writeln!(
                         f,
                         "func λ{} ({}):",

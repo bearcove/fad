@@ -719,18 +719,33 @@ impl IrBuilder {
 
     /// Create a new lambda and return its ID.
     pub fn create_lambda(&mut self, shape: &'static facet::Shape) -> LambdaId {
+        self.create_lambda_with_data_args(shape, 0)
+    }
+
+    /// Create a new lambda with `data_arg_count` leading data args.
+    pub fn create_lambda_with_data_args(
+        &mut self,
+        shape: &'static facet::Shape,
+        data_arg_count: usize,
+    ) -> LambdaId {
         let lambda_id = LambdaId::new(self.func.lambdas.len() as u32);
+        let mut args = Vec::with_capacity(data_arg_count + 2);
+        for _ in 0..data_arg_count {
+            args.push(RegionArg {
+                kind: PortKind::Data,
+                vreg: None,
+            });
+        }
+        args.push(RegionArg {
+            kind: PortKind::StateCursor,
+            vreg: None,
+        });
+        args.push(RegionArg {
+            kind: PortKind::StateOutput,
+            vreg: None,
+        });
         let body = self.func.regions.push(Region {
-            args: vec![
-                RegionArg {
-                    kind: PortKind::StateCursor,
-                    vreg: None,
-                },
-                RegionArg {
-                    kind: PortKind::StateOutput,
-                    vreg: None,
-                },
-            ],
+            args,
             results: Vec::new(),
             nodes: Vec::new(),
         });
@@ -751,13 +766,20 @@ impl IrBuilder {
     /// Get a [`RegionBuilder`] for a lambda's body.
     pub fn lambda_region(&mut self, id: LambdaId) -> RegionBuilder<'_> {
         let body = self.func.lambda_body(id);
+        let arg_count = self.func.regions[body].args.len();
+        assert!(
+            arg_count >= 2,
+            "lambda body must have cursor/output state args"
+        );
+        let cs_idx = (arg_count - 2) as u16;
+        let os_idx = (arg_count - 1) as u16;
         let cursor_state = PortSource::RegionArg(RegionArgRef {
             region: body,
-            index: 0,
+            index: cs_idx,
         });
         let output_state = PortSource::RegionArg(RegionArgRef {
             region: body,
-            index: 1,
+            index: os_idx,
         });
 
         RegionBuilder {
