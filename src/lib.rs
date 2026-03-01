@@ -3,6 +3,7 @@ pub mod compiler;
 pub mod context;
 pub mod format;
 pub mod intrinsics;
+pub mod jit_debug;
 pub mod jit_f64;
 pub mod json;
 pub mod json_intrinsics;

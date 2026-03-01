@@ -20,9 +20,15 @@ fn main() {
 
     let meta = Meta::collect();
     let html = render(&sections, &meta);
+    let json = render_json(&sections, &meta);
+    let md = render_markdown(&sections, &meta);
     std::fs::create_dir_all("bench_report").unwrap();
     std::fs::write("bench_report/index.html", &html).unwrap();
+    std::fs::write("bench_report/results.json", &json).unwrap();
+    std::fs::write("bench_report/results.md", &md).unwrap();
     eprintln!("→ bench_report/index.html");
+    eprintln!("→ bench_report/results.json");
+    eprintln!("→ bench_report/results.md");
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -260,6 +266,124 @@ fn display_name(name: &str) -> String {
         .unwrap_or(name);
     if base == "postcard_serde" { return "serde".to_string(); }
     base.replace("serde_json", "serde").to_string()
+}
+
+// ── JSON ───────────────────────────────────────────────────────────────────
+
+fn render_json(sections: &[Section], meta: &Meta) -> String {
+    let mut j = String::new();
+    j.push_str("{\n");
+    write!(j, r#"  "datetime": "{}","#, meta.datetime).unwrap();
+    j.push('\n');
+    write!(j, r#"  "commit": "{}","#, meta.commit).unwrap();
+    j.push('\n');
+    write!(j, r#"  "platform": "{}","#, meta.platform.replace('"', r#"\""#)).unwrap();
+    j.push('\n');
+    j.push_str(r#"  "sections": ["#);
+    j.push('\n');
+    for (si, section) in sections.iter().enumerate() {
+        j.push_str("    {\n");
+        write!(j, r#"      "label": "{}","#, section.label).unwrap();
+        j.push('\n');
+        j.push_str(r#"      "groups": ["#);
+        j.push('\n');
+        for (gi, group) in section.groups.iter().enumerate() {
+            j.push_str("        {\n");
+            write!(j, r#"          "name": "{}","#, group.name).unwrap();
+            j.push('\n');
+            j.push_str(r#"          "rows": ["#);
+            j.push('\n');
+            for (ri, row) in group.rows.iter().enumerate() {
+                let comma = if ri + 1 < group.rows.len() { "," } else { "" };
+                write!(j, r#"            {{ "name": "{}", "median_ns": {:.1} }}{comma}"#, row.name, row.median_ns).unwrap();
+                j.push('\n');
+            }
+            j.push_str("          ]\n");
+            let comma = if gi + 1 < section.groups.len() { "," } else { "" };
+            write!(j, "        }}{comma}").unwrap();
+            j.push('\n');
+        }
+        j.push_str("      ]\n");
+        let comma = if si + 1 < sections.len() { "," } else { "" };
+        write!(j, "    }}{comma}").unwrap();
+        j.push('\n');
+    }
+    j.push_str("  ]\n");
+    j.push_str("}\n");
+    j
+}
+
+// ── Markdown ───────────────────────────────────────────────────────────────
+
+fn fmt_time(ns: f64) -> String {
+    if ns >= 1_000_000_000.0 { format!("{:.2}s", ns / 1_000_000_000.0) }
+    else if ns >= 1_000_000.0 { format!("{:.2}ms", ns / 1_000_000.0) }
+    else if ns >= 1_000.0 { format!("{:.2}µs", ns / 1_000.0) }
+    else { format!("{:.1}ns", ns) }
+}
+
+fn render_markdown(sections: &[Section], meta: &Meta) -> String {
+    let mut m = String::new();
+    writeln!(m, "# Bench Report").unwrap();
+    writeln!(m).unwrap();
+    writeln!(m, "> {} · {} · {}", meta.datetime, meta.commit, meta.platform).unwrap();
+    writeln!(m).unwrap();
+
+    for section in sections {
+        // Collect all (group, fad_row, ref_row) pairs that have both fad and reference
+        let mut comparisons: Vec<(&str, f64, f64, &str)> = Vec::new();
+        for group in &section.groups {
+            let fad = group.rows.iter()
+                .filter(|r| r.name.starts_with("fad"))
+                .min_by(|a, b| a.median_ns.partial_cmp(&b.median_ns).unwrap());
+            let reference = group.rows.iter()
+                .find(|r| is_reference(&r.name));
+            if let (Some(f), Some(r)) = (fad, reference) {
+                comparisons.push((&group.name, f.median_ns, r.median_ns, &r.name));
+            }
+        }
+
+        if comparisons.is_empty() { continue; }
+
+        // Sort by ratio (fad/ref): serde wins first (ratio > 1), then fad wins (ratio < 1)
+        comparisons.sort_by(|a, b| {
+            let ra = a.1 / a.2;
+            let rb = b.1 / b.2;
+            rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let ref_label = display_name(comparisons[0].3);
+
+        writeln!(m, "## {}", section.label).unwrap();
+        writeln!(m).unwrap();
+        writeln!(m, "| Benchmark | fad | {ref_label} | ratio |").unwrap();
+        writeln!(m, "|-----------|-----|-------|-------|").unwrap();
+
+        for (name, fad_ns, ref_ns, _) in &comparisons {
+            let ratio = ref_ns / fad_ns;
+            let indicator = if ratio > 1.05 {
+                format!("**{ratio:.2}x** faster")
+            } else if ratio < 0.95 {
+                format!("**{:.2}x** slower", 1.0 / ratio)
+            } else {
+                "~tie".to_string()
+            };
+            writeln!(m, "| {name} | {} | {} | {indicator} |",
+                fmt_time(*fad_ns), fmt_time(*ref_ns)).unwrap();
+        }
+
+        writeln!(m).unwrap();
+
+        let fad_wins = comparisons.iter().filter(|(_, f, r, _)| f < r).count();
+        let ref_wins = comparisons.iter().filter(|(_, f, r, _)| f > r).count();
+        let ties = comparisons.len() - fad_wins - ref_wins;
+        write!(m, "**fad wins {fad_wins}").unwrap();
+        if ties > 0 { write!(m, ", ties {ties}").unwrap(); }
+        writeln!(m, ", {ref_label} wins {ref_wins}**").unwrap();
+        writeln!(m).unwrap();
+    }
+
+    m
 }
 
 // ── HTML ───────────────────────────────────────────────────────────────────

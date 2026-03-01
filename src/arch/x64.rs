@@ -394,6 +394,28 @@ impl EmitCtx {
         );
     }
 
+    /// Write an error code to ctx and branch to error_exit.
+    pub fn emit_set_error(&mut self, code: ErrorCode) {
+        let error_exit = self.error_exit;
+        let error_code = code as i32;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+        );
+    }
+
+    /// Compute len = cursor - [rsp+start_slot], store to [rsp+len_slot], advance cursor past `"`.
+    pub fn emit_compute_key_len_and_advance(&mut self, start_sp_offset: u32, len_sp_offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, r12
+            ; sub rax, [rsp + start_sp_offset as i32]  // len = cursor - start
+            ; mov [rsp + len_sp_offset as i32], rax     // store len
+            ; inc r12                                    // advance past closing '"'
+        );
+    }
+
     /// Emit `test rax, rax; jnz label` — branch if rax is nonzero.
     pub fn emit_cbnz_x0(&mut self, label: DynamicLabel) {
         dynasm!(self.ops
@@ -512,6 +534,465 @@ impl EmitCtx {
             slow_varint_intrinsic,
             validate_alloc_copy_intrinsic,
         ));
+    }
+
+    // ── JSON string scanning (SSE2 vectorized) ────────────────────────
+
+    /// Emit a vectorized scan loop that searches for `"` or `\` in the input.
+    ///
+    /// **Precondition**: r12 (cached input_ptr) points just after the opening `"`.
+    /// **Postcondition**: r12 points at the `"` or `\` byte found, then branches
+    /// to the corresponding label.
+    ///
+    /// Uses SSE2 pcmpeqb + pmovmskb to process 16 bytes per iteration.
+    /// Falls back to scalar for the last < 16 bytes.
+    pub fn emit_json_string_scan(
+        &mut self,
+        found_quote: DynamicLabel,
+        found_escape: DynamicLabel,
+        unterminated: DynamicLabel,
+    ) {
+        let vector_loop = self.ops.new_dynamic_label();
+        let scalar_tail = self.ops.new_dynamic_label();
+        let advance_16 = self.ops.new_dynamic_label();
+
+        // Broadcast '"' (0x22) and '\' (0x5C) into xmm1 and xmm2
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov eax, 0x22222222u32 as i32
+            ; movd xmm1, eax
+            ; pshufd xmm1, xmm1, 0
+            ; mov eax, 0x5C5C5C5Cu32 as i32
+            ; movd xmm2, eax
+            ; pshufd xmm2, xmm2, 0
+
+            // ── Vector loop: 16 bytes per iteration ──
+            ; =>vector_loop
+            ; mov rax, r13
+            ; sub rax, r12
+            ; cmp rax, 16
+            ; jb =>scalar_tail
+
+            // Load 16 bytes (unaligned)
+            ; movdqu xmm0, [r12]
+            // Compare for '"'
+            ; movdqa xmm3, xmm1
+            ; pcmpeqb xmm3, xmm0
+            // Compare for '\'
+            ; movdqa xmm4, xmm2
+            ; pcmpeqb xmm4, xmm0
+            // OR the two masks
+            ; por xmm3, xmm4
+            // Extract byte mask to eax
+            ; pmovmskb eax, xmm3
+            ; test eax, eax
+            ; jz =>advance_16
+
+            // Found a match: find its position
+            ; tzcnt eax, eax
+            ; add r12, rax
+            ; cmp BYTE [r12], 0x22
+            ; je =>found_quote
+            ; jmp =>found_escape
+
+            ; =>advance_16
+            ; add r12, 16
+            ; jmp =>vector_loop
+
+            // ── Scalar tail: remaining < 16 bytes ──
+            ; =>scalar_tail
+            ; cmp r12, r13
+            ; jae =>unterminated
+            ; movzx eax, BYTE [r12]
+            ; cmp al, 0x22
+            ; je =>found_quote
+            ; cmp al, 0x5C
+            ; je =>found_escape
+            ; inc r12
+            ; jmp =>scalar_tail
+        );
+    }
+
+    /// Inline skip-whitespace: loop over space/tab/newline/cr, advancing r12.
+    /// No function call, no ctx flush.
+    pub fn emit_inline_skip_ws(&mut self) {
+        let ws_loop = self.ops.new_dynamic_label();
+        let ws_done = self.ops.new_dynamic_label();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; =>ws_loop
+            ; cmp r12, r13
+            ; jae =>ws_done
+            ; movzx eax, BYTE [r12]
+            ; cmp al, b' ' as i8
+            ; je >advance
+            ; cmp al, b'\n' as i8
+            ; je >advance
+            ; cmp al, b'\r' as i8
+            ; je >advance
+            ; cmp al, b'\t' as i8
+            ; jne =>ws_done
+            ; advance:
+            ; inc r12
+            ; jmp =>ws_loop
+            ; =>ws_done
+        );
+    }
+
+    /// Inline comma-or-end-array: skip whitespace, then check for ',' or ']'.
+    /// Writes 0 (comma) or 1 (']') to stack at sp_offset. Errors on anything else.
+    pub fn emit_inline_comma_or_end_array(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let got_comma = self.ops.new_dynamic_label();
+        let got_end = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::UnexpectedCharacter as i32;
+
+        self.emit_inline_skip_ws();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>error_exit
+            ; movzx eax, BYTE [r12]
+            ; inc r12
+            ; cmp al, b',' as i8
+            ; je =>got_comma
+            ; cmp al, b']' as i8
+            ; je =>got_end
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+            ; =>got_comma
+            ; mov BYTE [rsp + sp_offset as i32], 0
+            ; jmp =>done
+            ; =>got_end
+            ; mov BYTE [rsp + sp_offset as i32], 1
+            ; =>done
+        );
+    }
+
+    /// Inline comma-or-end-object: skip whitespace, then check for ',' or '}'.
+    /// Writes 0 (comma) or 1 ('}') to stack at sp_offset. Errors on anything else.
+    pub fn emit_inline_comma_or_end_object(&mut self, sp_offset: u32) {
+        let error_exit = self.error_exit;
+        let got_comma = self.ops.new_dynamic_label();
+        let got_end = self.ops.new_dynamic_label();
+        let done = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::UnexpectedCharacter as i32;
+
+        self.emit_inline_skip_ws();
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>error_exit
+            ; movzx eax, BYTE [r12]
+            ; inc r12
+            ; cmp al, b',' as i8
+            ; je =>got_comma
+            ; cmp al, b'}' as i8
+            ; je =>got_end
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+            ; =>got_comma
+            ; mov BYTE [rsp + sp_offset as i32], 0
+            ; jmp =>done
+            ; =>got_end
+            ; mov BYTE [rsp + sp_offset as i32], 1
+            ; =>done
+        );
+    }
+
+    /// Store the cached cursor (r12) to a stack slot.
+    pub fn emit_save_cursor_to_stack(&mut self, sp_offset: u32) {
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov [rsp + sp_offset as i32], r12
+        );
+    }
+
+    /// Emit: skip whitespace, expect and consume `"`, branch to error_exit if not found.
+    /// After this, r12 points just after the opening `"`.
+    pub fn emit_json_expect_quote_after_ws(&mut self, _ws_intrinsic: *const u8) {
+        let error_exit = self.error_exit;
+        let not_quote = self.ops.new_dynamic_label();
+        let ok = self.ops.new_dynamic_label();
+        let error_code = ErrorCode::ExpectedStringKey as i32;
+
+        self.emit_inline_skip_ws();
+
+        // Check bounds + opening '"'
+        dynasm!(self.ops
+            ; .arch x64
+            ; cmp r12, r13
+            ; jae =>not_quote
+            ; cmp BYTE [r12], 0x22
+            ; jne =>not_quote
+            ; inc r12
+            ; jmp =>ok
+
+            // Error: set ExpectedStringKey and bail
+            ; =>not_quote
+            ; mov DWORD [r15 + CTX_ERROR_CODE as i32], error_code
+            ; jmp =>error_exit
+            ; =>ok
+        );
+    }
+
+    /// Call a post-scan intrinsic: fn(ctx, out+field_offset, start, len).
+    /// `start_sp_offset` is the stack slot holding the start pointer.
+    /// `len` is computed as r12 - start. Advances r12 past closing `"`.
+    /// Flushes/reloads cursor, checks error.
+    pub fn emit_call_string_finish(
+        &mut self,
+        fn_ptr: *const u8,
+        field_offset: u32,
+        start_sp_offset: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+
+        // Compute len = r12 - start (into rax), load start into r10
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov rax, r12
+            ; sub rax, r10                              // rax = len
+        );
+
+        // Flush cursor (advance past closing '"' first)
+        dynasm!(self.ops
+            ; .arch x64
+            ; lea r11, [r12 + 1]                        // r11 = cursor after closing '"'
+            ; mov [r15 + CTX_INPUT_PTR as i32], r11
+        );
+
+        // Call fn(ctx, out+offset, start, len)
+        // System V: rdi=ctx, rsi=out+offset, rdx=start, rcx=len
+        #[cfg(not(windows))]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rdi, r15
+            ; lea rsi, [r14 + field_offset as i32]
+            ; mov rdx, r10                              // start
+            ; mov rcx, rax                              // len
+        );
+        // Windows: rcx=ctx, rdx=out+offset, r8=start, r9=len
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rcx, r15
+            ; lea rdx, [r14 + field_offset as i32]
+            ; mov r8, r10                               // start
+            ; mov r9, rax                               // len
+        );
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            // Reload cursor (intrinsic sets ctx.input_ptr past closing '"')
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            // Check error
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Call a post-scan escape intrinsic: fn(ctx, out+field_offset, start, prefix_len).
+    /// `start_sp_offset` is the stack slot holding the start pointer.
+    /// `prefix_len` is computed as r12 - start. r12 is at the `\` byte.
+    /// Flushes cursor, reloads after call, checks error.
+    pub fn emit_call_string_escape(
+        &mut self,
+        fn_ptr: *const u8,
+        field_offset: u32,
+        start_sp_offset: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+
+        // Compute prefix_len = r12 - start, load start
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov rax, r12
+            ; sub rax, r10                              // rax = prefix_len
+        );
+
+        // Flush cursor (at '\' byte)
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov [r15 + CTX_INPUT_PTR as i32], r12
+        );
+
+        // Call fn(ctx, out+offset, start, prefix_len)
+        #[cfg(not(windows))]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rdi, r15
+            ; lea rsi, [r14 + field_offset as i32]
+            ; mov rdx, r10                              // start
+            ; mov rcx, rax                              // prefix_len
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rcx, r15
+            ; lea rdx, [r14 + field_offset as i32]
+            ; mov r8, r10                               // start
+            ; mov r9, rax                               // prefix_len
+        );
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Call fad_string_validate_alloc_copy(ctx, start, len) for the String malum path.
+    /// `start_sp_offset` holds the start pointer. len = r12 - start.
+    /// Returns buf pointer in rax. Does NOT advance cursor — caller does that.
+    /// Saves len to `len_save_sp_offset` for WriteMalumString.
+    pub fn emit_call_validate_alloc_copy_from_scan(
+        &mut self,
+        fn_ptr: *const u8,
+        start_sp_offset: u32,
+        len_save_sp_offset: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+
+        // Compute len = r12 - start
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov r11, r12
+            ; sub r11, r10                              // r11 = len
+            // Save len to stack (survives call)
+            ; mov [rsp + len_save_sp_offset as i32], r11
+        );
+
+        // Flush cursor
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+
+        // Call fn(ctx, data_ptr=start, data_len=len as u32)
+        #[cfg(not(windows))]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rdi, r15
+            ; mov rsi, r10                              // start
+            ; mov edx, r11d                             // len (u32)
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rcx, r15
+            ; mov rdx, r10                              // start
+            ; mov r8d, r11d                             // len (u32)
+        );
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            // rax = buf pointer (or null on error)
+            // Check error
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Write String fields (ptr, len, cap) using malum offsets after validate_alloc_copy.
+    /// rax = buf pointer from previous call return.
+    /// Reads len from `len_sp_offset`. Advances cursor past closing `"`.
+    pub fn emit_write_malum_string_and_advance(
+        &mut self,
+        field_offset: u32,
+        string_offsets: &crate::malum::StringOffsets,
+        len_sp_offset: u32,
+    ) {
+        let ptr_off = (field_offset + string_offsets.ptr_offset) as i32;
+        let len_off = (field_offset + string_offsets.len_offset) as i32;
+        let cap_off = (field_offset + string_offsets.cap_offset) as i32;
+
+        dynasm!(self.ops
+            ; .arch x64
+            // Write ptr
+            ; mov [r14 + ptr_off], rax
+            // Write len and cap (both = string length)
+            ; mov r10, [rsp + len_sp_offset as i32]
+            ; mov [r14 + len_off], r10
+            ; mov [r14 + cap_off], r10
+            // Advance cursor past closing '"'
+            ; inc r12
+        );
+    }
+
+    /// Emit inline key-reading slow path call: fad_json_key_slow_from_jit(ctx, start, prefix_len, &key_ptr, &key_len).
+    /// start is in `start_sp_offset`, prefix_len = r12 - start.
+    /// key_ptr/key_len written to `key_ptr_sp_offset` and `key_len_sp_offset`.
+    pub fn emit_call_key_slow_from_jit(
+        &mut self,
+        fn_ptr: *const u8,
+        start_sp_offset: u32,
+        key_ptr_sp_offset: u32,
+        key_len_sp_offset: u32,
+    ) {
+        let error_exit = self.error_exit;
+        let ptr_val = fn_ptr as i64;
+
+        // Compute prefix_len = r12 - start
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov rax, r12
+            ; sub rax, r10                              // rax = prefix_len
+        );
+
+        // Flush cursor (at '\' byte)
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+
+        // Call fn(ctx, start, prefix_len, &key_ptr, &key_len)
+        // System V: rdi=ctx, rsi=start, rdx=prefix_len, rcx=&key_ptr, r8=&key_len
+        #[cfg(not(windows))]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rdi, r15
+            ; mov rsi, r10                              // start
+            ; mov rdx, rax                              // prefix_len
+            ; lea rcx, [rsp + key_ptr_sp_offset as i32]
+            ; lea r8, [rsp + key_len_sp_offset as i32]
+        );
+        #[cfg(windows)]
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rcx, r15
+            ; mov rdx, r10                              // start
+            ; mov r8, rax                               // prefix_len
+            ; lea r9, [rsp + key_ptr_sp_offset as i32]
+            // 5th arg on stack for Windows
+            ; lea rax, [rsp + key_len_sp_offset as i32]
+            ; mov [rsp + 0x20], rax                     // shadow space arg5
+        );
+
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
     }
 
     // ── Enum support ──────────────────────────────────────────────────

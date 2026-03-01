@@ -1,4 +1,7 @@
 /target
 .claude
 callgrind.out.*
+perf.data*
+perf_serde.data*
 bench_report/
+.handoffs/

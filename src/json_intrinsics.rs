@@ -1183,6 +1183,117 @@ unsafe fn json_read_string_value_slow_to_string(
     None
 }
 
+// --- Post-scan intrinsics (called by JIT after vectorized string scan) ---
+
+/// Finish reading a `&str` after the JIT scan found the closing `"`.
+/// Validates UTF-8, writes borrowed slice to `*out`, advances past `"`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_finish_str_fast(
+    ctx: *mut DeserContext,
+    out: *mut &str,
+    start: *const u8,
+    len: usize,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let bytes = unsafe { core::slice::from_raw_parts(start, len) };
+    if ctx.trusted_utf8 {
+        let s = unsafe { core::str::from_utf8_unchecked(bytes) };
+        let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+        unsafe { out.write(s_static) };
+    } else {
+        match core::str::from_utf8(bytes) {
+            Ok(s) => {
+                let s_static: &'static str =
+                    unsafe { core::mem::transmute::<&str, &'static str>(s) };
+                unsafe { out.write(s_static) };
+            }
+            Err(_) => {
+                ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                return;
+            }
+        }
+    }
+    ctx.input_ptr = unsafe { start.add(len + 1) }; // advance past closing '"'
+}
+
+/// Finish reading a `Cow<str>` after the JIT scan found the closing `"` (no escapes).
+/// Validates UTF-8, writes `Cow::Borrowed` to `*out`, advances past `"`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_finish_cow_str_fast(
+    ctx: *mut DeserContext,
+    out: *mut Cow<'static, str>,
+    start: *const u8,
+    len: usize,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let bytes = unsafe { core::slice::from_raw_parts(start, len) };
+    if ctx.trusted_utf8 {
+        let s = unsafe { core::str::from_utf8_unchecked(bytes) };
+        let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+        unsafe { out.write(Cow::Borrowed(s_static)) };
+    } else {
+        match core::str::from_utf8(bytes) {
+            Ok(s) => {
+                let s_static: &'static str =
+                    unsafe { core::mem::transmute::<&str, &'static str>(s) };
+                unsafe { out.write(Cow::Borrowed(s_static)) };
+            }
+            Err(_) => {
+                ctx.error.code = ErrorCode::InvalidUtf8 as u32;
+                return;
+            }
+        }
+    }
+    ctx.input_ptr = unsafe { start.add(len + 1) }; // advance past closing '"'
+}
+
+/// Slow path for `String`: the JIT scan found `\` at `start + prefix_len`.
+/// `ctx.input_ptr` is at the `\` byte. Unescapes into Vec, writes String to `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_string_with_escapes(
+    ctx: *mut DeserContext,
+    out: *mut String,
+    start: *const u8,
+    prefix_len: usize,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { json_read_string_value_slow_to_string(ctx, start, prefix_len) } {
+        Some(s) => s,
+        None => return,
+    };
+    unsafe { out.write(s) };
+}
+
+/// Slow path for `Cow<str>`: the JIT scan found `\`. Unescapes, writes `Cow::Owned`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_cow_str_with_escapes(
+    ctx: *mut DeserContext,
+    out: *mut Cow<'static, str>,
+    start: *const u8,
+    prefix_len: usize,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { json_read_string_value_slow_to_string(ctx, start, prefix_len) } {
+        Some(s) => s,
+        None => return,
+    };
+    unsafe { out.write(Cow::Owned(s)) };
+}
+
+/// Slow path for key reading: the JIT scan found `\` in a key.
+/// `ctx.input_ptr` is at the `\` byte. Unescapes into scratch buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_json_key_slow_from_jit(
+    ctx: *mut DeserContext,
+    start: *const u8,
+    prefix_len: usize,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) {
+    let ctx = unsafe { &mut *ctx };
+    unsafe { json_read_key_slow(ctx, start, prefix_len, out_ptr, out_len) };
+}
+
 /// Set ExpectedTagKey error. Used when the first key in an adjacently/internally
 /// tagged enum is not the expected tag key.
 #[unsafe(no_mangle)]

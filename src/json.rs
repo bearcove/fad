@@ -12,20 +12,75 @@ use crate::solver::{JsonValueType, LoweredSolver};
 // r[impl deser.json.struct]
 // r[impl deser.json.struct.unknown-keys]
 
-// Stack layout (extra_stack = 48, offsets from sp):
+// Stack layout (offsets from sp):
 //   [sp+0..BASE_FRAME)                   callee-saved registers (+ shadow space on Windows)
+//
+// Format base slots (extra_stack = 48 for structs, 80 for vec/map):
 //   [sp+BASE_FRAME+0..BASE_FRAME+8)      bitset (u64) — tracks which required fields
 //   [sp+BASE_FRAME+8..BASE_FRAME+16)     key_ptr (*const u8) — borrowed pointer into input
 //   [sp+BASE_FRAME+16..BASE_FRAME+24)    key_len (usize)
 //   [sp+BASE_FRAME+24..BASE_FRAME+32)    comma_or_end result (u8 + padding)
-//   [sp+BASE_FRAME+32..BASE_FRAME+40)    saved_cursor — saved input_ptr for solver restore
-//   [sp+BASE_FRAME+40..BASE_FRAME+48)    candidates — solver bitmask for object bucket disambiguation
+//   [sp+BASE_FRAME+32..BASE_FRAME+40)    saved_cursor — saved input_ptr for solver/string scan
+//   [sp+BASE_FRAME+40..BASE_FRAME+48)    candidates — solver bitmask / string scan temp
+//
+// Vec/map loop slots (must not overlap base slots — string scan writes to +32/+40):
+//   [sp+BASE_FRAME+48..BASE_FRAME+56)    saved_out — original output pointer
+//   [sp+BASE_FRAME+56..BASE_FRAME+64)    buf — heap buffer pointer
+//   [sp+BASE_FRAME+64..BASE_FRAME+72)    len — current element count
+//   [sp+BASE_FRAME+72..BASE_FRAME+80)    cap — current capacity
 pub(crate) const BITSET_OFFSET: u32 = BASE_FRAME;
 pub(crate) const KEY_PTR_OFFSET: u32 = BASE_FRAME + 8;
 pub(crate) const KEY_LEN_OFFSET: u32 = BASE_FRAME + 16;
 pub(crate) const RESULT_BYTE_OFFSET: u32 = BASE_FRAME + 24;
 pub(crate) const SAVED_CURSOR_OFFSET: u32 = BASE_FRAME + 32;
 pub(crate) const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
+
+/// Emit an inline key read using the vectorized string scan.
+///
+/// After this, KEY_PTR_OFFSET and KEY_LEN_OFFSET on the stack contain the
+/// key pointer and length. The cursor is past the closing `"`.
+///
+/// Fast path (no escapes): entirely JIT'd, no intrinsic calls.
+/// Slow path (escapes): calls fad_json_key_slow_from_jit.
+fn emit_read_key_inline(ectx: &mut EmitCtx) {
+    let found_quote = ectx.new_label();
+    let found_escape = ectx.new_label();
+    let unterminated = ectx.new_label();
+    let done = ectx.new_label();
+
+    // 1. Skip whitespace, expect and consume opening '"'
+    ectx.emit_json_expect_quote_after_ws(
+        json_intrinsics::fad_json_skip_ws as *const u8,
+    );
+
+    // 2. Save start position to KEY_PTR_OFFSET
+    //    (for the fast path, this IS the key pointer — zero-copy)
+    ectx.emit_save_cursor_to_stack(KEY_PTR_OFFSET);
+
+    // 3. Vectorized scan for '"' or '\'
+    ectx.emit_json_string_scan(found_quote, found_escape, unterminated);
+
+    // 4. Fast path: found closing '"' — entirely JIT'd
+    ectx.bind_label(found_quote);
+    ectx.emit_compute_key_len_and_advance(KEY_PTR_OFFSET, KEY_LEN_OFFSET);
+    ectx.emit_branch(done);
+
+    // 5. Slow path: found '\' — call key unescape intrinsic
+    ectx.bind_label(found_escape);
+    ectx.emit_call_key_slow_from_jit(
+        json_intrinsics::fad_json_key_slow_from_jit as *const u8,
+        KEY_PTR_OFFSET,
+        KEY_PTR_OFFSET,
+        KEY_LEN_OFFSET,
+    );
+    ectx.emit_branch(done);
+
+    // 6. Unterminated string
+    ectx.bind_label(unterminated);
+    ectx.emit_set_error(ErrorCode::UnterminatedString);
+
+    ectx.bind_label(done);
+}
 
 /// JSON wire format — key-value pairs, linear key dispatch.
 pub struct FadJson;
@@ -69,11 +124,7 @@ impl Decoder for FadJson {
         ectx.bind_label(loop_top);
 
         // Read key → (key_ptr, key_len) on stack
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // expect ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -119,10 +170,7 @@ impl Decoder for FadJson {
         ectx.bind_label(after_dispatch);
 
         // comma_or_end → result byte: 0 = comma (continue), 1 = '}' (done)
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         // If result == 1 ('}'), jump to after_loop
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
         // Otherwise, loop back
@@ -218,18 +266,15 @@ impl Decoder for FadJson {
     }
 
     fn vec_extra_stack_space(&self) -> u32 {
-        // JSON Vec needs: result_byte + saved_out + buf + len + cap = 40 bytes
-        // plus the base JSON slots (bitset, key_ptr, key_len) = 24 bytes
-        // Total: 64 bytes (offsets 48..112 from sp)
-        64
+        // JSON Vec needs 48 bytes of base format slots (bitset, key_ptr, key_len,
+        // result_byte, saved_cursor, candidates) + saved_out + buf + len + cap = 32 bytes.
+        // Total: 80 bytes
+        80
     }
 
     fn map_extra_stack_space(&self) -> u32 {
-        // Same stack layout as JSON Vec: saved_out + buf + len + cap = 32 bytes
-        // on top of the base JSON struct slots (48 bytes) = 80 bytes total.
-        // We reuse the 64-byte vec_extra_stack_space since the slots don't overlap
-        // (map functions have their own separate frame).
-        64
+        // Same layout as vec: 48 bytes base format + 32 bytes (saved_out + buf + len + cap).
+        80
     }
 
     // r[impl deser.json.seq]
@@ -252,11 +297,11 @@ impl Decoder for FadJson {
         let elem_size = elem_layout.size() as u32;
         let elem_align = elem_layout.align() as u32;
 
-        // Stack slot offsets (relative to sp)
-        let saved_out_slot = BASE_FRAME + 32; // sp+80
-        let buf_slot = BASE_FRAME + 40; // sp+88
-        let len_slot = BASE_FRAME + 48; // sp+96
-        let cap_slot = BASE_FRAME + 56; // sp+104
+        // Stack slot offsets — after the 48 bytes of base format slots
+        let saved_out_slot = BASE_FRAME + 48;
+        let buf_slot = BASE_FRAME + 56;
+        let len_slot = BASE_FRAME + 64;
+        let cap_slot = BASE_FRAME + 72;
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
@@ -309,11 +354,8 @@ impl Decoder for FadJson {
         // len += 1
         ectx.emit_inc_stack_slot(len_slot);
 
-        // comma_or_end_array
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_array as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        // comma_or_end_array (inlined)
+        ectx.emit_inline_comma_or_end_array(RESULT_BYTE_OFFSET);
         // If result == 1 (']'), we're done
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, write_vec_label);
         // Otherwise comma → loop back
@@ -412,11 +454,11 @@ impl Decoder for FadJson {
             .align() as u32;
         let pair_align = k_align.max(v_align);
 
-        // Stack slot offsets — same layout as JSON Vec (after JSON struct base slots).
-        let saved_out_slot = BASE_FRAME + 32;
-        let buf_slot = BASE_FRAME + 40;
-        let len_slot = BASE_FRAME + 48;
-        let cap_slot = BASE_FRAME + 56;
+        // Stack slot offsets — after the 48 bytes of base format slots
+        let saved_out_slot = BASE_FRAME + 48;
+        let buf_slot = BASE_FRAME + 56;
+        let len_slot = BASE_FRAME + 64;
+        let cap_slot = BASE_FRAME + 72;
 
         let empty_label = ectx.new_label();
         let done_label = ectx.new_label();
@@ -474,10 +516,7 @@ impl Decoder for FadJson {
         ectx.emit_inc_stack_slot(len_slot);
 
         // comma_or_end_object: 0=comma (more entries), 1='}' (done)
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, write_map_label);
         ectx.emit_branch(loop_label);
 
@@ -566,15 +605,88 @@ impl Decoder for FadJson {
         ectx: &mut EmitCtx,
         offset: usize,
         scalar_type: ScalarType,
-        _string_offsets: &crate::malum::StringOffsets,
+        string_offsets: &crate::malum::StringOffsets,
     ) {
-        let fn_ptr = match scalar_type {
-            ScalarType::String => json_intrinsics::fad_json_read_string_value as *const u8,
-            ScalarType::Str => json_intrinsics::fad_json_read_str_value as *const u8,
-            ScalarType::CowStr => json_intrinsics::fad_json_read_cow_str_value as *const u8,
+        let found_quote = ectx.new_label();
+        let found_escape = ectx.new_label();
+        let unterminated = ectx.new_label();
+        let done = ectx.new_label();
+
+        // 1. Skip whitespace, expect and consume opening '"'
+        ectx.emit_json_expect_quote_after_ws(
+            json_intrinsics::fad_json_skip_ws as *const u8,
+        );
+
+        // 2. Save start position to stack
+        ectx.emit_save_cursor_to_stack(SAVED_CURSOR_OFFSET);
+
+        // 3. Vectorized scan for '"' or '\'
+        ectx.emit_json_string_scan(found_quote, found_escape, unterminated);
+
+        // 4. Fast path: found closing '"' (no escapes)
+        ectx.bind_label(found_quote);
+        match scalar_type {
+            ScalarType::String => {
+                // Malum path: validate + alloc + copy, then write ptr/len/cap directly
+                ectx.emit_call_validate_alloc_copy_from_scan(
+                    intrinsics::fad_string_validate_alloc_copy as *const u8,
+                    SAVED_CURSOR_OFFSET,
+                    CANDIDATES_OFFSET, // reuse as temp for len
+                );
+                ectx.emit_write_malum_string_and_advance(
+                    offset as u32,
+                    string_offsets,
+                    CANDIDATES_OFFSET,
+                );
+            }
+            ScalarType::Str => {
+                ectx.emit_call_string_finish(
+                    json_intrinsics::fad_json_finish_str_fast as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
+            ScalarType::CowStr => {
+                ectx.emit_call_string_finish(
+                    json_intrinsics::fad_json_finish_cow_str_fast as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
             _ => panic!("unsupported JSON string scalar: {:?}", scalar_type),
-        };
-        ectx.emit_call_intrinsic(fn_ptr, offset as u32);
+        }
+        ectx.emit_branch(done);
+
+        // 5. Slow path: found '\' (escapes)
+        ectx.bind_label(found_escape);
+        match scalar_type {
+            ScalarType::String => {
+                ectx.emit_call_string_escape(
+                    json_intrinsics::fad_json_string_with_escapes as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
+            ScalarType::Str => {
+                // &str cannot represent escaped strings — error
+                ectx.emit_set_error(ErrorCode::InvalidEscapeSequence);
+            }
+            ScalarType::CowStr => {
+                ectx.emit_call_string_escape(
+                    json_intrinsics::fad_json_cow_str_with_escapes as *const u8,
+                    offset as u32,
+                    SAVED_CURSOR_OFFSET,
+                );
+            }
+            _ => panic!("unsupported JSON string scalar: {:?}", scalar_type),
+        }
+        ectx.emit_branch(done);
+
+        // 6. Unterminated string
+        ectx.bind_label(unterminated);
+        ectx.emit_set_error(ErrorCode::UnterminatedString);
+
+        ectx.bind_label(done);
     }
 
     // r[impl deser.json.enum.external]
@@ -603,11 +715,7 @@ impl Decoder for FadJson {
         // ══════════════════════════════════════════════════════════════════
         // Bare string path: read the quoted string, match unit variants.
         // ══════════════════════════════════════════════════════════════════
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Compare against unit variant names.
         let unit_labels: Vec<_> = variants
@@ -647,11 +755,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read the variant name key.
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Consume ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -722,11 +826,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read first key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Verify it equals tag_key, error if not
         let tag_key_bytes = tag_key.as_bytes();
@@ -748,11 +848,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Read variant name string
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Variant name dispatch (linear compare chain)
         let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
@@ -864,11 +960,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b'{', crate::context::ErrorCode::ExpectedObjectStart);
 
         // Read first key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Verify it equals tag_key
         let tag_key_bytes = tag_key.as_bytes();
@@ -890,11 +982,7 @@ impl Decoder for FadJson {
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
 
         // Read variant name string
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Variant name dispatch
         let variant_labels: Vec<_> = variants.iter().map(|_| ectx.new_label()).collect();
@@ -1205,21 +1293,14 @@ impl Decoder for FadJson {
 
         // We're already inside the object, right after reading "tag_key": "VariantName".
         // Next is either ',' (more fields) or '}' (no variant fields).
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
 
         // === loop_top ===
         ectx.bind_label(loop_top);
 
         // Read key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // expect ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -1263,10 +1344,7 @@ impl Decoder for FadJson {
         ectx.bind_label(after_dispatch);
 
         // comma_or_end
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_loop);
         ectx.emit_branch(loop_top);
 
@@ -1345,11 +1423,7 @@ impl FadJson {
         ectx.bind_label(scan_loop);
 
         // Read key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
 
         // Consume ':'
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
@@ -1417,10 +1491,7 @@ impl FadJson {
         ectx.emit_stack_zero_branch(CANDIDATES_OFFSET, error_no_match);
 
         // comma_or_end: '}' → resolve, ',' → continue scanning
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, resolve_label);
         ectx.emit_branch(scan_loop);
 
@@ -1581,11 +1652,7 @@ impl FadJson {
         ectx.bind_label(sub_scan_loop);
 
         // Read inner key
-        ectx.emit_call_intrinsic_ctx_and_two_stack_outs(
-            json_intrinsics::fad_json_read_key as *const u8,
-            KEY_PTR_OFFSET,
-            KEY_LEN_OFFSET,
-        );
+        emit_read_key_inline(ectx);
         ectx.emit_expect_byte_after_ws(b':', crate::context::ErrorCode::ExpectedColon);
         ectx.emit_call_intrinsic_ctx_only(json_intrinsics::fad_json_skip_value as *const u8);
 
@@ -1624,10 +1691,7 @@ impl FadJson {
         ectx.emit_popcount_eq1_branch(CANDIDATES_OFFSET, after_sub_scan);
 
         // comma_or_end for inner object
-        ectx.emit_call_intrinsic_ctx_and_stack_out(
-            json_intrinsics::fad_json_comma_or_end_object as *const u8,
-            RESULT_BYTE_OFFSET,
-        );
+        ectx.emit_inline_comma_or_end_object(RESULT_BYTE_OFFSET);
         ectx.emit_stack_byte_cmp_branch(RESULT_BYTE_OFFSET, 1, after_sub_scan);
         ectx.emit_branch(sub_scan_loop);
 
