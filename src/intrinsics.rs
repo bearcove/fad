@@ -387,8 +387,14 @@ unsafe fn read_postcard_string_borrowed(ctx: &mut DeserContext) -> Option<&str> 
     if ctx.error.code != 0 {
         return None;
     }
+    unsafe { read_postcard_string_borrowed_with_len(ctx, len) }
+}
 
-    let len = len as usize;
+unsafe fn read_postcard_string_borrowed_with_len(
+    ctx: &mut DeserContext,
+    len_u32: u32,
+) -> Option<&str> {
+    let len = len_u32 as usize;
 
     let remaining = unsafe { ctx.input_end.offset_from(ctx.input_ptr) as usize };
     if remaining < len {
@@ -413,6 +419,70 @@ unsafe fn read_postcard_string_borrowed(ctx: &mut DeserContext) -> Option<&str> 
 
     ctx.input_ptr = unsafe { ctx.input_ptr.add(len) };
     Some(s)
+}
+
+/// Read a postcard string with pre-decoded length and write to `*out`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `String` memory
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_postcard_string_with_len(
+    ctx: *mut DeserContext,
+    len: u32,
+    out: *mut String,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { read_postcard_string_borrowed_with_len(ctx, len) } {
+        Some(s) => s,
+        None => return,
+    };
+    unsafe { out.write(s.to_owned()) };
+}
+
+/// Read a postcard string with pre-decoded length and write as borrowed `&str`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `&str` memory
+/// - The borrowed slice is only valid for the lifetime of the input buffer
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_postcard_str_with_len(
+    ctx: *mut DeserContext,
+    len: u32,
+    out: *mut &str,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { read_postcard_string_borrowed_with_len(ctx, len) } {
+        Some(s) => s,
+        None => return,
+    };
+    let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+    unsafe { out.write(s_static) };
+}
+
+/// Read a postcard string with pre-decoded length and write as `Cow<str>`.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+/// - `out` must be a valid, aligned, non-null pointer to uninitialized `Cow<'static, str>` memory
+/// - The borrowed slice is only valid for the lifetime of the input buffer
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fad_read_postcard_cow_str_with_len(
+    ctx: *mut DeserContext,
+    len: u32,
+    out: *mut Cow<'static, str>,
+) {
+    let ctx = unsafe { &mut *ctx };
+    let s = match unsafe { read_postcard_string_borrowed_with_len(ctx, len) } {
+        Some(s) => s,
+        None => return,
+    };
+    let s_static: &'static str = unsafe { core::mem::transmute::<&str, &'static str>(s) };
+    unsafe { out.write(Cow::Borrowed(s_static)) };
 }
 
 /// Read a postcard string and write it as a borrowed `&str`.

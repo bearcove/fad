@@ -634,13 +634,7 @@ fn lower_error_if_nonzero(
 // r[impl ir.varint.lowering]
 // r[impl ir.varint.errors]
 // r[impl deser.postcard.scalar.varint.no-rust-call]
-fn lower_postcard_varint_scalar(
-    builder: &mut RegionBuilder<'_>,
-    offset: u32,
-    width: crate::ir::Width,
-    zigzag: bool,
-    bits: u32,
-) {
+fn lower_postcard_varint_value(builder: &mut RegionBuilder<'_>, bits: u32) -> PortSource {
     let max_bytes = match bits {
         16 => 3_u64,
         32 => 5_u64,
@@ -681,7 +675,7 @@ fn lower_postcard_varint_scalar(
         rb.set_results(&[predicate, acc2, shift2, rem2, low, cont_bool]);
     });
 
-    let mut value = loop_out[0];
+    let value = loop_out[0];
     let rem = loop_out[2];
     let last_low = loop_out[3];
     let last_cont = loop_out[4];
@@ -706,10 +700,20 @@ fn lower_postcard_varint_scalar(
         lower_error_if_nonzero(builder, upper, crate::context::ErrorCode::NumberOutOfRange);
     }
 
+    value
+}
+
+fn lower_postcard_varint_scalar(
+    builder: &mut RegionBuilder<'_>,
+    offset: u32,
+    width: crate::ir::Width,
+    zigzag: bool,
+    bits: u32,
+) {
+    let mut value = lower_postcard_varint_value(builder, bits);
     if zigzag {
         value = builder.unary(IrOp::ZigzagDecode { wide: bits == 64 }, value);
     }
-
     builder.write_to_field(value, offset, width);
 }
 
@@ -798,15 +802,16 @@ impl IrDecoder for FadPostcard {
         scalar_type: ScalarType,
     ) {
         let offset = offset as u32;
+        let len = lower_postcard_varint_value(builder, 32);
 
         let func = match scalar_type {
-            ScalarType::String => ifn(intrinsics::fad_read_postcard_string as _),
-            ScalarType::Str => ifn(intrinsics::fad_read_postcard_str as _),
-            ScalarType::CowStr => ifn(intrinsics::fad_read_postcard_cow_str as _),
+            ScalarType::String => ifn(intrinsics::fad_read_postcard_string_with_len as _),
+            ScalarType::Str => ifn(intrinsics::fad_read_postcard_str_with_len as _),
+            ScalarType::CowStr => ifn(intrinsics::fad_read_postcard_cow_str_with_len as _),
             _ => panic!("unsupported postcard string scalar: {:?}", scalar_type),
         };
 
-        builder.call_intrinsic(func, &[], offset, false);
+        builder.call_intrinsic(func, &[len], offset, false);
     }
 
     // r[impl deser.postcard.option]
@@ -873,9 +878,7 @@ impl IrDecoder for FadPostcard {
         ),
     ) {
         // Read varint discriminant.
-        let discriminant = builder
-            .call_intrinsic(ifn(intrinsics::fad_read_varint_u32 as _), &[], 0, true)
-            .expect("varint read should produce a result");
+        let discriminant = lower_postcard_varint_value(builder, 32);
 
         let n = variants.len();
 
@@ -937,9 +940,7 @@ impl IrDecoder for FadPostcard {
         };
 
         // Read element count (varint).
-        let count = builder
-            .call_intrinsic(ifn(intrinsics::fad_read_varint_u32 as _), &[], 0, true)
-            .expect("varint read should produce a result");
+        let count = lower_postcard_varint_value(builder, 32);
 
         // Branch on count: 0 => empty Vec, nonzero => allocate and fill.
         builder.gamma(count, &[], 2, |branch_idx, rb| {
@@ -1134,19 +1135,29 @@ mod ir_tests {
             FadPostcard.lower_read_string(builder, field.offset, ScalarType::String);
         });
 
-        let body = func.root_body();
-        let nodes = &func.regions[body].nodes;
-        assert_eq!(nodes.len(), 1);
+        let has_varint_intrinsic = func.nodes.iter().any(|(_, n)| {
+            matches!(
+                &n.kind,
+                NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. })
+                    if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+            )
+        });
+        assert!(
+            !has_varint_intrinsic,
+            "string length should not use varint intrinsic in IR path"
+        );
 
-        match &func.nodes[nodes[0]].kind {
-            NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. }) => {
-                assert_eq!(
-                    f.0,
-                    intrinsics::fad_read_postcard_string as *const () as usize
-                );
-            }
-            other => panic!("expected CallIntrinsic for string, got {:?}", other),
-        }
+        let has_string_intrinsic = func.nodes.iter().any(|(_, n)| {
+            matches!(
+                &n.kind,
+                NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. })
+                    if f.0 == intrinsics::fad_read_postcard_string_with_len as *const () as usize
+            )
+        });
+        assert!(
+            has_string_intrinsic,
+            "string lowering should call with-len string intrinsic"
+        );
     }
 
     #[test]
@@ -1281,7 +1292,7 @@ mod ir_tests {
     fn postcard_ir_enum() {
         use crate::format::{VariantKind, VariantLowerInfo};
 
-        // Enum with 2 variants should produce: CallIntrinsic (read discriminant) + Gamma(3 branches).
+        // Enum with 2 variants should produce varint decode core-IR + Gamma(3 branches).
         let variants = vec![
             VariantLowerInfo {
                 index: 0,
@@ -1321,50 +1332,51 @@ mod ir_tests {
         let body = func.root_body();
         let nodes = &func.regions[body].nodes;
 
-        // Should have: CallIntrinsic (read varint) + Gamma.
-        assert_eq!(nodes.len(), 2, "enum should produce 2 nodes in root region");
+        assert!(
+            nodes.len() >= 2,
+            "enum should produce decode nodes + dispatch gamma"
+        );
 
-        match &func.nodes[nodes[0]].kind {
-            NodeKind::Simple(IrOp::CallIntrinsic {
-                func: f,
-                has_result: true,
-                ..
-            }) => {
-                assert_eq!(f.0, intrinsics::fad_read_varint_u32 as *const () as usize);
+        let has_varint_intrinsic = func.nodes.iter().any(|(_, n)| {
+            matches!(
+                &n.kind,
+                NodeKind::Simple(IrOp::CallIntrinsic { func: f, .. })
+                    if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
+            )
+        });
+        assert!(
+            !has_varint_intrinsic,
+            "enum discriminant should not use varint intrinsic in IR path"
+        );
+
+        let dispatch_regions = func.nodes.iter().find_map(|(_, n)| match &n.kind {
+            NodeKind::Gamma { regions } if regions.len() == 3 => Some(regions.clone()),
+            _ => None,
+        });
+        let regions = dispatch_regions.expect("enum should have 3-way dispatch gamma");
+
+        // Branch 0 (variant A, unit): no nodes.
+        assert_eq!(
+            func.regions[regions[0]].nodes.len(),
+            0,
+            "unit variant should have no nodes"
+        );
+
+        // Branch 1 (variant B, tuple with u8): one CallIntrinsic.
+        assert_eq!(
+            func.regions[regions[1]].nodes.len(),
+            1,
+            "tuple variant should have 1 node"
+        );
+
+        // Branch 2 (error): one ErrorExit.
+        let err_nodes = &func.regions[regions[2]].nodes;
+        assert_eq!(err_nodes.len(), 1, "error branch should have 1 node");
+        match &func.nodes[err_nodes[0]].kind {
+            NodeKind::Simple(IrOp::ErrorExit { code }) => {
+                assert_eq!(*code, crate::context::ErrorCode::UnknownVariant);
             }
-            other => panic!("expected CallIntrinsic(read_varint), got {:?}", other),
-        }
-
-        match &func.nodes[nodes[1]].kind {
-            NodeKind::Gamma { regions } => {
-                // 2 variants + 1 error branch = 3.
-                assert_eq!(regions.len(), 3, "enum gamma should have 3 branches");
-
-                // Branch 0 (variant A, unit): no nodes.
-                assert_eq!(
-                    func.regions[regions[0]].nodes.len(),
-                    0,
-                    "unit variant should have no nodes"
-                );
-
-                // Branch 1 (variant B, tuple with u8): one CallIntrinsic.
-                assert_eq!(
-                    func.regions[regions[1]].nodes.len(),
-                    1,
-                    "tuple variant should have 1 node"
-                );
-
-                // Branch 2 (error): one ErrorExit.
-                let err_nodes = &func.regions[regions[2]].nodes;
-                assert_eq!(err_nodes.len(), 1, "error branch should have 1 node");
-                match &func.nodes[err_nodes[0]].kind {
-                    NodeKind::Simple(IrOp::ErrorExit { code }) => {
-                        assert_eq!(*code, crate::context::ErrorCode::UnknownVariant);
-                    }
-                    other => panic!("expected ErrorExit, got {:?}", other),
-                }
-            }
-            other => panic!("expected Gamma, got {:?}", other),
+            other => panic!("expected ErrorExit, got {:?}", other),
         }
     }
 
@@ -1401,18 +1413,20 @@ mod ir_tests {
             .any(|(_, n)| matches!(&n.kind, NodeKind::Theta { .. }));
         assert!(has_theta, "vec lowering should produce a theta node");
 
-        // Find the varint read (CallIntrinsic with has_result=true).
-        let has_count_read = func.nodes.iter().any(|(_, n)| {
+        // Vec count decode should use core IR, not varint intrinsic.
+        let has_count_intrinsic = func.nodes.iter().any(|(_, n)| {
             matches!(
                 &n.kind,
                 NodeKind::Simple(IrOp::CallIntrinsic {
                     func: f,
-                    has_result: true,
                     ..
                 }) if f.0 == intrinsics::fad_read_varint_u32 as *const () as usize
             )
         });
-        assert!(has_count_read, "vec should read count via varint");
+        assert!(
+            !has_count_intrinsic,
+            "vec count should not use varint intrinsic in IR path"
+        );
 
         // Find the alloc call.
         let has_alloc = func.nodes.iter().any(|(_, n)| {
