@@ -2421,17 +2421,22 @@ fn compile_linear_ir_aarch64(
                         let resolved_target = self.resolve_forwarded_label(*target);
                         let taken_target =
                             self.edge_target_label(lin_idx, 0, self.label(resolved_target));
-                        if self.has_edge_edits(lin_idx, 1) {
-                            if use_cmp_flags {
-                                self.emit_branch_on_last_cmp_ne(taken_target, false);
+                        if !use_cmp_flags {
+                            if let Some(cond_const) = self.const_of(*cond) {
+                                if cond_const != 0 {
+                                    self.ectx.emit_branch(taken_target);
+                                } else {
+                                    self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                }
                             } else {
                                 self.emit_branch_if(*cond, taken_target, false);
+                                self.apply_fallthrough_edge_edits(lin_idx, 1);
                             }
-                            self.apply_fallthrough_edge_edits(lin_idx, 1);
-                        } else if use_cmp_flags {
+                        } else if self.has_edge_edits(lin_idx, 1) {
                             self.emit_branch_on_last_cmp_ne(taken_target, false);
+                            self.apply_fallthrough_edge_edits(lin_idx, 1);
                         } else {
-                            self.emit_branch_if(*cond, taken_target, false);
+                            self.emit_branch_on_last_cmp_ne(taken_target, false);
                         }
                     }
                     LinearOp::BranchIfZero { cond, target } => {
@@ -2448,17 +2453,22 @@ fn compile_linear_ir_aarch64(
                         let resolved_target = self.resolve_forwarded_label(*target);
                         let taken_target =
                             self.edge_target_label(lin_idx, 0, self.label(resolved_target));
-                        if self.has_edge_edits(lin_idx, 1) {
-                            if use_cmp_flags {
-                                self.emit_branch_on_last_cmp_ne(taken_target, true);
+                        if !use_cmp_flags {
+                            if let Some(cond_const) = self.const_of(*cond) {
+                                if cond_const == 0 {
+                                    self.ectx.emit_branch(taken_target);
+                                } else {
+                                    self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                }
                             } else {
                                 self.emit_branch_if(*cond, taken_target, true);
+                                self.apply_fallthrough_edge_edits(lin_idx, 1);
                             }
-                            self.apply_fallthrough_edge_edits(lin_idx, 1);
-                        } else if use_cmp_flags {
+                        } else if self.has_edge_edits(lin_idx, 1) {
                             self.emit_branch_on_last_cmp_ne(taken_target, true);
+                            self.apply_fallthrough_edge_edits(lin_idx, 1);
                         } else {
-                            self.emit_branch_if(*cond, taken_target, true);
+                            self.emit_branch_on_last_cmp_ne(taken_target, true);
                         }
                     }
                     LinearOp::JumpTable {
