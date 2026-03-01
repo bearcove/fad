@@ -835,6 +835,24 @@ mod tests {
         assert!(!alloc.functions[0].inst_allocs.is_empty());
     }
 
+    #[test]
+    fn regalloc2_postcard_vec_has_no_edits_on_aarch64() {
+        if !cfg!(target_arch = "aarch64") {
+            return;
+        }
+        let mut func = compiler::build_decoder_ir(ScalarVec::SHAPE, &crate::postcard::FadPostcard);
+        crate::ir_passes::run_default_passes(&mut func);
+        let lin = linearize(&mut func);
+        let alloc = allocate_linear_ir(&lin).expect("regalloc2 should allocate postcard vec path");
+
+        let total_edits: usize = alloc.functions.iter().map(|f| f.edits.len()).sum();
+        assert_eq!(
+            total_edits, 0,
+            "expected no regalloc edits in postcard vec path, got {}",
+            total_edits
+        );
+    }
+
     // r[verify ir.regalloc.checker]
     #[test]
     fn regalloc_checker_detects_broken_mapping() {
