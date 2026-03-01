@@ -914,7 +914,6 @@ fn compile_linear_ir_aarch64(
             operand_index: usize,
         },
         OutField(u32),
-        OutStack(u32),
     }
 
     impl Lowerer {
@@ -1688,9 +1687,6 @@ fn compile_linear_ir_aarch64(
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x1, x21, #offset);
                 }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x1, sp, #offset);
-                }
             }
         }
 
@@ -1705,9 +1701,6 @@ fn compile_linear_ir_aarch64(
                 }
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x2, x21, #offset);
-                }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x2, sp, #offset);
                 }
             }
         }
@@ -1724,9 +1717,6 @@ fn compile_linear_ir_aarch64(
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x3, x21, #offset);
                 }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x3, sp, #offset);
-                }
             }
         }
 
@@ -1741,9 +1731,6 @@ fn compile_linear_ir_aarch64(
                 }
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x4, x21, #offset);
-                }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x4, sp, #offset);
                 }
             }
         }
@@ -1760,9 +1747,6 @@ fn compile_linear_ir_aarch64(
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x5, x21, #offset);
                 }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x5, sp, #offset);
-                }
             }
         }
 
@@ -1778,9 +1762,6 @@ fn compile_linear_ir_aarch64(
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x6, x21, #offset);
                 }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x6, sp, #offset);
-                }
             }
         }
 
@@ -1795,9 +1776,6 @@ fn compile_linear_ir_aarch64(
                 }
                 IntrinsicArg::OutField(offset) => {
                     dynasm!(self.ectx.ops ; .arch aarch64 ; add x7, x21, #offset);
-                }
-                IntrinsicArg::OutStack(offset) => {
-                    dynasm!(self.ectx.ops ; .arch aarch64 ; add x7, sp, #offset);
                 }
             }
         }
@@ -1887,31 +1865,19 @@ fn compile_linear_ir_aarch64(
             match dst {
                 Some(dst) => {
                     let dst_operand_index = args.len();
-                    if args.is_empty() {
-                        // Legacy stack-out intrinsic ABI: fn(ctx, &mut out)
-                        let out_offset = self.vreg_off(dst);
-                        self.ectx.emit_store_imm64_to_stack(out_offset, 0);
-                        self.emit_call_intrinsic_with_args(
-                            fn_ptr,
-                            &[IntrinsicArg::OutStack(out_offset)],
-                        );
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #out_offset]);
-                        self.emit_store_def_x9(dst, dst_operand_index);
-                    } else {
-                        // Return-value intrinsic ABI: fn(ctx, args...) -> value
-                        let call_args: Vec<IntrinsicArg> = args
-                            .iter()
-                            .copied()
-                            .enumerate()
-                            .map(|(i, vreg)| IntrinsicArg::VReg {
-                                vreg,
-                                operand_index: i,
-                            })
-                            .collect();
-                        self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x0);
-                        self.emit_store_def_x9(dst, dst_operand_index);
-                    }
+                    // Return-value intrinsic ABI: fn(ctx, args...) -> value
+                    let call_args: Vec<IntrinsicArg> = args
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .map(|(i, vreg)| IntrinsicArg::VReg {
+                            vreg,
+                            operand_index: i,
+                        })
+                        .collect();
+                    self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x0);
+                    self.emit_store_def_x9(dst, dst_operand_index);
                 }
                 None => {
                     let mut call_args: Vec<IntrinsicArg> = args
@@ -2353,25 +2319,24 @@ mod tests {
     }
 
     #[test]
-    fn linear_backend_call_intrinsic_stack_out() {
+    fn linear_backend_call_intrinsic_zero_arg_return_value() {
+        unsafe extern "C" fn return_300(_ctx: *mut crate::context::DeserContext) -> u64 {
+            300
+        }
+
         let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
         {
             let mut rb = builder.root_region();
             let v = rb
-                .call_intrinsic(
-                    IntrinsicFn(crate::intrinsics::fad_read_varint_u32 as *const () as usize),
-                    &[],
-                    0,
-                    true,
-                )
-                .expect("varint read should produce output");
+                .call_intrinsic(IntrinsicFn(return_300 as *const () as usize), &[], 0, true)
+                .expect("intrinsic should produce output");
             rb.write_to_field(v, 0, Width::W4);
             rb.set_results(&[]);
         }
 
         let mut func = builder.finish();
         let lin = linearize(&mut func);
-        let (value, ctx) = run_u32_decoder(&lin, &[0xac, 0x02]);
+        let (value, ctx) = run_u32_decoder(&lin, &[]);
 
         assert_eq!(ctx.error.code, 0);
         assert_eq!(value, 300);
