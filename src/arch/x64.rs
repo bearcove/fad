@@ -626,14 +626,14 @@ impl EmitCtx {
             ; jae =>ws_done
             ; movzx eax, BYTE [r12]
             ; cmp al, b' ' as i8
-            ; je 2f // ->advance
+            ; je >advance
             ; cmp al, b'\n' as i8
-            ; je 2f
+            ; je >advance
             ; cmp al, b'\r' as i8
-            ; je 2f
+            ; je >advance
             ; cmp al, b'\t' as i8
             ; jne =>ws_done
-            ; 2:
+            ; advance:
             ; inc r12
             ; jmp =>ws_loop
             ; =>ws_done

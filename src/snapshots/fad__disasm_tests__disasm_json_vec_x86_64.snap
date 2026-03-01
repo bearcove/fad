@@ -4,7 +4,7 @@ expression: out
 ---
 === json/vec ===
   push rbp
-  sub rsp, 0x70
+  sub rsp, 0x80
   mov qword [rsp], rbp
   mov qword [rsp + 0x10], r12
   mov qword [rsp + 0x18], r13
@@ -21,7 +21,7 @@ expression: out
   mov r12, qword [r15]
   mov r10d, dword [r15 + 0x10]
   test r10d, r10d
-  jnz $+0x2d7
+  jnz $+0x31e
   mov qword [r15], r12
   mov rdi, r15
   lea rsi, qword [rsp + 0x48]
@@ -30,10 +30,10 @@ expression: out
   mov r12, qword [r15]
   mov r10d, dword [r15 + 0x10]
   test r10d, r10d
-  jnz $+0x2a2
+  jnz $+0x2e9
   movzx r10d, byte [rsp + 0x48]
   cmp r10d, 0x5d
-  jz $+0x204
+  jz $+0x24b
   mov qword [r15], r12
   mov rdi, r15
   mov esi, 0x4
@@ -44,17 +44,17 @@ expression: out
   mov r12, qword [r15]
   mov r10d, dword [r15 + 0x10]
   test r10d, r10d
-  jnz $+0x250
-  mov qword [rsp + 0x50], r14
-  mov qword [rsp + 0x58], rax
-  mov qword [rsp + 0x60], 0x0
-  mov dword [rsp + 0x68], 0x4
-  mov dword [rsp + 0x6c], 0x0
-  mov rax, qword [rsp + 0x60]
-  cmp rax, qword [rsp + 0x68]
-  jz $+0xc2
-  mov r14, qword [rsp + 0x58]
-  mov r10, qword [rsp + 0x60]
+  jnz $+0x297
+  mov qword [rsp + 0x60], r14
+  mov qword [rsp + 0x68], rax
+  mov qword [rsp + 0x70], 0x0
+  mov dword [rsp + 0x78], 0x4
+  mov dword [rsp + 0x7c], 0x0
+  mov rax, qword [rsp + 0x70]
+  cmp rax, qword [rsp + 0x78]
+  jz $+0x109
+  mov r14, qword [rsp + 0x68]
+  mov r10, qword [rsp + 0x70]
   imul r10, r10, 0x4
   add r14, r10
   mov qword [r15], r12
@@ -65,33 +65,50 @@ expression: out
   mov r12, qword [r15]
   mov r10d, dword [r15 + 0x10]
   test r10d, r10d
-  jnz $+0x1ba
+  jnz $+0x201
   mov r10d, dword [r15 + 0x10]
   test r10d, r10d
-  jnz $+0x14f
-  mov rax, qword [rsp + 0x60]
+  jnz $+0x196
+  mov rax, qword [rsp + 0x70]
   add rax, 0x1
-  mov qword [rsp + 0x60], rax
-  mov qword [r15], r12
-  mov rdi, r15
-  lea rsi, qword [rsp + 0x48]
-  mov rax, 0x<imm>
-  call rax
-  mov r12, qword [r15]
-  mov r10d, dword [r15 + 0x10]
-  test r10d, r10d
-  jnz $+0x161
+  mov qword [rsp + 0x70], rax
+  cmp r12, r13
+  jnb $+0x2d
+  movzx eax, byte [r12]
+  cmp al, 0x20
+  jz $+0x18
+  cmp al, 0xa
+  jz $+0x10
+  cmp al, 0xd
+  jz $+0x8
+  cmp al, 0x9
+  jnz $+0x8
+  inc r12
+  jmp $-0x36
+  cmp r12, r13
+  jnb $+0x19e
+  movzx eax, byte [r12]
+  inc r12
+  cmp al, 0x2c
+  jz $+0x18
+  cmp al, 0x5d
+  jz $+0x1d
+  mov dword [r15 + 0x10], 0xb
+  jmp $+0x176
+  mov byte [rsp + 0x48], 0x0
+  jmp $+0x8
+  mov byte [rsp + 0x48], 0x1
   movzx r10d, byte [rsp + 0x48]
   cmp r10d, 0x1
   jz $+0x89
-  jmp $-0xd8
+  jmp $-0x11f
   mov qword [r15], r12
-  mov r10, qword [rsp + 0x68]
+  mov r10, qword [rsp + 0x78]
   shl r10, 0x1
   mov rdi, r15
-  mov rsi, qword [rsp + 0x58]
-  mov rdx, qword [rsp + 0x60]
-  mov rcx, qword [rsp + 0x68]
+  mov rsi, qword [rsp + 0x68]
+  mov rdx, qword [rsp + 0x70]
+  mov rcx, qword [rsp + 0x78]
   mov r8, r10
   mov r9d, 0x4
   push 0x4
@@ -102,17 +119,17 @@ expression: out
   mov r10d, dword [r15 + 0x10]
   test r10d, r10d
   jnz $+0xe3
-  mov qword [rsp + 0x58], rax
-  mov r10, qword [rsp + 0x68]
+  mov qword [rsp + 0x68], rax
+  mov r10, qword [rsp + 0x78]
   shl r10, 0x1
-  mov qword [rsp + 0x68], r10
-  jmp $-0x146
-  mov r14, qword [rsp + 0x50]
-  mov rax, qword [rsp + 0x58]
-  mov qword [r14 + 0x8], rax
-  mov rax, qword [rsp + 0x60]
-  mov qword [r14 + 0x10], rax
+  mov qword [rsp + 0x78], r10
+  jmp $-0x18d
+  mov r14, qword [rsp + 0x60]
   mov rax, qword [rsp + 0x68]
+  mov qword [r14 + 0x8], rax
+  mov rax, qword [rsp + 0x70]
+  mov qword [r14 + 0x10], rax
+  mov rax, qword [rsp + 0x78]
   mov qword [r14], rax
   jmp $+0x60
   add r12, 0x1
@@ -120,9 +137,9 @@ expression: out
   mov qword [r14 + 0x10], 0x0
   mov qword [r14], 0x0
   jmp $+0x33
-  mov r14, qword [rsp + 0x50]
-  mov rdi, qword [rsp + 0x58]
-  mov rsi, qword [rsp + 0x68]
+  mov r14, qword [rsp + 0x60]
+  mov rdi, qword [rsp + 0x68]
+  mov rsi, qword [rsp + 0x78]
   mov edx, 0x4
   mov ecx, 0x4
   mov rax, 0x<imm>
@@ -134,7 +151,7 @@ expression: out
   mov r13, qword [rsp + 0x18]
   mov r12, qword [rsp + 0x10]
   mov rbp, qword [rsp]
-  add rsp, 0x70
+  add rsp, 0x80
   pop rbp
   ret
   mov r15, qword [rsp + 0x28]
@@ -142,6 +159,6 @@ expression: out
   mov r13, qword [rsp + 0x18]
   mov r12, qword [rsp + 0x10]
   mov rbp, qword [rsp]
-  add rsp, 0x70
+  add rsp, 0x80
   pop rbp
   ret
