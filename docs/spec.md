@@ -462,6 +462,15 @@ Each backend implements SIMD ops natively. The linearized IR contains
 opaque SIMD op references; the backend expands them into platform-specific
 instruction sequences.
 
+r[ir.backends.post-regalloc.branch-test]
+Post-regalloc backend lowering should prefer direct compare/test+branch forms
+from allocated operands and avoid unnecessary boolean materialization when
+control-flow semantics are equivalent.
+
+r[ir.backends.post-regalloc.shuffle]
+Post-regalloc backend lowering should avoid unnecessary fixed scratch-register
+shuttling when source and destination allocations can be used directly.
+
 ### Register allocation
 
 r[ir.regalloc]
@@ -495,6 +504,11 @@ r[ir.regalloc.edits]
 Machine emission applies allocator-provided edits at the exact program points
 required by the allocation result; spill placement is allocator-directed, not
 implemented as unconditional boundary spilling.
+
+r[ir.regalloc.edits.minimize]
+Machine emission should drop no-op/self edit moves and avoid unnecessary
+boundary/edit trampoline traffic when equivalent in-place edge edit application
+is available.
 
 r[ir.regalloc.no-boundary-flush]
 Steady-state hot-path code generation must not depend on unconditional
@@ -560,6 +574,15 @@ Planned passes, in rough priority order:
 6. **Global register allocation**: lower linearized IR to a CFG-oriented
    allocator input form, run a whole-function allocator, and apply
    allocator-provided move/spill/reload edits during machine emission.
+
+r[ir.passes.pre-regalloc.coalescing]
+Pre-regalloc shaping may coalesce copies across gamma/theta boundaries when
+value equivalence is proven and block-parameter/control-flow semantics are
+preserved.
+
+r[ir.passes.pre-regalloc.loop-invariants]
+Pre-regalloc shaping may hoist loop-invariant setup out of theta bodies when
+the motion is side-effect safe and preserves data/state dependencies.
 
 r[ir.passes.lower-to-core]
 Normalization passes may rewrite format-lowering helper forms into the core

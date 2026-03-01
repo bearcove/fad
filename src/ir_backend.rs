@@ -848,6 +848,8 @@ fn compile_linear_ir_x64(ir: &LinearIr, _max_spillslots: usize) -> LinearBackend
 }
 
 #[cfg(target_arch = "aarch64")]
+// r[impl ir.backends.post-regalloc.branch-test]
+// r[impl ir.backends.post-regalloc.shuffle]
 fn compile_linear_ir_aarch64(
     ir: &LinearIr,
     max_spillslots: usize,
@@ -913,6 +915,7 @@ fn compile_linear_ir_aarch64(
     }
 
     impl Lowerer {
+        // r[impl ir.regalloc.edits.minimize]
         fn normalize_edit_move(
             from: Allocation,
             to: Allocation,
@@ -1452,6 +1455,7 @@ fn compile_linear_ir_aarch64(
             }
         }
 
+        // r[impl ir.regalloc.edits]
         fn apply_regalloc_edits(&mut self, linear_op_index: usize, pos: InstPosition) {
             let lambda_id = match self.current_func.as_ref() {
                 Some(func) => func.lambda_id.index() as u32,
