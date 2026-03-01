@@ -1705,20 +1705,20 @@ fn compile_linear_ir_aarch64(
         }
 
         fn emit_set_abi_reg_from_intrinsic_arg(&mut self, abi_arg: u8, arg: IntrinsicArg) {
-            let target = PReg::new(abi_arg as usize, RegClass::Int);
             match arg {
                 IntrinsicArg::VReg { operand_index } => {
                     self.emit_set_abi_arg_from_allocation(abi_arg, operand_index)
                 }
-                IntrinsicArg::OutField(offset) => {
-                    let target_r = target.hw_enc() as u8;
-                    self.emit_load_u64_x10(offset as u64);
-                    dynasm!(self.ectx.ops
-                        ; .arch aarch64
-                        ; mov X(target_r), x21
-                        ; add X(target_r), X(target_r), x10
-                    );
-                }
+                IntrinsicArg::OutField(offset) => match abi_arg {
+                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x1, x21, #offset),
+                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x2, x21, #offset),
+                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x3, x21, #offset),
+                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x4, x21, #offset),
+                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x5, x21, #offset),
+                    6 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x6, x21, #offset),
+                    7 => dynasm!(self.ectx.ops ; .arch aarch64 ; add x7, x21, #offset),
+                    _ => unreachable!("unsupported intrinsic ABI arg register x{abi_arg}"),
+                },
             }
         }
 
