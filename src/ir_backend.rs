@@ -855,7 +855,7 @@ fn compile_linear_ir_aarch64(
 ) -> LinearBackendResult {
     use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, dynasm};
     use regalloc2::{Allocation, Edit, InstPosition, PReg, RegClass};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use crate::arch::{BASE_FRAME, EmitCtx};
     use crate::ir::Width;
@@ -2445,6 +2445,7 @@ fn compile_linear_ir_aarch64(
 
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
             let mut fused_cmpne_cond = None::<(usize, crate::ir::VReg)>;
+            let mut skipped_branch_ops = HashSet::<usize>::new();
             for (op_index, op) in ir.ops.iter().enumerate() {
                 if let Some((expected_branch_op_index, expected_cond)) = fused_cmpne_cond {
                     if op_index > expected_branch_op_index {
@@ -2494,271 +2495,396 @@ fn compile_linear_ir_aarch64(
                     self.apply_regalloc_edits(linear_op_index, InstPosition::Before);
                 }
 
-                match op {
-                    LinearOp::FuncStart {
-                        lambda_id,
-                        data_args,
-                        data_results,
-                        ..
-                    } => {
-                        self.flush_all_vregs();
-                        let label = self.lambda_labels[lambda_id.index() as usize];
-                        self.ectx.bind_label(label);
-                        let (entry_offset, error_exit) = self.ectx.begin_func();
-                        if lambda_id.index() == 0 {
-                            self.entry = Some(entry_offset);
+                if skipped_branch_ops.contains(&op_index) {
+                    // Branch was folded into the previous conditional branch.
+                    // Keep linear-op accounting intact, but emit no machine code.
+                } else {
+                    match op {
+                        LinearOp::FuncStart {
+                            lambda_id,
+                            data_args,
+                            data_results,
+                            ..
+                        } => {
+                            self.flush_all_vregs();
+                            let label = self.lambda_labels[lambda_id.index() as usize];
+                            self.ectx.bind_label(label);
+                            let (entry_offset, error_exit) = self.ectx.begin_func();
+                            if lambda_id.index() == 0 {
+                                self.entry = Some(entry_offset);
+                            }
+                            self.current_func = Some(FunctionCtx {
+                                error_exit,
+                                data_results: data_results.clone(),
+                                lambda_id: *lambda_id,
+                            });
+                            self.current_lambda_linear_op_index = 0;
+                            self.emit_store_incoming_lambda_args(data_args);
                         }
-                        self.current_func = Some(FunctionCtx {
-                            error_exit,
-                            data_results: data_results.clone(),
-                            lambda_id: *lambda_id,
-                        });
-                        self.current_lambda_linear_op_index = 0;
-                        self.emit_store_incoming_lambda_args(data_args);
-                    }
-                    LinearOp::FuncEnd => {
-                        self.flush_all_vregs();
-                        let func = self
-                            .current_func
-                            .take()
-                            .expect("FuncEnd without active function");
-                        self.emit_load_lambda_results_to_ret_regs(
-                            func.lambda_id,
-                            &func.data_results,
-                        );
-                        self.ectx.end_func(func.error_exit);
-                    }
-                    LinearOp::Label(label) => {
-                        self.flush_all_vregs();
-                        self.ectx.bind_label(self.label(*label));
-                    }
-                    LinearOp::Branch(target) => {
-                        let resolved_target = self.resolve_forwarded_label(*target);
-                        let target_label = if let Some(lin_idx) = linear_op_index {
-                            self.edge_target_label(lin_idx, 0, self.label(resolved_target))
-                        } else {
-                            self.label(resolved_target)
-                        };
-                        let is_redundant_fallthrough = if let Some(lin_idx) = linear_op_index {
-                            if self.has_edge_edits(lin_idx, 0) {
-                                false
-                            } else if let Some(LinearOp::Label(next_label)) =
-                                ir.ops.get(op_index + 1)
-                            {
-                                let resolved_next = self.resolve_forwarded_label(*next_label);
-                                resolved_target == resolved_next
+                        LinearOp::FuncEnd => {
+                            self.flush_all_vregs();
+                            let func = self
+                                .current_func
+                                .take()
+                                .expect("FuncEnd without active function");
+                            self.emit_load_lambda_results_to_ret_regs(
+                                func.lambda_id,
+                                &func.data_results,
+                            );
+                            self.ectx.end_func(func.error_exit);
+                        }
+                        LinearOp::Label(label) => {
+                            self.flush_all_vregs();
+                            self.ectx.bind_label(self.label(*label));
+                        }
+                        LinearOp::Branch(target) => {
+                            let resolved_target = self.resolve_forwarded_label(*target);
+                            let target_label = if let Some(lin_idx) = linear_op_index {
+                                self.edge_target_label(lin_idx, 0, self.label(resolved_target))
                             } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                        if !is_redundant_fallthrough {
-                            self.ectx.emit_branch(target_label);
-                        }
-                    }
-                    LinearOp::BranchIf { cond, target } => {
-                        let use_cmp_flags = match fused_cmpne_cond {
-                            Some((expected_op_index, expected))
-                                if expected_op_index == op_index && expected == *cond =>
-                            {
-                                fused_cmpne_cond = None;
-                                true
-                            }
-                            Some((expected_op_index, expected))
-                                if expected_op_index == op_index =>
-                            {
-                                panic!(
-                                    "fused CmpNe expected branch on {:?}, got {:?}",
-                                    expected, cond
-                                )
-                            }
-                            None => false,
-                            Some(_) => false,
-                        };
-                        let lin_idx = linear_op_index
-                            .expect("BranchIf should have linear op index inside function");
-                        let resolved_target = self.resolve_forwarded_label(*target);
-                        let taken_target =
-                            self.edge_target_label(lin_idx, 0, self.label(resolved_target));
-                        if !use_cmp_flags {
-                            if let Some(cond_const) = self.const_of(*cond) {
-                                if cond_const != 0 {
-                                    self.ectx.emit_branch(taken_target);
+                                self.label(resolved_target)
+                            };
+                            let is_redundant_fallthrough = if let Some(lin_idx) = linear_op_index {
+                                if self.has_edge_edits(lin_idx, 0) {
+                                    false
+                                } else if let Some(LinearOp::Label(next_label)) =
+                                    ir.ops.get(op_index + 1)
+                                {
+                                    let resolved_next = self.resolve_forwarded_label(*next_label);
+                                    resolved_target == resolved_next
                                 } else {
-                                    self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                    false
                                 }
                             } else {
-                                self.emit_branch_if(*cond, taken_target, false);
-                                self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                false
+                            };
+                            if !is_redundant_fallthrough {
+                                self.ectx.emit_branch(target_label);
                             }
-                        } else if self.has_edge_edits(lin_idx, 1) {
-                            self.emit_branch_on_last_cmp_ne(taken_target, false);
-                            self.apply_fallthrough_edge_edits(lin_idx, 1);
-                        } else {
-                            self.emit_branch_on_last_cmp_ne(taken_target, false);
                         }
-                    }
-                    LinearOp::BranchIfZero { cond, target } => {
-                        let use_cmp_flags = match fused_cmpne_cond {
-                            Some((expected_op_index, expected))
-                                if expected_op_index == op_index && expected == *cond =>
+                        LinearOp::BranchIf { cond, target } => {
+                            let use_cmp_flags = match fused_cmpne_cond {
+                                Some((expected_op_index, expected))
+                                    if expected_op_index == op_index && expected == *cond =>
+                                {
+                                    fused_cmpne_cond = None;
+                                    true
+                                }
+                                Some((expected_op_index, expected))
+                                    if expected_op_index == op_index =>
+                                {
+                                    panic!(
+                                        "fused CmpNe expected branch on {:?}, got {:?}",
+                                        expected, cond
+                                    )
+                                }
+                                None => false,
+                                Some(_) => false,
+                            };
+                            let lin_idx = linear_op_index
+                                .expect("BranchIf should have linear op index inside function");
+                            let resolved_target = self.resolve_forwarded_label(*target);
+                            let taken_target =
+                                self.edge_target_label(lin_idx, 0, self.label(resolved_target));
+                            let mut emitted_cond_branch = false;
+                            if !self.has_edge_edits(lin_idx, 1)
+                                && !use_cmp_flags
+                                && let (
+                                    Some(LinearOp::Branch(next_target)),
+                                    Some(LinearOp::Label(next_label)),
+                                ) = (ir.ops.get(op_index + 1), ir.ops.get(op_index + 2))
                             {
-                                fused_cmpne_cond = None;
-                                true
-                            }
-                            Some((expected_op_index, expected))
-                                if expected_op_index == op_index =>
+                                let next_lin_idx = lin_idx + 1;
+                                if !self.has_inst_edits(next_lin_idx)
+                                    && !self.has_edge_edits(next_lin_idx, 0)
+                                {
+                                    let resolved_false = self.resolve_forwarded_label(*next_target);
+                                    let resolved_fallthrough =
+                                        self.resolve_forwarded_label(*next_label);
+                                    if resolved_fallthrough == resolved_false {
+                                        self.emit_branch_if(*cond, taken_target, false);
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    } else if resolved_fallthrough == resolved_target {
+                                        self.emit_branch_if(
+                                            *cond,
+                                            self.label(resolved_false),
+                                            true,
+                                        );
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    }
+                                }
+                            } else if !self.has_edge_edits(lin_idx, 1)
+                                && use_cmp_flags
+                                && let (
+                                    Some(LinearOp::Branch(next_target)),
+                                    Some(LinearOp::Label(next_label)),
+                                ) = (ir.ops.get(op_index + 1), ir.ops.get(op_index + 2))
                             {
-                                panic!(
-                                    "fused CmpNe expected branch on {:?}, got {:?}",
-                                    expected, cond
-                                )
+                                let next_lin_idx = lin_idx + 1;
+                                if !self.has_inst_edits(next_lin_idx)
+                                    && !self.has_edge_edits(next_lin_idx, 0)
+                                {
+                                    let resolved_false = self.resolve_forwarded_label(*next_target);
+                                    let resolved_fallthrough =
+                                        self.resolve_forwarded_label(*next_label);
+                                    if resolved_fallthrough == resolved_false {
+                                        self.emit_branch_on_last_cmp_ne(taken_target, false);
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    } else if resolved_fallthrough == resolved_target {
+                                        self.emit_branch_on_last_cmp_ne(
+                                            self.label(resolved_false),
+                                            true,
+                                        );
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    }
+                                }
                             }
-                            None => false,
-                            Some(_) => false,
-                        };
-                        let lin_idx = linear_op_index
-                            .expect("BranchIfZero should have linear op index inside function");
-                        let resolved_target = self.resolve_forwarded_label(*target);
-                        let taken_target =
-                            self.edge_target_label(lin_idx, 0, self.label(resolved_target));
-                        if !use_cmp_flags {
-                            if let Some(cond_const) = self.const_of(*cond) {
-                                if cond_const == 0 {
-                                    self.ectx.emit_branch(taken_target);
+                            if emitted_cond_branch {
+                                // keep existing per-op edit handling below
+                            } else if !use_cmp_flags {
+                                if let Some(cond_const) = self.const_of(*cond) {
+                                    if cond_const != 0 {
+                                        self.ectx.emit_branch(taken_target);
+                                    } else {
+                                        self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                    }
                                 } else {
+                                    self.emit_branch_if(*cond, taken_target, false);
                                     self.apply_fallthrough_edge_edits(lin_idx, 1);
                                 }
-                            } else {
-                                self.emit_branch_if(*cond, taken_target, true);
+                            } else if self.has_edge_edits(lin_idx, 1) {
+                                self.emit_branch_on_last_cmp_ne(taken_target, false);
                                 self.apply_fallthrough_edge_edits(lin_idx, 1);
+                            } else {
+                                self.emit_branch_on_last_cmp_ne(taken_target, false);
                             }
-                        } else if self.has_edge_edits(lin_idx, 1) {
-                            self.emit_branch_on_last_cmp_ne(taken_target, true);
-                            self.apply_fallthrough_edge_edits(lin_idx, 1);
-                        } else {
-                            self.emit_branch_on_last_cmp_ne(taken_target, true);
                         }
-                    }
-                    LinearOp::JumpTable {
-                        predicate,
-                        labels,
-                        default,
-                    } => {
-                        let lin_idx = linear_op_index
-                            .expect("JumpTable should have linear op index inside function");
-                        self.emit_jump_table(*predicate, labels, *default, lin_idx);
-                    }
-
-                    LinearOp::Const { dst, value } => {
-                        self.emit_load_u64_x9(*value);
-                        self.emit_store_def_x9(*dst, 0);
-                        self.set_const(*dst, Some(*value));
-                    }
-                    LinearOp::Copy { dst, src } => {
-                        let from = self.current_alloc(0);
-                        let to = self.current_alloc(1);
-                        self.emit_edit_move(from, to);
-                        self.set_const(*dst, self.const_of(*src));
-                    }
-                    LinearOp::BinOp { op, dst, lhs, rhs } => {
-                        self.emit_binop(
-                            *op,
-                            *dst,
-                            *lhs,
-                            *rhs,
-                            fuse_cmpne_to_branch_op_index.is_none(),
-                        );
-                        if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
-                            fused_cmpne_cond = Some((branch_op_index, *dst));
+                        LinearOp::BranchIfZero { cond, target } => {
+                            let use_cmp_flags = match fused_cmpne_cond {
+                                Some((expected_op_index, expected))
+                                    if expected_op_index == op_index && expected == *cond =>
+                                {
+                                    fused_cmpne_cond = None;
+                                    true
+                                }
+                                Some((expected_op_index, expected))
+                                    if expected_op_index == op_index =>
+                                {
+                                    panic!(
+                                        "fused CmpNe expected branch on {:?}, got {:?}",
+                                        expected, cond
+                                    )
+                                }
+                                None => false,
+                                Some(_) => false,
+                            };
+                            let lin_idx = linear_op_index
+                                .expect("BranchIfZero should have linear op index inside function");
+                            let resolved_target = self.resolve_forwarded_label(*target);
+                            let taken_target =
+                                self.edge_target_label(lin_idx, 0, self.label(resolved_target));
+                            let mut emitted_cond_branch = false;
+                            if !self.has_edge_edits(lin_idx, 1)
+                                && !use_cmp_flags
+                                && let (
+                                    Some(LinearOp::Branch(next_target)),
+                                    Some(LinearOp::Label(next_label)),
+                                ) = (ir.ops.get(op_index + 1), ir.ops.get(op_index + 2))
+                            {
+                                let next_lin_idx = lin_idx + 1;
+                                if !self.has_inst_edits(next_lin_idx)
+                                    && !self.has_edge_edits(next_lin_idx, 0)
+                                {
+                                    let resolved_false = self.resolve_forwarded_label(*next_target);
+                                    let resolved_fallthrough =
+                                        self.resolve_forwarded_label(*next_label);
+                                    if resolved_fallthrough == resolved_false {
+                                        self.emit_branch_if(*cond, taken_target, true);
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    } else if resolved_fallthrough == resolved_target {
+                                        self.emit_branch_if(
+                                            *cond,
+                                            self.label(resolved_false),
+                                            false,
+                                        );
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    }
+                                }
+                            } else if !self.has_edge_edits(lin_idx, 1)
+                                && use_cmp_flags
+                                && let (
+                                    Some(LinearOp::Branch(next_target)),
+                                    Some(LinearOp::Label(next_label)),
+                                ) = (ir.ops.get(op_index + 1), ir.ops.get(op_index + 2))
+                            {
+                                let next_lin_idx = lin_idx + 1;
+                                if !self.has_inst_edits(next_lin_idx)
+                                    && !self.has_edge_edits(next_lin_idx, 0)
+                                {
+                                    let resolved_false = self.resolve_forwarded_label(*next_target);
+                                    let resolved_fallthrough =
+                                        self.resolve_forwarded_label(*next_label);
+                                    if resolved_fallthrough == resolved_false {
+                                        self.emit_branch_on_last_cmp_ne(taken_target, true);
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    } else if resolved_fallthrough == resolved_target {
+                                        self.emit_branch_on_last_cmp_ne(
+                                            self.label(resolved_false),
+                                            false,
+                                        );
+                                        skipped_branch_ops.insert(op_index + 1);
+                                        emitted_cond_branch = true;
+                                    }
+                                }
+                            }
+                            if emitted_cond_branch {
+                                // keep existing per-op edit handling below
+                            } else if !use_cmp_flags {
+                                if let Some(cond_const) = self.const_of(*cond) {
+                                    if cond_const == 0 {
+                                        self.ectx.emit_branch(taken_target);
+                                    } else {
+                                        self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                    }
+                                } else {
+                                    self.emit_branch_if(*cond, taken_target, true);
+                                    self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                }
+                            } else if self.has_edge_edits(lin_idx, 1) {
+                                self.emit_branch_on_last_cmp_ne(taken_target, true);
+                                self.apply_fallthrough_edge_edits(lin_idx, 1);
+                            } else {
+                                self.emit_branch_on_last_cmp_ne(taken_target, true);
+                            }
                         }
-                    }
-                    LinearOp::UnaryOp { op, dst, src } => self.emit_unary(*op, *dst, *src),
+                        LinearOp::JumpTable {
+                            predicate,
+                            labels,
+                            default,
+                        } => {
+                            let lin_idx = linear_op_index
+                                .expect("JumpTable should have linear op index inside function");
+                            self.emit_jump_table(*predicate, labels, *default, lin_idx);
+                        }
 
-                    LinearOp::BoundsCheck { count } => {
-                        self.emit_recipe_ops(vec![Op::BoundsCheck { count: *count }]);
-                    }
-                    LinearOp::ReadBytes { dst, count } => self.emit_read_bytes(*dst, *count),
-                    LinearOp::PeekByte { dst } => self.emit_peek_byte(*dst),
-                    LinearOp::AdvanceCursor { count } => self.ectx.emit_advance_cursor_by(*count),
-                    LinearOp::AdvanceCursorBy { src } => {
-                        self.emit_load_use_x9(*src, 0);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; add x19, x19, x9);
-                    }
-                    LinearOp::SaveCursor { dst } => {
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x19);
-                        self.emit_store_def_x9(*dst, 0);
-                        self.set_const(*dst, None);
-                    }
-                    LinearOp::RestoreCursor { src } => {
-                        self.emit_load_use_x9(*src, 0);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; mov x19, x9);
-                    }
+                        LinearOp::Const { dst, value } => {
+                            self.emit_load_u64_x9(*value);
+                            self.emit_store_def_x9(*dst, 0);
+                            self.set_const(*dst, Some(*value));
+                        }
+                        LinearOp::Copy { dst, src } => {
+                            let from = self.current_alloc(0);
+                            let to = self.current_alloc(1);
+                            self.emit_edit_move(from, to);
+                            self.set_const(*dst, self.const_of(*src));
+                        }
+                        LinearOp::BinOp { op, dst, lhs, rhs } => {
+                            self.emit_binop(
+                                *op,
+                                *dst,
+                                *lhs,
+                                *rhs,
+                                fuse_cmpne_to_branch_op_index.is_none(),
+                            );
+                            if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
+                                fused_cmpne_cond = Some((branch_op_index, *dst));
+                            }
+                        }
+                        LinearOp::UnaryOp { op, dst, src } => self.emit_unary(*op, *dst, *src),
 
-                    LinearOp::WriteToField { src, offset, width } => {
-                        self.emit_write_to_field(*src, *offset, *width);
-                    }
-                    LinearOp::ReadFromField { dst, offset, width } => {
-                        self.emit_read_from_field(*dst, *offset, *width);
-                        self.set_const(*dst, None);
-                    }
-                    LinearOp::SaveOutPtr { dst } => {
-                        self.emit_save_out_ptr(*dst);
-                        self.set_const(*dst, None);
-                    }
-                    LinearOp::SetOutPtr { src } => {
-                        self.emit_set_out_ptr(*src);
-                    }
-                    LinearOp::SlotAddr { dst, slot } => {
-                        self.emit_slot_addr(*dst, *slot);
-                        self.set_const(*dst, None);
-                    }
-                    LinearOp::WriteToSlot { slot, src } => {
-                        self.emit_load_use_x9(*src, 0);
-                        let off = self.slot_off(*slot);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]);
-                    }
-                    LinearOp::ReadFromSlot { dst, slot } => {
-                        let off = self.slot_off(*slot);
-                        dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
-                        self.emit_store_def_x9(*dst, 0);
-                        self.set_const(*dst, None);
-                    }
-
-                    LinearOp::CallIntrinsic {
-                        func,
-                        args,
-                        dst,
-                        field_offset,
-                    } => {
-                        self.emit_call_intrinsic(*func, args, *dst, *field_offset);
-                        if let Some(dst) = dst {
+                        LinearOp::BoundsCheck { count } => {
+                            self.emit_recipe_ops(vec![Op::BoundsCheck { count: *count }]);
+                        }
+                        LinearOp::ReadBytes { dst, count } => self.emit_read_bytes(*dst, *count),
+                        LinearOp::PeekByte { dst } => self.emit_peek_byte(*dst),
+                        LinearOp::AdvanceCursor { count } => {
+                            self.ectx.emit_advance_cursor_by(*count)
+                        }
+                        LinearOp::AdvanceCursorBy { src } => {
+                            self.emit_load_use_x9(*src, 0);
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; add x19, x19, x9);
+                        }
+                        LinearOp::SaveCursor { dst } => {
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x19);
+                            self.emit_store_def_x9(*dst, 0);
                             self.set_const(*dst, None);
                         }
-                    }
-                    LinearOp::CallPure { .. } => {
-                        panic!("unsupported CallPure in linear backend adapter");
-                    }
+                        LinearOp::RestoreCursor { src } => {
+                            self.emit_load_use_x9(*src, 0);
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; mov x19, x9);
+                        }
 
-                    LinearOp::ErrorExit { code } => {
-                        self.flush_all_vregs();
-                        self.ectx.emit_error(*code);
-                    }
+                        LinearOp::WriteToField { src, offset, width } => {
+                            self.emit_write_to_field(*src, *offset, *width);
+                        }
+                        LinearOp::ReadFromField { dst, offset, width } => {
+                            self.emit_read_from_field(*dst, *offset, *width);
+                            self.set_const(*dst, None);
+                        }
+                        LinearOp::SaveOutPtr { dst } => {
+                            self.emit_save_out_ptr(*dst);
+                            self.set_const(*dst, None);
+                        }
+                        LinearOp::SetOutPtr { src } => {
+                            self.emit_set_out_ptr(*src);
+                        }
+                        LinearOp::SlotAddr { dst, slot } => {
+                            self.emit_slot_addr(*dst, *slot);
+                            self.set_const(*dst, None);
+                        }
+                        LinearOp::WriteToSlot { slot, src } => {
+                            self.emit_load_use_x9(*src, 0);
+                            let off = self.slot_off(*slot);
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; str x9, [sp, #off]);
+                        }
+                        LinearOp::ReadFromSlot { dst, slot } => {
+                            let off = self.slot_off(*slot);
+                            dynasm!(self.ectx.ops ; .arch aarch64 ; ldr x9, [sp, #off]);
+                            self.emit_store_def_x9(*dst, 0);
+                            self.set_const(*dst, None);
+                        }
 
-                    LinearOp::SimdStringScan { .. } | LinearOp::SimdWhitespaceSkip => {
-                        panic!("unsupported SIMD op in linear backend adapter");
-                    }
+                        LinearOp::CallIntrinsic {
+                            func,
+                            args,
+                            dst,
+                            field_offset,
+                        } => {
+                            self.emit_call_intrinsic(*func, args, *dst, *field_offset);
+                            if let Some(dst) = dst {
+                                self.set_const(*dst, None);
+                            }
+                        }
+                        LinearOp::CallPure { .. } => {
+                            panic!("unsupported CallPure in linear backend adapter");
+                        }
 
-                    LinearOp::CallLambda {
-                        target,
-                        args,
-                        results,
-                    } => {
-                        let label = self.lambda_labels[target.index() as usize];
-                        self.emit_call_lambda(label, args, results);
-                        for &r in results {
-                            self.set_const(r, None);
+                        LinearOp::ErrorExit { code } => {
+                            self.flush_all_vregs();
+                            self.ectx.emit_error(*code);
+                        }
+
+                        LinearOp::SimdStringScan { .. } | LinearOp::SimdWhitespaceSkip => {
+                            panic!("unsupported SIMD op in linear backend adapter");
+                        }
+
+                        LinearOp::CallLambda {
+                            target,
+                            args,
+                            results,
+                        } => {
+                            let label = self.lambda_labels[target.index() as usize];
+                            self.emit_call_lambda(label, args, results);
+                            for &r in results {
+                                self.set_const(r, None);
+                            }
                         }
                     }
                 }
