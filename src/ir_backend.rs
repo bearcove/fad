@@ -1060,6 +1060,55 @@ fn compile_linear_ir_aarch64(
             None
         }
 
+        fn find_and_branch_use(
+            &self,
+            ir: &LinearIr,
+            and_op_index: usize,
+            and_dst: crate::ir::VReg,
+            and_lhs: crate::ir::VReg,
+            and_rhs: crate::ir::VReg,
+            and_linear_op_index: usize,
+        ) -> Option<usize> {
+            let mut scan_linear_op_index = and_linear_op_index + 1;
+            for scan_index in and_op_index + 1..ir.ops.len() {
+                let op = &ir.ops[scan_index];
+                match op {
+                    LinearOp::BranchIf { cond, .. } | LinearOp::BranchIfZero { cond, .. }
+                        if *cond == and_dst =>
+                    {
+                        for lin in and_linear_op_index..=scan_linear_op_index {
+                            if self.has_inst_edits(lin) {
+                                return None;
+                            }
+                        }
+                        return Some(scan_index);
+                    }
+                    LinearOp::Label(_) => {
+                        scan_linear_op_index += 1;
+                        continue;
+                    }
+                    LinearOp::Branch(_)
+                    | LinearOp::BranchIf { .. }
+                    | LinearOp::BranchIfZero { .. }
+                    | LinearOp::JumpTable { .. }
+                    | LinearOp::ErrorExit { .. }
+                    | LinearOp::FuncStart { .. }
+                    | LinearOp::FuncEnd => return None,
+                    _ => {
+                        if Self::linear_op_uses_vreg(op, and_dst)
+                            || Self::linear_op_defs_vreg(op, and_dst)
+                            || Self::linear_op_defs_vreg(op, and_lhs)
+                            || Self::linear_op_defs_vreg(op, and_rhs)
+                        {
+                            return None;
+                        }
+                    }
+                }
+                scan_linear_op_index += 1;
+            }
+            None
+        }
+
         fn linear_ir_use_count_in_function(
             ir: &LinearIr,
             op_index: usize,
@@ -2164,6 +2213,15 @@ fn compile_linear_ir_aarch64(
         fn emit_branch_if(&mut self, cond: crate::ir::VReg, target: DynamicLabel, invert: bool) {
             let _ = cond;
             let alloc = self.current_alloc(0);
+            self.emit_branch_if_allocation(alloc, target, invert);
+        }
+
+        fn emit_branch_if_allocation(
+            &mut self,
+            alloc: Allocation,
+            target: DynamicLabel,
+            invert: bool,
+        ) {
             if let Some(reg) = alloc.as_reg() {
                 assert!(
                     reg.class() == regalloc2::RegClass::Int,
@@ -2479,6 +2537,7 @@ fn compile_linear_ir_aarch64(
         fn run(mut self, ir: &LinearIr) -> LinearBackendResult {
             let mut fused_cmpne_cond = None::<(usize, crate::ir::VReg)>;
             let mut skipped_ops = HashSet::<usize>::new();
+            let mut pending_and_branch = None::<(usize, crate::ir::VReg, Allocation, Allocation)>;
             for (op_index, op) in ir.ops.iter().enumerate() {
                 if let Some((expected_branch_op_index, expected_cond)) = fused_cmpne_cond {
                     if op_index > expected_branch_op_index {
@@ -2499,6 +2558,14 @@ fn compile_linear_ir_aarch64(
                             expected_cond
                         );
                     }
+                }
+                if let Some((expected_branch_op_index, _, _, _)) = pending_and_branch
+                    && op_index > expected_branch_op_index
+                {
+                    panic!(
+                        "pending and-branch peephole expected branch op index {}, reached {}",
+                        expected_branch_op_index, op_index
+                    );
                 }
                 let linear_op_index = if self.current_func.is_some()
                     && !matches!(op, LinearOp::FuncStart { .. } | LinearOp::FuncEnd)
@@ -2614,14 +2681,41 @@ fn compile_linear_ir_aarch64(
                                 None => false,
                                 Some(_) => false,
                             };
+                            let and_branch_allocs = match pending_and_branch {
+                                Some((expected_op_index, expected_cond, lhs_alloc, rhs_alloc))
+                                    if expected_op_index == op_index && expected_cond == *cond =>
+                                {
+                                    pending_and_branch = None;
+                                    Some((lhs_alloc, rhs_alloc))
+                                }
+                                Some((expected_op_index, expected_cond, _, _))
+                                    if expected_op_index == op_index =>
+                                {
+                                    panic!(
+                                        "pending and-branch expected condition {:?}, got {:?}",
+                                        expected_cond, cond
+                                    );
+                                }
+                                Some(_) => None,
+                                None => None,
+                            };
                             let lin_idx = linear_op_index
                                 .expect("BranchIf should have linear op index inside function");
                             let resolved_target = self.resolve_forwarded_label(*target);
                             let taken_target =
                                 self.edge_target_label(lin_idx, 0, self.label(resolved_target));
                             let mut emitted_cond_branch = false;
+                            if let Some((lhs_alloc, rhs_alloc)) = and_branch_allocs {
+                                let fallthrough_cont = self.ectx.new_label();
+                                self.emit_branch_if_allocation(lhs_alloc, fallthrough_cont, true);
+                                self.emit_branch_if_allocation(rhs_alloc, taken_target, false);
+                                self.ectx.bind_label(fallthrough_cont);
+                                self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                emitted_cond_branch = true;
+                            }
                             if !self.has_edge_edits(lin_idx, 1)
                                 && !use_cmp_flags
+                                && and_branch_allocs.is_none()
                                 && let (
                                     Some(LinearOp::Branch(next_target)),
                                     Some(LinearOp::Label(next_label)),
@@ -2650,6 +2744,7 @@ fn compile_linear_ir_aarch64(
                                 }
                             } else if !self.has_edge_edits(lin_idx, 1)
                                 && use_cmp_flags
+                                && and_branch_allocs.is_none()
                                 && let (
                                     Some(LinearOp::Branch(next_target)),
                                     Some(LinearOp::Label(next_label)),
@@ -2715,14 +2810,39 @@ fn compile_linear_ir_aarch64(
                                 None => false,
                                 Some(_) => false,
                             };
+                            let and_branch_allocs = match pending_and_branch {
+                                Some((expected_op_index, expected_cond, lhs_alloc, rhs_alloc))
+                                    if expected_op_index == op_index && expected_cond == *cond =>
+                                {
+                                    pending_and_branch = None;
+                                    Some((lhs_alloc, rhs_alloc))
+                                }
+                                Some((expected_op_index, expected_cond, _, _))
+                                    if expected_op_index == op_index =>
+                                {
+                                    panic!(
+                                        "pending and-branch expected condition {:?}, got {:?}",
+                                        expected_cond, cond
+                                    );
+                                }
+                                Some(_) => None,
+                                None => None,
+                            };
                             let lin_idx = linear_op_index
                                 .expect("BranchIfZero should have linear op index inside function");
                             let resolved_target = self.resolve_forwarded_label(*target);
                             let taken_target =
                                 self.edge_target_label(lin_idx, 0, self.label(resolved_target));
                             let mut emitted_cond_branch = false;
+                            if let Some((lhs_alloc, rhs_alloc)) = and_branch_allocs {
+                                self.emit_branch_if_allocation(lhs_alloc, taken_target, true);
+                                self.emit_branch_if_allocation(rhs_alloc, taken_target, true);
+                                self.apply_fallthrough_edge_edits(lin_idx, 1);
+                                emitted_cond_branch = true;
+                            }
                             if !self.has_edge_edits(lin_idx, 1)
                                 && !use_cmp_flags
+                                && and_branch_allocs.is_none()
                                 && let (
                                     Some(LinearOp::Branch(next_target)),
                                     Some(LinearOp::Label(next_label)),
@@ -2751,6 +2871,7 @@ fn compile_linear_ir_aarch64(
                                 }
                             } else if !self.has_edge_edits(lin_idx, 1)
                                 && use_cmp_flags
+                                && and_branch_allocs.is_none()
                                 && let (
                                     Some(LinearOp::Branch(next_target)),
                                     Some(LinearOp::Label(next_label)),
@@ -2850,30 +2971,36 @@ fn compile_linear_ir_aarch64(
                                     && *cond == *and_dst
                                     && Self::linear_ir_use_count_in_function(ir, op_index, *dst)
                                         == 1
-                                    && Self::linear_ir_use_count_in_function(
-                                        ir, op_index, *cmp1_dst,
-                                    ) == 1
                                     && Self::linear_ir_use_count_in_function(ir, op_index, *and_dst)
                                         == 1
                                     && !self.has_inst_edits(lin_idx + 1)
                                     && !self.has_inst_edits(lin_idx + 2)
                                     && !self.has_inst_edits(lin_idx + 3)
                                 {
-                                    let false_path = self.ectx.new_label();
-                                    self.emit_binop(*op, *dst, *lhs, *rhs, false);
-                                    self.emit_branch_on_last_cmp_ne(false_path, true);
+                                    let cmp1_allocs = self
+                                        .allocs_for_linear_op(lin_idx + 1)
+                                        .expect("missing allocs for second cmp in peephole");
+                                    let cmp1_dst_alloc = cmp1_allocs
+                                        .get(2)
+                                        .copied()
+                                        .expect("missing cmp1 dst alloc");
 
                                     let saved_allocs = self.current_inst_allocs.clone();
-                                    self.current_inst_allocs =
-                                        self.allocs_for_linear_op(lin_idx + 1);
+                                    self.current_inst_allocs = Some(cmp1_allocs);
+                                    // Keep cmp1 boolean materialized, because it may be consumed
+                                    // after the branch; this still lets us eliminate cmp0 cset/and.
                                     self.emit_binop(
                                         BinOpKind::CmpNe,
                                         *cmp1_dst,
                                         *cmp1_lhs,
                                         *cmp1_rhs,
-                                        false,
+                                        true,
                                     );
                                     self.current_inst_allocs = saved_allocs;
+
+                                    self.emit_binop(*op, *dst, *lhs, *rhs, false);
+                                    let fallthrough_cont = self.ectx.new_label();
+                                    self.emit_branch_on_last_cmp_ne(fallthrough_cont, true);
 
                                     let resolved_target = self.resolve_forwarded_label(*target);
                                     let taken_target = self.edge_target_label(
@@ -2881,8 +3008,12 @@ fn compile_linear_ir_aarch64(
                                         0,
                                         self.label(resolved_target),
                                     );
-                                    self.emit_branch_on_last_cmp_ne(taken_target, false);
-                                    self.ectx.bind_label(false_path);
+                                    self.emit_branch_if_allocation(
+                                        cmp1_dst_alloc,
+                                        taken_target,
+                                        false,
+                                    );
+                                    self.ectx.bind_label(fallthrough_cont);
                                     self.apply_fallthrough_edge_edits(lin_idx + 3, 1);
                                     self.set_const(*and_dst, None);
                                     skipped_ops.insert(op_index + 1);
@@ -2893,15 +3024,34 @@ fn compile_linear_ir_aarch64(
                             }
 
                             if !emitted_short_circuit_and_branch {
-                                self.emit_binop(
-                                    *op,
-                                    *dst,
-                                    *lhs,
-                                    *rhs,
-                                    fuse_cmpne_to_branch_op_index.is_none(),
-                                );
-                                if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
-                                    fused_cmpne_cond = Some((branch_op_index, *dst));
+                                let mut skipped_and_materialization = false;
+                                if *op == BinOpKind::And
+                                    && let Some(lin_idx) = linear_op_index
+                                    && !self.has_inst_edits(lin_idx)
+                                    && Self::linear_ir_use_count_in_function(ir, op_index, *dst)
+                                        == 1
+                                    && let Some(branch_op_index) = self.find_and_branch_use(
+                                        ir, op_index, *dst, *lhs, *rhs, lin_idx,
+                                    )
+                                {
+                                    let lhs_alloc = self.current_alloc(0);
+                                    let rhs_alloc = self.current_alloc(1);
+                                    pending_and_branch =
+                                        Some((branch_op_index, *dst, lhs_alloc, rhs_alloc));
+                                    self.set_const(*dst, None);
+                                    skipped_and_materialization = true;
+                                }
+                                if !skipped_and_materialization {
+                                    self.emit_binop(
+                                        *op,
+                                        *dst,
+                                        *lhs,
+                                        *rhs,
+                                        fuse_cmpne_to_branch_op_index.is_none(),
+                                    );
+                                    if let Some(branch_op_index) = fuse_cmpne_to_branch_op_index {
+                                        fused_cmpne_cond = Some((branch_op_index, *dst));
+                                    }
                                 }
                             }
                         }
