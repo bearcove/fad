@@ -854,7 +854,7 @@ fn compile_linear_ir_aarch64(
     alloc: &crate::regalloc_engine::AllocatedProgram,
 ) -> LinearBackendResult {
     use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, dynasm};
-    use regalloc2::{Allocation, Edit, InstPosition};
+    use regalloc2::{Allocation, Edit, InstPosition, PReg, RegClass};
     use std::collections::HashMap;
 
     use crate::arch::{EmitCtx, REGALLOC_BASE_FRAME};
@@ -1038,6 +1038,19 @@ fn compile_linear_ir_aarch64(
             }
             let r = preg.hw_enc() as u8;
             dynasm!(self.ectx.ops ; .arch aarch64 ; mov X(r), x9);
+            true
+        }
+
+        fn emit_mov_preg_to_preg(&mut self, from: PReg, to: PReg) -> bool {
+            if from == to {
+                return true;
+            }
+            if from.class() != RegClass::Int || to.class() != RegClass::Int {
+                return false;
+            }
+            let from_r = from.hw_enc() as u8;
+            let to_r = to.hw_enc() as u8;
+            dynasm!(self.ectx.ops ; .arch aarch64 ; mov X(to_r), X(from_r));
             true
         }
 
@@ -1304,6 +1317,45 @@ fn compile_linear_ir_aarch64(
         fn emit_store_def_x9(&mut self, _v: crate::ir::VReg, operand_index: usize) {
             let alloc = self.current_alloc(operand_index);
             let _ = self.emit_store_x9_to_allocation(alloc);
+        }
+
+        fn emit_set_abi_arg_from_allocation(&mut self, abi_arg: u8, operand_index: usize) {
+            let alloc = self.current_alloc(operand_index);
+            let target = PReg::new(abi_arg as usize, RegClass::Int);
+            if let Some(reg) = alloc.as_reg() {
+                assert!(
+                    self.emit_mov_preg_to_preg(reg, target),
+                    "unsupported register allocation class {:?} for CallLambda arg",
+                    reg.class()
+                );
+                return;
+            }
+            if let Some(slot) = alloc.as_stack() {
+                let off = self.spill_off(slot);
+                let target_r = target.hw_enc() as u8;
+                dynasm!(self.ectx.ops ; .arch aarch64 ; ldr X(target_r), [sp, #off]);
+                return;
+            }
+            panic!("unexpected none allocation for CallLambda arg");
+        }
+
+        fn emit_capture_abi_ret_to_allocation(&mut self, abi_ret: u8, operand_index: usize) {
+            let alloc = self.current_alloc(operand_index);
+            let source = PReg::new(abi_ret as usize, RegClass::Int);
+            if let Some(reg) = alloc.as_reg() {
+                assert!(
+                    self.emit_mov_preg_to_preg(source, reg),
+                    "unsupported register allocation class {:?} for CallLambda result",
+                    reg.class()
+                );
+                return;
+            }
+            if let Some(slot) = alloc.as_stack() {
+                let off = self.spill_off(slot);
+                let _ = self.emit_store_stack_from_preg(source, off);
+                return;
+            }
+            panic!("unexpected none allocation for CallLambda result");
         }
 
         fn emit_load_u32_w10(&mut self, value: u32) {
@@ -1917,16 +1969,8 @@ fn compile_linear_ir_aarch64(
             );
 
             for (i, &arg) in args.iter().enumerate() {
-                self.emit_load_use_x9(arg, i);
-                match i {
-                    0 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x2, x9),
-                    1 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x3, x9),
-                    2 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x4, x9),
-                    3 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x5, x9),
-                    4 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x6, x9),
-                    5 => dynasm!(self.ectx.ops ; .arch aarch64 ; mov x7, x9),
-                    _ => unreachable!(),
-                }
+                let _ = arg;
+                self.emit_set_abi_arg_from_allocation((i + 2) as u8, i);
             }
 
             dynasm!(self.ectx.ops ; .arch aarch64 ; bl =>label);
@@ -1938,12 +1982,12 @@ fn compile_linear_ir_aarch64(
             );
 
             if let Some(&dst) = results.first() {
-                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x0);
-                self.emit_store_def_x9(dst, args.len());
+                let _ = dst;
+                self.emit_capture_abi_ret_to_allocation(0, args.len());
             }
             if let Some(&dst) = results.get(1) {
-                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x1);
-                self.emit_store_def_x9(dst, args.len() + 1);
+                let _ = dst;
+                self.emit_capture_abi_ret_to_allocation(1, args.len() + 1);
             }
         }
 
