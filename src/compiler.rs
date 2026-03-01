@@ -1978,13 +1978,32 @@ pub fn compile_linear_ir_decoder(
         crate::ir_backend::compile_linear_ir_with_alloc(ir, &regalloc_alloc);
     let func: unsafe extern "C" fn(*mut u8, *mut crate::context::DeserContext) =
         unsafe { core::mem::transmute(buf.ptr(entry)) };
+    let root_name = ir
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            crate::linearize::LinearOp::FuncStart {
+                lambda_id, shape, ..
+            } if lambda_id.index() == 0 => Some(format!("fad::decode::{}", shape.type_identifier)),
+            _ => None,
+        })
+        .unwrap_or_else(|| "fad::decode::<ir-root>".to_string());
+    let registration = crate::jit_debug::register_jit_code(
+        buf.as_ptr(),
+        buf.len(),
+        &[crate::jit_debug::JitSymbolEntry {
+            name: root_name,
+            offset: entry.0,
+            size: buf.len().saturating_sub(entry.0),
+        }],
+    );
 
     CompiledDecoder {
         buf,
         entry,
         func,
         trusted_utf8_input,
-        _jit_registration: None,
+        _jit_registration: Some(registration),
     }
 }
 

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ir::{
-    InputPort, IrFunc, LambdaId, Node, NodeId, NodeKind, OutputRef, PortSource, Region,
+    InputPort, IrFunc, IrOp, LambdaId, Node, NodeId, NodeKind, OutputRef, PortSource, Region,
     RegionArgRef, RegionId, RegionResult,
 };
 
@@ -11,7 +11,189 @@ const MAX_INLINE_CALL_SITES_MULTI_USE: usize = 4;
 
 // r[impl ir.passes]
 pub fn run_default_passes(func: &mut IrFunc) {
+    hoist_theta_loop_invariant_setup_pass(func);
     inline_apply_pass(func);
+}
+
+// r[impl ir.passes.pre-regalloc.loop-invariants]
+fn hoist_theta_loop_invariant_setup_pass(func: &mut IrFunc) {
+    loop {
+        let live_nodes = collect_live_nodes(func);
+        let theta_nodes: Vec<NodeId> = func
+            .nodes
+            .iter()
+            .filter_map(|(nid, node)| {
+                if live_nodes.contains(&nid) && matches!(node.kind, NodeKind::Theta { .. }) {
+                    Some(nid)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut changed = false;
+        for theta in theta_nodes {
+            if hoist_theta_loop_invariants_for_node(func, theta) {
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn hoist_theta_loop_invariants_for_node(func: &mut IrFunc, theta: NodeId) -> bool {
+    let (parent_region, body_region) = {
+        let node = &func.nodes[theta];
+        let NodeKind::Theta { body } = &node.kind else {
+            return false;
+        };
+        (node.region, *body)
+    };
+
+    let body_nodes = func.regions[body_region].nodes.clone();
+    let body_node_set: HashSet<NodeId> = body_nodes.iter().copied().collect();
+    let mut hoistable_set = HashSet::new();
+    let mut hoistable_nodes = Vec::new();
+
+    for node_id in body_nodes.iter().copied() {
+        let NodeKind::Simple(op) = &func.nodes[node_id].kind else {
+            continue;
+        };
+        if !is_hoistable_theta_setup_op(op) {
+            continue;
+        }
+        if func.nodes[node_id].inputs.iter().all(|inp| {
+            source_is_theta_invariant(
+                inp.source,
+                body_region,
+                &body_node_set,
+                &hoistable_set,
+            )
+        }) {
+            hoistable_set.insert(node_id);
+            hoistable_nodes.push(node_id);
+        }
+    }
+
+    if hoistable_nodes.is_empty() {
+        return false;
+    }
+
+    let Some(theta_pos) = func.regions[parent_region]
+        .nodes
+        .iter()
+        .position(|&n| n == theta)
+    else {
+        return false;
+    };
+
+    let mut old_to_new = HashMap::new();
+    let mut inserted = Vec::new();
+
+    for old_node in hoistable_nodes.iter().copied() {
+        let old_inputs = func.nodes[old_node].inputs.clone();
+        let old_outputs = func.nodes[old_node].outputs.clone();
+        let NodeKind::Simple(op) = &func.nodes[old_node].kind else {
+            continue;
+        };
+
+        let new_inputs: Vec<InputPort> = old_inputs
+            .into_iter()
+            .map(|inp| InputPort {
+                kind: inp.kind,
+                source: remap_hoisted_source(inp.source, &old_to_new),
+            })
+            .collect();
+
+        let new_node = func.nodes.push(Node {
+            region: parent_region,
+            inputs: new_inputs,
+            outputs: old_outputs,
+            kind: NodeKind::Simple(op.clone()),
+        });
+
+        old_to_new.insert(old_node, new_node);
+        inserted.push(new_node);
+    }
+
+    for (idx, node_id) in inserted.iter().copied().enumerate() {
+        func.regions[parent_region].nodes.insert(theta_pos + idx, node_id);
+    }
+
+    for old_node in hoistable_nodes.iter().copied() {
+        let Some(new_node) = old_to_new.get(&old_node).copied() else {
+            continue;
+        };
+        let output_len = func.nodes[old_node].outputs.len();
+        for out_idx in 0..output_len {
+            let from = OutputRef {
+                node: old_node,
+                index: out_idx as u16,
+            };
+            let to = PortSource::Node(OutputRef {
+                node: new_node,
+                index: out_idx as u16,
+            });
+            replace_output_use(func, from, to);
+        }
+    }
+
+    let hoisted: HashSet<NodeId> = hoistable_nodes.into_iter().collect();
+    func.regions[body_region]
+        .nodes
+        .retain(|nid| !hoisted.contains(nid));
+
+    true
+}
+
+fn remap_hoisted_source(source: PortSource, old_to_new: &HashMap<NodeId, NodeId>) -> PortSource {
+    match source {
+        PortSource::Node(out) => {
+            if let Some(new_node) = old_to_new.get(&out.node).copied() {
+                PortSource::Node(OutputRef {
+                    node: new_node,
+                    index: out.index,
+                })
+            } else {
+                PortSource::Node(out)
+            }
+        }
+        other => other,
+    }
+}
+
+fn source_is_theta_invariant(
+    source: PortSource,
+    body_region: RegionId,
+    body_node_set: &HashSet<NodeId>,
+    hoistable_set: &HashSet<NodeId>,
+) -> bool {
+    match source {
+        PortSource::Node(out) => {
+            !body_node_set.contains(&out.node) || hoistable_set.contains(&out.node)
+        }
+        PortSource::RegionArg(arg) => arg.region != body_region,
+    }
+}
+
+fn is_hoistable_theta_setup_op(op: &IrOp) -> bool {
+    matches!(
+        op,
+        IrOp::Const { .. }
+            | IrOp::Add
+            | IrOp::Sub
+            | IrOp::And
+            | IrOp::Or
+            | IrOp::Xor
+            | IrOp::Shl
+            | IrOp::Shr
+            | IrOp::CmpNe
+            | IrOp::ZigzagDecode { .. }
+            | IrOp::SignExtend { .. }
+    )
 }
 
 fn inline_apply_pass(func: &mut IrFunc) {
@@ -415,7 +597,7 @@ fn inline_one_apply(func: &mut IrFunc, apply: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrBuilder, NodeKind, Width};
+    use crate::ir::{IrBuilder, IrOp, NodeKind, Width};
 
     #[test]
     fn inlines_simple_apply() {
@@ -473,5 +655,166 @@ mod tests {
             .filter(|(id, n)| live.contains(id) && matches!(n.kind, NodeKind::Apply { .. }))
             .count();
         assert_eq!(apply_count, 1);
+    }
+
+    // r[verify ir.passes.pre-regalloc.loop-invariants]
+    #[test]
+    fn hoists_theta_invariant_setup_consts_out_of_body() {
+        let mut builder = IrBuilder::new(<u8 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let init_count = rb.const_val(3);
+            let one = rb.const_val(1);
+            let _ = rb.theta(&[init_count, one], |bb| {
+                let args = bb.region_args(2);
+                let counter = args[0];
+                let one = args[1];
+                let invariant_setup = bb.const_val(7);
+                let _ = bb.binop(IrOp::Add, invariant_setup, invariant_setup);
+                let next = bb.binop(IrOp::Sub, counter, one);
+                bb.set_results(&[next, next, one]);
+            });
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let root = func.root_body();
+        let theta_before = func.regions[root]
+            .nodes
+            .iter()
+            .copied()
+            .find(|&nid| matches!(func.nodes[nid].kind, NodeKind::Theta { .. }))
+            .expect("expected theta node");
+        let body_before = match &func.nodes[theta_before].kind {
+            NodeKind::Theta { body } => *body,
+            _ => unreachable!("expected theta node"),
+        };
+        let body_const_before = func.regions[body_before]
+            .nodes
+            .iter()
+            .filter(|&&nid| matches!(func.nodes[nid].kind, NodeKind::Simple(IrOp::Const { .. })))
+            .count();
+        assert!(
+            body_const_before >= 1,
+            "expected invariant setup const in theta body before pass"
+        );
+
+        run_default_passes(&mut func);
+
+        let theta_after = func.regions[root]
+            .nodes
+            .iter()
+            .copied()
+            .find(|&nid| matches!(func.nodes[nid].kind, NodeKind::Theta { .. }))
+            .expect("expected theta node");
+        let body_after = match &func.nodes[theta_after].kind {
+            NodeKind::Theta { body } => *body,
+            _ => unreachable!("expected theta node"),
+        };
+        let body_const_after = func.regions[body_after]
+            .nodes
+            .iter()
+            .filter(|&&nid| matches!(func.nodes[nid].kind, NodeKind::Simple(IrOp::Const { .. })))
+            .count();
+        assert_eq!(
+            body_const_after, 0,
+            "expected invariant setup consts to be hoisted out of theta body"
+        );
+
+        let theta_pos = func.regions[root]
+            .nodes
+            .iter()
+            .position(|&nid| nid == theta_after)
+            .expect("theta should stay in root region");
+        let hoisted_consts = func.regions[root].nodes[..theta_pos]
+            .iter()
+            .filter(|&&nid| matches!(func.nodes[nid].kind, NodeKind::Simple(IrOp::Const { .. })))
+            .count();
+        assert!(
+            hoisted_consts >= 1,
+            "expected invariant setup const hoisted before theta"
+        );
+    }
+
+    // r[verify ir.passes.pre-regalloc.loop-invariants]
+    #[test]
+    fn hoists_theta_invariant_expression_tree_out_of_body() {
+        let mut builder = IrBuilder::new(<u8 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let init_count = rb.const_val(4);
+            let one = rb.const_val(1);
+            let _ = rb.theta(&[init_count, one], |bb| {
+                let args = bb.region_args(2);
+                let counter = args[0];
+                let one = args[1];
+
+                let c7 = bb.const_val(7);
+                let c3 = bb.const_val(3);
+                let s = bb.binop(IrOp::Add, c7, c3);
+                let x = bb.binop(IrOp::Xor, s, c3);
+                let next = bb.binop(IrOp::Sub, counter, one);
+                let _ = bb.binop(IrOp::Add, x, next);
+
+                bb.set_results(&[next, next, one]);
+            });
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let root = func.root_body();
+        let theta_before = func.regions[root]
+            .nodes
+            .iter()
+            .copied()
+            .find(|&nid| matches!(func.nodes[nid].kind, NodeKind::Theta { .. }))
+            .expect("expected theta node");
+        let body_before = match &func.nodes[theta_before].kind {
+            NodeKind::Theta { body } => *body,
+            _ => unreachable!("expected theta node"),
+        };
+        let invariant_tree_nodes_before = func.regions[body_before]
+            .nodes
+            .iter()
+            .filter(|&&nid| {
+                matches!(
+                    func.nodes[nid].kind,
+                    NodeKind::Simple(IrOp::Const { .. })
+                        | NodeKind::Simple(IrOp::Add)
+                        | NodeKind::Simple(IrOp::Xor)
+                )
+            })
+            .count();
+        assert!(
+            invariant_tree_nodes_before >= 4,
+            "expected invariant expression tree in theta body before pass"
+        );
+
+        run_default_passes(&mut func);
+
+        let theta_after = func.regions[root]
+            .nodes
+            .iter()
+            .copied()
+            .find(|&nid| matches!(func.nodes[nid].kind, NodeKind::Theta { .. }))
+            .expect("expected theta node");
+        let body_after = match &func.nodes[theta_after].kind {
+            NodeKind::Theta { body } => *body,
+            _ => unreachable!("expected theta node"),
+        };
+        let invariant_tree_nodes_after = func.regions[body_after]
+            .nodes
+            .iter()
+            .filter(|&&nid| {
+                matches!(
+                    func.nodes[nid].kind,
+                    NodeKind::Simple(IrOp::Const { .. })
+                        | NodeKind::Simple(IrOp::Add)
+                        | NodeKind::Simple(IrOp::Xor)
+                )
+            })
+            .count();
+        assert_eq!(
+            invariant_tree_nodes_after, 0,
+            "expected invariant expression tree nodes to be hoisted out of theta body"
+        );
     }
 }

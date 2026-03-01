@@ -4,6 +4,21 @@
 //! can display function names in backtraces instead of `???`.
 //!
 //! Reference: <https://sourceware.org/gdb/current/onlinedocs/gdb.html/JIT-Interface.html>
+//!
+//! LLDB notes (macOS)
+//! ------------------
+//! LLDB keeps the GDB JIT loader disabled by default on macOS. Enable it:
+//!
+//! `settings set plugin.jit-loader.gdb.enable on`
+//!
+//! This module emits a minimal JIT ELF (`.text` + symbol table). Symbol names
+//! are available (for example `fad::decode::...`), but `thread backtrace` may
+//! still show raw PCs for top JIT frames. Use explicit lookup when debugging:
+//!
+//! - `image list` (confirm a `JIT(...)` image is loaded)
+//! - `image lookup -a <pc>` (resolve the crashing JIT PC)
+//! - `image lookup -rn 'fad::decode::'` (list registered decode symbols)
+//! - `image lookup -rn 'fad::encode::'` (list registered encode symbols)
 
 use std::io::Write;
 use std::sync::Mutex;

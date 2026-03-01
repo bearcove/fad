@@ -538,8 +538,8 @@ fn coalesce_uncond_branch_tail_copies(block: &mut RaBlock) {
     let RaTerminator::Branch { target } = block.term else {
         return;
     };
-    if target.index() == 0 || block.succs.len() != 1 {
-        // Keep entry/backedge behavior conservative for now.
+    if target.index() == 0 || target.index() <= block.id.index() || block.succs.len() != 1 {
+        // Keep entry and backward-edge behavior conservative for now.
         return;
     }
 
@@ -550,15 +550,50 @@ fn coalesce_uncond_branch_tail_copies(block: &mut RaBlock) {
     if tail_start == block.insts.len() {
         return;
     }
-    if block.insts.len() - tail_start != 1 {
-        return;
-    }
-
-    let inst = &mut block.insts[tail_start];
-    let LinearOp::Copy { dst, src } = inst.op else {
+    let last_idx = block.insts.len() - 1;
+    let LinearOp::Copy { dst, src } = block.insts[last_idx].op else {
         unreachable!("tail range should only contain copy ops");
     };
     if dst == src {
+        return;
+    }
+    let edge_args_before = block.succs[0].args.clone();
+    let has_dst_arg = edge_args_before.contains(&dst);
+    let has_other_src_arg = edge_args_before.iter().any(|&arg| arg == src && arg != dst);
+    if has_dst_arg && has_other_src_arg {
+        // Avoid introducing duplicate source args on the same edge; this can
+        // destabilize parallel block-parameter moves.
+        return;
+    }
+
+    let tail = &block.insts[tail_start..];
+    let mut original_sym = std::collections::HashMap::<VReg, VReg>::new();
+    for inst in tail {
+        let LinearOp::Copy { dst, src } = inst.op else {
+            unreachable!("tail range should only contain copy ops");
+        };
+        let resolved = original_sym.get(&src).copied().unwrap_or(src);
+        original_sym.insert(dst, resolved);
+    }
+    let original_edge_values: Vec<VReg> = edge_args_before
+        .iter()
+        .map(|arg| original_sym.get(arg).copied().unwrap_or(*arg))
+        .collect();
+
+    let mut rewritten_sym = std::collections::HashMap::<VReg, VReg>::new();
+    for inst in &tail[..tail.len() - 1] {
+        let LinearOp::Copy { dst, src } = inst.op else {
+            unreachable!("tail range should only contain copy ops");
+        };
+        let resolved = rewritten_sym.get(&src).copied().unwrap_or(src);
+        rewritten_sym.insert(dst, resolved);
+    }
+    let rewritten_edge_values: Vec<VReg> = edge_args_before
+        .iter()
+        .map(|arg| if *arg == dst { src } else { *arg })
+        .map(|arg| rewritten_sym.get(&arg).copied().unwrap_or(arg))
+        .collect();
+    if original_edge_values != rewritten_edge_values {
         return;
     }
 
@@ -573,13 +608,9 @@ fn coalesce_uncond_branch_tail_copies(block: &mut RaBlock) {
     if !rewrote {
         return;
     }
-
-    // Keep allocation-index stability for backend mapping while making the
-    // coalesced tail copy semantically inert for regalloc.
-    inst.op = LinearOp::Copy { dst: src, src };
-    if inst.operands.len() >= 2 {
-        inst.operands[1].vreg = src;
-    }
+    // Keep instruction/operand indexing fully stable for backend/regalloc.
+    // We coalesce by rewriting edge args only; the original tail copy remains
+    // in place (possibly dead) to preserve all mapping invariants.
 }
 
 fn push_use(out: &mut Vec<RaOperand>, v: VReg, fixed: Option<FixedReg>) {
@@ -833,6 +864,75 @@ mod tests {
         assert!(
             saw_non_identity_edge,
             "expected at least one coalesced edge argument to differ from merge params"
+        );
+    }
+
+    // r[verify ir.passes.pre-regalloc.coalescing]
+    #[test]
+    fn ra_mir_coalesces_multiple_tail_copies_on_uncond_branch_edges() {
+        let mut builder = IrBuilder::new(<u32 as facet::Facet>::SHAPE);
+        {
+            let mut rb = builder.root_region();
+            let pred = rb.const_val(0);
+            let out = rb.gamma(pred, &[], 2, |branch_idx, bb| {
+                let lhs = if branch_idx == 0 {
+                    bb.const_val(11)
+                } else {
+                    bb.const_val(33)
+                };
+                let rhs = if branch_idx == 0 {
+                    bb.const_val(22)
+                } else {
+                    bb.const_val(44)
+                };
+                bb.set_results(&[lhs, rhs]);
+            });
+            rb.write_to_field(out[0], 0, Width::W4);
+            rb.write_to_field(out[1], 4, Width::W4);
+            rb.set_results(&[]);
+        }
+        let mut func = builder.finish();
+        let lin = linearize(&mut func);
+        let ra = lower_linear_ir(&lin);
+        let root = &ra.funcs[0];
+        let merge = root
+            .blocks
+            .iter()
+            .find(|b| b.preds.len() >= 2 && b.params.len() >= 2)
+            .expect("missing merge block with multiple params");
+
+        let mut saw_multi_tail_block = false;
+        let mut saw_rewrite_in_multi_tail_block = false;
+        for pred in &merge.preds {
+            let pred_block = &root.blocks[pred.index()];
+            let edge = pred_block
+                .succs
+                .iter()
+                .find(|e| e.to == merge.id)
+                .expect("pred should have edge to merge");
+            assert_eq!(edge.args.len(), merge.params.len());
+
+            let mut tail_copies = Vec::new();
+            for inst in pred_block.insts.iter().rev() {
+                let LinearOp::Copy { dst, src } = inst.op else {
+                    break;
+                };
+                tail_copies.push((dst, src));
+            }
+            if tail_copies.len() >= 2 {
+                saw_multi_tail_block = true;
+                if edge.args != merge.params {
+                    saw_rewrite_in_multi_tail_block = true;
+                }
+            }
+        }
+        assert!(
+            saw_multi_tail_block,
+            "expected at least one predecessor with multiple tail copies"
+        );
+        assert!(
+            saw_rewrite_in_multi_tail_block,
+            "expected at least one rewritten edge arg in multi-tail-copy predecessor"
         );
     }
 
