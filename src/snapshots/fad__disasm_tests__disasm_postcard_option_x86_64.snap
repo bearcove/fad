@@ -84,8 +84,8 @@ expression: out
   mov rax, 0x<imm>
   call rax
   mov r12, qword [r15]
-  mov r11d, dword [r15 + 0x10]
-  test r11d, r11d
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
   jnz $+0x301
   mov r10d, dword [rsp + 0x30]
   mov dword [rsp + 0x30], r10d
@@ -149,8 +149,8 @@ expression: out
   mov rax, 0x<imm>
   call rax
   mov r12, qword [r15]
-  mov r11d, dword [r15 + 0x10]
-  test r11d, r11d
+  mov r10d, dword [r15 + 0x10]
+  test r10d, r10d
   jnz $+0x176
   mov r10d, dword [rsp + 0x30]
   mov dword [rsp + 0x30], r10d

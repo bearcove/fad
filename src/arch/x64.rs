@@ -43,6 +43,70 @@ pub struct EmitCtx {
 //   Windows x64:     arg0=rcx, arg1=rdx, arg2=r8,  arg3=r9   (4 register args only)
 
 impl EmitCtx {
+    // ── Call helpers ──────────────────────────────────────────────────
+    //
+    // These small helpers factor out the repeated patterns around function
+    // calls in the JIT: flushing/reloading the cached cursor, loading a
+    // function pointer, and checking the error flag.
+
+    /// Load a function pointer into rax and call it.
+    fn emit_call_fn_ptr(&mut self, ptr: *const u8) {
+        let ptr_val = ptr as i64;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov rax, QWORD ptr_val
+            ; call rax
+        );
+    }
+
+    /// Flush the cached input cursor (r12) back to ctx.input_ptr.
+    fn emit_flush_input_cursor(&mut self) {
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+    }
+
+    /// Reload the cached input cursor from ctx and check the error flag.
+    /// Branches to `error_exit` if `ctx.error.code != 0`.
+    fn emit_reload_cursor_and_check_error(&mut self) {
+        let error_exit = self.error_exit;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Check the error flag without reloading the cursor.
+    /// Branches to `error_exit` if `ctx.error.code != 0`.
+    fn emit_check_error(&mut self) {
+        let error_exit = self.error_exit;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
+    /// Flush the cached output cursor (r12) back to ctx for encoding.
+    fn emit_enc_flush_output_cursor(&mut self) {
+        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+    }
+
+    /// Reload output_ptr and output_end from ctx and check the error flag.
+    fn emit_enc_reload_and_check_error(&mut self) {
+        let error_exit = self.error_exit;
+        dynasm!(self.ops
+            ; .arch x64
+            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
+            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
+            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
+            ; test r10d, r10d
+            ; jnz =>error_exit
+        );
+    }
+
     /// Create a new EmitCtx. Does not emit any code.
     ///
     /// `extra_stack` is the number of additional bytes the format needs on the
@@ -196,31 +260,13 @@ impl EmitCtx {
     ///
     /// r[impl callconv.inter-function]
     pub fn emit_call_emitted_func(&mut self, label: DynamicLabel, field_offset: u32) {
-        let error_exit = self.error_exit;
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Flush cached cursor back to ctx
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-        );
-        // Set up arguments: arg0 = out + field_offset, arg1 = ctx
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; lea rdi, [r14 + field_offset as i32] ; mov rsi, r15);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; lea rcx, [r14 + field_offset as i32] ; mov rdx, r15);
-        dynasm!(self.ops
-            ; .arch x64
-            // Call the emitted function via PC-relative call
-            ; call =>label
-
-            // Reload cached cursor from ctx (callee may have advanced it)
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-
-            // Check error: if ctx.error.code != 0, branch to error exit
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        dynasm!(self.ops ; .arch x64 ; call =>label);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Emit a call to an intrinsic function.
@@ -229,77 +275,37 @@ impl EmitCtx {
     /// Sets up args: rdi = ctx, rsi = out + field_offset.
     /// After the call: reloads input_ptr from ctx, checks error slot.
     pub fn emit_call_intrinsic(&mut self, fn_ptr: *const u8, field_offset: u32) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Flush cached cursor back to ctx
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-        );
-        // Set up arguments: arg0 = ctx, arg1 = out + field_offset
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [r14 + field_offset as i32]);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [r14 + field_offset as i32]);
-        dynasm!(self.ops
-            ; .arch x64
-            // Load function pointer into rax and call
-            ; mov rax, QWORD ptr_val
-            ; call rax
-
-            // Reload cached cursor from ctx (intrinsic may have advanced it)
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-
-            // Check error: if ctx.error.code != 0, branch to error exit
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Emit a call to an intrinsic that takes only ctx as argument.
     /// Flushes cursor, calls, reloads cursor, checks error.
     pub fn emit_call_intrinsic_ctx_only(&mut self, fn_ptr: *const u8) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15);
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Emit a call to an intrinsic that takes (ctx, &mut stack_slot).
     /// arg0 = ctx, arg1 = rsp + sp_offset. Flushes/reloads cursor, checks error.
     pub fn emit_call_intrinsic_ctx_and_stack_out(&mut self, fn_ptr: *const u8, sp_offset: u32) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [rsp + sp_offset as i32]);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [rsp + sp_offset as i32]);
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Emit a call to an intrinsic that takes (ctx, out_ptr1, out_ptr2).
@@ -310,10 +316,7 @@ impl EmitCtx {
         sp_offset1: u32,
         sp_offset2: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
@@ -326,15 +329,8 @@ impl EmitCtx {
             ; lea rdx, [rsp + sp_offset1 as i32]
             ; lea r8, [rsp + sp_offset2 as i32]
         );
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Emit a call to a pure function (no ctx, no flush/reload/error-check).
@@ -348,7 +344,6 @@ impl EmitCtx {
         expected_ptr: *const u8,
         expected_len: u32,
     ) {
-        let ptr_val = fn_ptr as i64;
         let expected_addr = expected_ptr as i64;
 
         #[cfg(not(windows))]
@@ -358,8 +353,6 @@ impl EmitCtx {
             ; mov rsi, [rsp + arg1_sp_offset as i32]
             ; mov rdx, QWORD expected_addr
             ; mov ecx, expected_len as i32
-            ; mov rax, QWORD ptr_val
-            ; call rax
         );
         #[cfg(windows)]
         dynasm!(self.ops
@@ -368,9 +361,8 @@ impl EmitCtx {
             ; mov rdx, [rsp + arg1_sp_offset as i32]
             ; mov r8, QWORD expected_addr
             ; mov r9d, expected_len as i32
-            ; mov rax, QWORD ptr_val
-            ; call rax
         );
+        self.emit_call_fn_ptr(fn_ptr);
     }
 
     /// Allocate a new dynamic label.
@@ -750,55 +742,32 @@ impl EmitCtx {
         field_offset: u32,
         start_sp_offset: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        // Compute len = r12 - start (into rax), load start into r10
+        // Compute len = r12 - start, flush cursor advanced past closing '"'
         dynasm!(self.ops
             ; .arch x64
-            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov r10, [rsp + start_sp_offset as i32]
             ; mov rax, r12
-            ; sub rax, r10                              // rax = len
-        );
-
-        // Flush cursor (advance past closing '"' first)
-        dynasm!(self.ops
-            ; .arch x64
-            ; lea r11, [r12 + 1]                        // r11 = cursor after closing '"'
+            ; sub rax, r10
+            ; lea r11, [r12 + 1]
             ; mov [r15 + CTX_INPUT_PTR as i32], r11
         );
-
-        // Call fn(ctx, out+offset, start, len)
-        // System V: rdi=ctx, rsi=out+offset, rdx=start, rcx=len
+        // Args: ctx, out+offset, start, len
         #[cfg(not(windows))]
-        dynasm!(self.ops
-            ; .arch x64
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
             ; lea rsi, [r14 + field_offset as i32]
-            ; mov rdx, r10                              // start
-            ; mov rcx, rax                              // len
+            ; mov rdx, r10
+            ; mov rcx, rax
         );
-        // Windows: rcx=ctx, rdx=out+offset, r8=start, r9=len
         #[cfg(windows)]
-        dynasm!(self.ops
-            ; .arch x64
+        dynasm!(self.ops ; .arch x64
             ; mov rcx, r15
             ; lea rdx, [r14 + field_offset as i32]
-            ; mov r8, r10                               // start
-            ; mov r9, rax                               // len
+            ; mov r8, r10
+            ; mov r9, rax
         );
-
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            // Reload cursor (intrinsic sets ctx.input_ptr past closing '"')
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            // Check error
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Call a post-scan escape intrinsic: fn(ctx, out+field_offset, start, prefix_len).
@@ -811,50 +780,29 @@ impl EmitCtx {
         field_offset: u32,
         start_sp_offset: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        // Compute prefix_len = r12 - start, load start
         dynasm!(self.ops
             ; .arch x64
-            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov r10, [rsp + start_sp_offset as i32]
             ; mov rax, r12
-            ; sub rax, r10                              // rax = prefix_len
+            ; sub rax, r10
         );
-
-        // Flush cursor (at '\' byte)
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
-        );
-
-        // Call fn(ctx, out+offset, start, prefix_len)
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
-        dynasm!(self.ops
-            ; .arch x64
+        dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
             ; lea rsi, [r14 + field_offset as i32]
-            ; mov rdx, r10                              // start
-            ; mov rcx, rax                              // prefix_len
+            ; mov rdx, r10
+            ; mov rcx, rax
         );
         #[cfg(windows)]
-        dynasm!(self.ops
-            ; .arch x64
+        dynasm!(self.ops ; .arch x64
             ; mov rcx, r15
             ; lea rdx, [r14 + field_offset as i32]
-            ; mov r8, r10                               // start
-            ; mov r9, rax                               // prefix_len
+            ; mov r8, r10
+            ; mov r9, rax
         );
-
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Call fad_string_validate_alloc_copy(ctx, start, len) for the String malum path.
@@ -867,48 +815,21 @@ impl EmitCtx {
         start_sp_offset: u32,
         len_save_sp_offset: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        // Compute len = r12 - start
         dynasm!(self.ops
             ; .arch x64
-            ; mov r10, [rsp + start_sp_offset as i32]  // r10 = start
+            ; mov r10, [rsp + start_sp_offset as i32]
             ; mov r11, r12
-            ; sub r11, r10                              // r11 = len
-            // Save len to stack (survives call)
+            ; sub r11, r10
             ; mov [rsp + len_save_sp_offset as i32], r11
         );
-
-        // Flush cursor
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
-
-        // Call fn(ctx, data_ptr=start, data_len=len as u32)
+        self.emit_flush_input_cursor();
         #[cfg(not(windows))]
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rdi, r15
-            ; mov rsi, r10                              // start
-            ; mov edx, r11d                             // len (u32)
-        );
+        dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, r10 ; mov edx, r11d);
         #[cfg(windows)]
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rcx, r15
-            ; mov rdx, r10                              // start
-            ; mov r8d, r11d                             // len (u32)
-        );
-
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            // rax = buf pointer (or null on error)
-            // Check error
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, r10 ; mov r8d, r11d);
+        self.emit_call_fn_ptr(fn_ptr);
+        // rax = buf pointer — no cursor reload needed
+        self.emit_check_error();
     }
 
     /// Write String fields (ptr, len, cap) using malum offsets after validate_alloc_copy.
@@ -947,9 +868,6 @@ impl EmitCtx {
         key_ptr_sp_offset: u32,
         key_len_sp_offset: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
         // Compute prefix_len = r12 - start
         dynasm!(self.ops
             ; .arch x64
@@ -959,7 +877,7 @@ impl EmitCtx {
         );
 
         // Flush cursor (at '\' byte)
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
 
         // Call fn(ctx, start, prefix_len, &key_ptr, &key_len)
         // System V: rdi=ctx, rsi=start, rdx=prefix_len, rcx=&key_ptr, r8=&key_len
@@ -984,15 +902,8 @@ impl EmitCtx {
             ; mov [rsp + 0x20], rax                     // shadow space arg5
         );
 
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_reload_cursor_and_check_error();
     }
 
     // ── Enum support ──────────────────────────────────────────────────
@@ -1031,11 +942,9 @@ impl EmitCtx {
     /// After this, the caller emits `emit_cmp_imm_branch_eq` for each variant.
     /// The discriminant value is in r10d.
     pub fn emit_read_postcard_discriminant(&mut self, slow_intrinsic: *const u8) {
-        let error_exit = self.error_exit;
         let eof_label = self.ops.new_dynamic_label();
         let slow_path = self.ops.new_dynamic_label();
         let done_label = self.ops.new_dynamic_label();
-        let ptr_val = slow_intrinsic as i64;
 
         dynasm!(self.ops
             ; .arch x64
@@ -1053,17 +962,17 @@ impl EmitCtx {
 
             // Slow path: call full varint decode intrinsic
             ; =>slow_path
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
         );
+        self.emit_flush_input_cursor();
         // arg0 = ctx, arg1 = pointer to temp u32 at BASE_FRAME (start of extra area)
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [rsp + BASE_FRAME as i32]);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [rsp + BASE_FRAME as i32]);
+        self.emit_call_fn_ptr(slow_intrinsic);
+        let error_exit = self.error_exit;
         dynasm!(self.ops
             ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
             ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
             ; test r11d, r11d
@@ -1285,7 +1194,6 @@ impl EmitCtx {
     /// Call fad_option_init_none(init_none_fn, out + offset).
     /// Does not touch ctx or the cursor.
     pub fn emit_call_option_init_none(&mut self, wrapper_fn: *const u8, init_none_fn: *const u8, offset: u32) {
-        let wrapper_val = wrapper_fn as i64;
         let init_none_val = init_none_fn as i64;
 
         // arg0: init_none_fn pointer, arg1: out + offset
@@ -1299,7 +1207,7 @@ impl EmitCtx {
             ; mov rcx, QWORD init_none_val
             ; lea rdx, [r14 + offset as i32]
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
+        self.emit_call_fn_ptr(wrapper_fn);
     }
 
     /// Call wrapper(fn_ptr, out + offset, extra_ptr).
@@ -1311,7 +1219,6 @@ impl EmitCtx {
         offset: u32,
         extra_ptr: *const u8,
     ) {
-        let wrapper_val = wrapper_fn as i64;
         let fn_val = fn_ptr as i64;
         let extra_val = extra_ptr as i64;
 
@@ -1328,7 +1235,7 @@ impl EmitCtx {
             ; lea rdx, [r14 + offset as i32]
             ; mov r8, QWORD extra_val
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
+        self.emit_call_fn_ptr(wrapper_fn);
     }
 
     /// Call fad_option_init_some(init_some_fn, out + offset, sp + scratch_offset).
@@ -1340,7 +1247,6 @@ impl EmitCtx {
         offset: u32,
         scratch_offset: u32,
     ) {
-        let wrapper_val = wrapper_fn as i64;
         let init_some_val = init_some_fn as i64;
 
         // arg0: init_some_fn pointer, arg1: out + offset, arg2: scratch area on stack
@@ -1356,7 +1262,7 @@ impl EmitCtx {
             ; lea rdx, [r14 + offset as i32]
             ; lea r8, [rsp + scratch_offset as i32]
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD wrapper_val ; call rax);
+        self.emit_call_fn_ptr(wrapper_fn);
     }
 
     // ── Vec support ──────────────────────────────────────────────────
@@ -1371,10 +1277,7 @@ impl EmitCtx {
         elem_size: u32,
         elem_align: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = alloc_fn as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
         // args: ctx, count, elem_size, elem_align
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -1390,15 +1293,8 @@ impl EmitCtx {
             ; mov r8d, elem_size as i32
             ; mov r9d, elem_align as i32
         );
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(alloc_fn);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Initialize JSON Vec loop state: buf from rax, len=0, cap=initial_cap.
@@ -1453,10 +1349,7 @@ impl EmitCtx {
         elem_size: u32,
         elem_align: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = alloc_fn as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
         // args: ctx, count(r10), elem_size, elem_align
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -1472,15 +1365,8 @@ impl EmitCtx {
             ; mov r8d, elem_size as i32
             ; mov r9d, elem_align as i32
         );
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(alloc_fn);
+        self.emit_reload_cursor_and_check_error();
     }
 
     /// Call fad_vec_grow(ctx, old_buf, len, old_cap, new_cap, elem_size, elem_align).
@@ -1496,10 +1382,7 @@ impl EmitCtx {
         elem_size: u32,
         elem_align: u32,
     ) {
-        let error_exit = self.error_exit;
-        let ptr_val = grow_fn as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+        self.emit_flush_input_cursor();
 
         #[cfg(not(windows))]
         {
@@ -1517,10 +1400,9 @@ impl EmitCtx {
                 ; mov r8, r10
                 ; mov r9d, elem_size as i32
                 ; push elem_align as i32
-                ; mov rax, QWORD ptr_val
-                ; call rax
-                ; add rsp, 8
             );
+            self.emit_call_fn_ptr(grow_fn);
+            dynasm!(self.ops ; .arch x64 ; add rsp, 8);
         }
 
         #[cfg(windows)]
@@ -1547,18 +1429,14 @@ impl EmitCtx {
                 ; mov [rsp + 40], rax                // arg6 = elem_size (zero-extended)
                 ; mov eax, elem_align as i32
                 ; mov [rsp + 48], rax                // arg7 = elem_align (zero-extended)
-                ; mov rax, QWORD ptr_val
-                ; call rax
-                ; add rsp, 64
             );
+            self.emit_call_fn_ptr(grow_fn);
+            dynasm!(self.ops ; .arch x64 ; add rsp, 64);
         }
 
+        self.emit_reload_cursor_and_check_error();
         dynasm!(self.ops
             ; .arch x64
-            ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
             ; mov [rsp + buf_slot as i32], rax
             ; mov r10, [rsp + cap_slot as i32]
             ; shl r10, 1
@@ -1665,7 +1543,6 @@ impl EmitCtx {
     ) {
         let slow_path = self.ops.new_dynamic_label();
         let eof_label = self.ops.new_dynamic_label();
-        let ptr_val = intrinsic_fn_ptr as i64;
 
         // === Hot loop ===
         dynasm!(self.ops
@@ -1712,21 +1589,18 @@ impl EmitCtx {
             ; =>slow_path
             // Undo the add r12, 1 (intrinsic expects r12 at varint start)
             ; sub r12, 1
-            // Flush input pointer to ctx
-            ; mov [r15 + CTX_INPUT_PTR as i32], r12
         );
+        self.emit_flush_input_cursor();
         // arg0 = ctx, arg1 = out (cursor in rbx)
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, rbx);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, rbx);
+        self.emit_call_fn_ptr(intrinsic_fn_ptr);
+        // Reload input pointer and check error (branches to error_cleanup, not error_exit)
         dynasm!(self.ops
             ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            // Reload input pointer
             ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-            // Check error
             ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
             ; test r10d, r10d
             ; jnz =>error_cleanup
@@ -1828,7 +1702,6 @@ impl EmitCtx {
         elem_align: u32,
     ) {
         let error_exit = self.error_exit;
-        let ptr_val = free_fn as i64;
 
         dynasm!(self.ops ; .arch x64 ; mov r14, [rsp + saved_out_slot as i32]);
         // args: buf, cap, elem_size, elem_align
@@ -1846,7 +1719,8 @@ impl EmitCtx {
             ; mov r8d, elem_size as i32
             ; mov r9d, elem_align as i32
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD ptr_val ; call rax ; jmp =>error_exit);
+        self.emit_call_fn_ptr(free_fn);
+        dynasm!(self.ops ; .arch x64 ; jmp =>error_exit);
     }
 
     /// Compare the count register (w9 on aarch64, r10d on x64) with zero
@@ -1911,7 +1785,6 @@ impl EmitCtx {
         count_slot: u32,
     ) {
         let fn_val = from_pair_slice_fn as i64;
-        let trampoline = crate::intrinsics::fad_map_build as *const () as i64;
 
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -1927,7 +1800,7 @@ impl EmitCtx {
             ; mov r8, [rsp + buf_slot as i32]          // arg2 = pairs_ptr
             ; mov r9, [rsp + count_slot as i32]        // arg3 = count
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD trampoline ; call rax);
+        self.emit_call_fn_ptr(crate::intrinsics::fad_map_build as *const () as *const u8);
     }
 
     /// Call `fad_map_build(from_pair_slice_fn, r14, null, 0)` — empty map.
@@ -1935,7 +1808,6 @@ impl EmitCtx {
     /// Same trampoline pattern as `emit_call_map_from_pairs`.
     pub fn emit_call_map_from_pairs_empty(&mut self, from_pair_slice_fn: *const u8) {
         let fn_val = from_pair_slice_fn as i64;
-        let trampoline = crate::intrinsics::fad_map_build as *const () as i64;
 
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
@@ -1951,7 +1823,7 @@ impl EmitCtx {
             ; xor r8d, r8d           // arg2 = null pairs ptr
             ; xor r9d, r9d           // arg3 = count = 0
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD trampoline ; call rax);
+        self.emit_call_fn_ptr(crate::intrinsics::fad_map_build as *const () as *const u8);
     }
 
     /// Call `fad_vec_free(buf, cap, pair_stride, pair_align)` to free the pairs buffer.
@@ -1966,8 +1838,6 @@ impl EmitCtx {
         pair_stride: u32,
         pair_align: u32,
     ) {
-        let ptr_val = free_fn as i64;
-
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
             ; mov rdi, [rsp + buf_slot as i32]
@@ -1982,7 +1852,7 @@ impl EmitCtx {
             ; mov r8d, pair_stride as i32
             ; mov r9d, pair_align as i32
         );
-        dynasm!(self.ops ; .arch x64 ; mov rax, QWORD ptr_val ; call rax);
+        self.emit_call_fn_ptr(free_fn);
     }
 
     // ── Recipe emission ─────────────────────────────────────────────
@@ -2146,40 +2016,24 @@ impl EmitCtx {
                     dynasm!(self.ops ; .arch x64 ; =>label);
                 }
                 Op::CallIntrinsic { fn_ptr, field_offset } => {
-                    let ptr_val = *fn_ptr as i64;
                     let field_offset = *field_offset as i32;
-                    dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+                    self.emit_flush_input_cursor();
                     #[cfg(not(windows))]
                     dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [r14 + field_offset]);
                     #[cfg(windows)]
                     dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [r14 + field_offset]);
-                    dynasm!(self.ops
-                        ; .arch x64
-                        ; mov rax, QWORD ptr_val
-                        ; call rax
-                        ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-                        ; mov r10d, [r15 + CTX_ERROR_CODE as i32]
-                        ; test r10d, r10d
-                        ; jnz =>error_exit
-                    );
+                    self.emit_call_fn_ptr(*fn_ptr);
+                    self.emit_reload_cursor_and_check_error();
                 }
                 Op::CallIntrinsicStackOut { fn_ptr, sp_offset } => {
-                    let ptr_val = *fn_ptr as i64;
                     let sp_offset = *sp_offset as i32;
-                    dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+                    self.emit_flush_input_cursor();
                     #[cfg(not(windows))]
                     dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; lea rsi, [rsp + sp_offset]);
                     #[cfg(windows)]
                     dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; lea rdx, [rsp + sp_offset]);
-                    dynasm!(self.ops
-                        ; .arch x64
-                        ; mov rax, QWORD ptr_val
-                        ; call rax
-                        ; mov r12, [r15 + CTX_INPUT_PTR as i32]
-                        ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
-                        ; test r11d, r11d
-                        ; jnz =>error_exit
-                    );
+                    self.emit_call_fn_ptr(*fn_ptr);
+                    self.emit_reload_cursor_and_check_error();
                 }
                 Op::ComputeRemaining { dst } => match dst {
                     Slot::A => dynasm!(self.ops
@@ -2217,11 +2071,10 @@ impl EmitCtx {
                     Slot::B => dynasm!(self.ops ; .arch x64 ; mov r11, r12),
                 },
                 Op::CallValidateAllocCopy { fn_ptr, data_src, len_src } => {
-                    let ptr_val = *fn_ptr as i64;
                     // Call fad_string_validate_alloc_copy(ctx, data_ptr, data_len)
                     // Returns buf pointer in rax
                     // arg0 = ctx, arg1 = data_ptr (slot), arg2 = data_len (slot)
-                    dynasm!(self.ops ; .arch x64 ; mov [r15 + CTX_INPUT_PTR as i32], r12);
+                    self.emit_flush_input_cursor();
                     #[cfg(not(windows))]
                     {
                         dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
@@ -2246,10 +2099,10 @@ impl EmitCtx {
                             Slot::B => dynasm!(self.ops ; .arch x64 ; mov r8d, r11d),
                         }
                     }
+                    self.emit_call_fn_ptr(*fn_ptr);
+                    // Use r11d for error check to preserve r10 (Slot::A) for WriteMalumString
                     dynasm!(self.ops
                         ; .arch x64
-                        ; mov rax, QWORD ptr_val
-                        ; call rax
                         ; mov r11d, [r15 + CTX_ERROR_CODE as i32]
                         ; test r11d, r11d
                         ; jnz =>error_exit
@@ -2335,7 +2188,6 @@ impl EmitCtx {
                 Op::OutputBoundsCheck { count } => {
                     let count = *count as i32;
                     let have_space = self.ops.new_dynamic_label();
-                    let grow_ptr = crate::intrinsics::fad_output_grow as *const u8 as i64;
 
                     dynasm!(self.ops
                         ; .arch x64
@@ -2343,26 +2195,18 @@ impl EmitCtx {
                         ; sub rax, r12
                         ; cmp rax, count
                         ; jge =>have_space
-
-                        // Not enough space — call fad_output_grow(ctx, needed)
-                        ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
                     );
+
+                    // Not enough space — call fad_output_grow(ctx, needed)
+                    self.emit_enc_flush_output_cursor();
                     #[cfg(not(windows))]
                     dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, count);
                     #[cfg(windows)]
                     dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, count);
-                    dynasm!(self.ops
-                        ; .arch x64
-                        ; mov rax, QWORD grow_ptr
-                        ; call rax
-                        ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
-                        ; mov r13, [r15 + ENC_OUTPUT_END as i32]
-                        ; mov eax, [r15 + ENC_ERROR_CODE as i32]
-                        ; test eax, eax
-                        ; jnz =>error_exit
+                    self.emit_call_fn_ptr(crate::intrinsics::fad_output_grow as *const u8);
+                    self.emit_enc_reload_and_check_error();
 
-                        ; =>have_space
-                    );
+                    dynasm!(self.ops ; .arch x64 ; =>have_space);
                 }
                 Op::SignExtend { slot, from } => match (slot, from) {
                     (Slot::A, Width::W1) => dynasm!(self.ops ; .arch x64 ; movsx r10d, r10b),
@@ -3132,88 +2976,47 @@ impl EmitCtx {
     /// Flushes output cursor before call, reloads both output_ptr and output_end
     /// after (buffer may have grown), checks error.
     pub fn emit_enc_call_emitted_func(&mut self, label: DynamicLabel, field_offset: u32) {
-        let error_exit = self.error_exit;
-
-        dynasm!(self.ops
-            ; .arch x64
-            // Flush cached output cursor back to ctx
-            ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
-        );
+        self.emit_enc_flush_output_cursor();
         // Set up arguments: arg0 = input + field_offset, arg1 = ctx
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; lea rdi, [r14 + field_offset as i32] ; mov rsi, r15);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; lea rcx, [r14 + field_offset as i32] ; mov rdx, r15);
-        dynasm!(self.ops
-            ; .arch x64
-            ; call =>label
-
-            // Reload both output_ptr and output_end (callee may have grown the buffer)
-            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
-            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
-
-            // Check error
-            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        dynasm!(self.ops ; .arch x64 ; call =>label);
+        self.emit_enc_reload_and_check_error();
     }
 
     /// Emit a call to an encode intrinsic that takes only ctx as argument.
     /// Flushes output cursor, calls, reloads both ptrs, checks error.
     pub fn emit_enc_call_intrinsic_ctx_only(&mut self, fn_ptr: *const u8) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+        self.emit_enc_flush_output_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15);
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
-            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
-            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_enc_reload_and_check_error();
     }
 
     /// Emit a call to an encode intrinsic: fn(ctx, arg1).
     /// Flushes output cursor, calls, reloads both ptrs, checks error.
     pub fn emit_enc_call_intrinsic(&mut self, fn_ptr: *const u8, arg1: u64) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
         let arg1_val = arg1 as i64;
 
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+        self.emit_enc_flush_output_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, QWORD arg1_val);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, QWORD arg1_val);
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
-            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
-            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_enc_reload_and_check_error();
     }
 
     /// Emit a call to an encode intrinsic: fn(ctx, input + field_offset).
     /// Passes the input data pointer offset by `field_offset` as the second argument.
     /// Flushes output, calls, reloads output_ptr + output_end, checks error.
     pub fn emit_enc_call_intrinsic_with_input(&mut self, fn_ptr: *const u8, field_offset: u32) {
-        let error_exit = self.error_exit;
-        let ptr_val = fn_ptr as i64;
-
-        dynasm!(self.ops ; .arch x64 ; mov [r15 + ENC_OUTPUT_PTR as i32], r12);
+        self.emit_enc_flush_output_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64
             ; mov rdi, r15
@@ -3224,24 +3027,14 @@ impl EmitCtx {
             ; mov rcx, r15
             ; lea rdx, [r14 + field_offset as i32]
         );
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD ptr_val
-            ; call rax
-            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
-            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
-            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
-        );
+        self.emit_call_fn_ptr(fn_ptr);
+        self.emit_enc_reload_and_check_error();
     }
 
     /// Ensure the output buffer has at least `count` bytes of capacity.
     /// Inlines the comparison; calls fad_output_grow only when needed.
     pub fn emit_enc_ensure_capacity(&mut self, count: u32) {
         let have_space = self.ops.new_dynamic_label();
-        let error_exit = self.error_exit;
-        let grow_ptr = crate::intrinsics::fad_output_grow as *const u8 as i64;
 
         dynasm!(self.ops
             ; .arch x64
@@ -3250,27 +3043,18 @@ impl EmitCtx {
             ; sub rax, r12
             ; cmp rax, count as i32
             ; jge =>have_space
-
-            // Not enough space — call fad_output_grow(ctx, needed)
-            ; mov [r15 + ENC_OUTPUT_PTR as i32], r12
         );
+
+        // Not enough space — call fad_output_grow(ctx, needed)
+        self.emit_enc_flush_output_cursor();
         #[cfg(not(windows))]
         dynasm!(self.ops ; .arch x64 ; mov rdi, r15 ; mov rsi, count as i32);
         #[cfg(windows)]
         dynasm!(self.ops ; .arch x64 ; mov rcx, r15 ; mov rdx, count as i32);
-        dynasm!(self.ops
-            ; .arch x64
-            ; mov rax, QWORD grow_ptr
-            ; call rax
-            ; mov r12, [r15 + ENC_OUTPUT_PTR as i32]
-            ; mov r13, [r15 + ENC_OUTPUT_END as i32]
-            // Check for allocation error
-            ; mov r10d, [r15 + ENC_ERROR_CODE as i32]
-            ; test r10d, r10d
-            ; jnz =>error_exit
+        self.emit_call_fn_ptr(crate::intrinsics::fad_output_grow as *const u8);
+        self.emit_enc_reload_and_check_error();
 
-            ; =>have_space
-        );
+        dynasm!(self.ops ; .arch x64 ; =>have_space);
     }
 
     /// Write a single immediate byte to the output buffer and advance.

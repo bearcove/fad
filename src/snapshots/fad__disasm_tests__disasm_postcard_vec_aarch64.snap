@@ -27,8 +27,8 @@ expression: out
   movk x8, #<imm>, lsl #48
   blr x8
   ldr x19, [x22]
-  ldr w10, [x22, #0x10]
-  cbnz w10, $+0x16c
+  ldr w9, [x22, #0x10]
+  cbnz w9, $+0x16c
   ldr w9, [sp, #0x30]
   b $+0x10
   mov w9, #0x1
@@ -47,8 +47,8 @@ expression: out
   movk x8, #<imm>, lsl #48
   blr x8
   ldr x19, [x22]
-  ldr w10, [x22, #0x10]
-  cbnz w10, $+0x11c
+  ldr w9, [x22, #0x10]
+  cbnz w9, $+0x11c
   str x21, [sp, #0x38]
   str x0, [sp, #0x40]
   str x23, [sp, #0x50]
