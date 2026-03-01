@@ -648,61 +648,55 @@ fn lower_postcard_varint_value(builder: &mut RegionBuilder<'_>, bits: u32) -> Po
     let mask_80 = builder.const_val(0x80);
     let first_cont = builder.binop(IrOp::And, first_byte, mask_80);
     let first_cont_bool = lower_nonzero_to_bool(builder, first_cont);
-    let shift0 = builder.const_val(7);
-    let rem0 = builder.const_val(max_bytes - 1);
 
     // Outputs: [value, rem, last_low, last_cont]
-    let out = builder.gamma(
-        first_cont_bool,
-        &[first_low, shift0, rem0],
-        2,
-        |branch_idx, rb| {
-            let args = rb.region_args(3);
-            let low0 = args[0];
-            let shift0 = args[1];
-            let rem0 = args[2];
+    let out = builder.gamma(first_cont_bool, &[first_low], 2, |branch_idx, rb| {
+        let args = rb.region_args(1);
+        let low0 = args[0];
 
-            if branch_idx == 0 {
-                let zero = rb.const_val(0);
-                rb.set_results(&[low0, rem0, low0, zero]);
-                return;
-            }
+        if branch_idx == 0 {
+            let rem0 = rb.const_val(max_bytes - 1);
+            let zero = rb.const_val(0);
+            rb.set_results(&[low0, rem0, low0, zero]);
+            return;
+        }
 
-            let one = rb.const_val(1);
-            let loop_out = rb.theta(&[low0, shift0, rem0, low0, one], |tb| {
-                let loop_args = tb.region_args(5);
-                let acc = loop_args[0];
-                let shift = loop_args[1];
-                let rem = loop_args[2];
+        let shift0 = rb.const_val(7);
+        let rem0 = rb.const_val(max_bytes - 1);
+        let one = rb.const_val(1);
+        let loop_out = rb.theta(&[low0, shift0, rem0, low0, one], |tb| {
+            let loop_args = tb.region_args(5);
+            let acc = loop_args[0];
+            let shift = loop_args[1];
+            let rem = loop_args[2];
 
-                tb.bounds_check(1);
-                let byte = tb.read_bytes(1);
+            tb.bounds_check(1);
+            let byte = tb.read_bytes(1);
 
-                let mask_7f = tb.const_val(0x7f);
-                let low = tb.binop(IrOp::And, byte, mask_7f);
-                let part = tb.binop(IrOp::Shl, low, shift);
-                let acc2 = tb.binop(IrOp::Or, acc, part);
-                let seven = tb.const_val(7);
-                let shift2 = tb.binop(IrOp::Add, shift, seven);
-                let one = tb.const_val(1);
-                let rem2 = tb.binop(IrOp::Sub, rem, one);
+            let mask_7f = tb.const_val(0x7f);
+            let low = tb.binop(IrOp::And, byte, mask_7f);
+            let part = tb.binop(IrOp::Shl, low, shift);
+            let acc2 = tb.binop(IrOp::Or, acc, part);
+            let seven = tb.const_val(7);
+            let shift2 = tb.binop(IrOp::Add, shift, seven);
+            let one = tb.const_val(1);
+            let rem2 = tb.binop(IrOp::Sub, rem, one);
 
-                let mask_80 = tb.const_val(0x80);
-                let cont = tb.binop(IrOp::And, byte, mask_80);
-                let cont_bool = lower_nonzero_to_bool(tb, cont);
-                let rem_bool = lower_nonzero_to_bool(tb, rem2);
-                let predicate = tb.binop(IrOp::And, cont_bool, rem_bool);
+            let mask_80 = tb.const_val(0x80);
+            let cont = tb.binop(IrOp::And, byte, mask_80);
+            let cont_bool = lower_nonzero_to_bool(tb, cont);
+            let rem_bool = lower_nonzero_to_bool(tb, rem2);
+            let predicate = tb.binop(IrOp::And, cont_bool, rem_bool);
 
-                tb.set_results(&[predicate, acc2, shift2, rem2, low, cont_bool]);
-            });
+            tb.set_results(&[predicate, acc2, shift2, rem2, low, cont_bool]);
+        });
 
-            let value = loop_out[0];
-            let rem = loop_out[2];
-            let last_low = loop_out[3];
-            let last_cont = loop_out[4];
-            rb.set_results(&[value, rem, last_low, last_cont]);
-        },
-    );
+        let value = loop_out[0];
+        let rem = loop_out[2];
+        let last_low = loop_out[3];
+        let last_cont = loop_out[4];
+        rb.set_results(&[value, rem, last_low, last_cont]);
+    });
 
     let value = out[0];
     let rem = out[1];
