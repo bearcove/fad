@@ -104,6 +104,14 @@ pub fn compile_decoder_via_ir<F: format::Decoder + format::IrDecoder>(
     compiler::compile_decoder_via_ir(shape, decoder)
 }
 
+/// Return the number of regalloc edit instructions produced by IR lowering.
+pub fn regalloc_edit_count_via_ir<F: format::IrDecoder>(
+    shape: &'static facet::Shape,
+    decoder: &F,
+) -> usize {
+    compiler::regalloc_edit_count_via_ir(shape, decoder)
+}
+
 /// Compile a deserializer from already-linearized IR.
 pub fn compile_decoder_linear_ir(
     ir: &linearize::LinearIr,
@@ -2436,6 +2444,41 @@ mod tests {
                 vals: vec![1, 2, 3]
             }
         );
+    }
+
+    // r[verify ir.regalloc.regressions]
+    #[test]
+    fn postcard_vec_u32_medium_large_ir_matches_legacy_and_serde() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Nums {
+            vals: Vec<u32>,
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct NumsSerde {
+            vals: Vec<u32>,
+        }
+
+        let legacy = compile_decoder_legacy(Nums::SHAPE, &postcard::FadPostcard);
+        let ir = compile_decoder_via_ir(Nums::SHAPE, &postcard::FadPostcard);
+
+        for len in [100usize, 10_000usize] {
+            let source = NumsSerde {
+                vals: (0..len as u32).collect(),
+            };
+            let encoded = ::postcard::to_allocvec(&source).unwrap();
+
+            let serde_val: NumsSerde = ::postcard::from_bytes(&encoded).unwrap();
+            let legacy_val: Nums = deserialize(&legacy, &encoded).unwrap();
+            let ir_val: Nums = deserialize(&ir, &encoded).unwrap();
+
+            assert_eq!(
+                legacy_val.vals, serde_val.vals,
+                "legacy mismatch at len={len}"
+            );
+            assert_eq!(ir_val.vals, serde_val.vals, "ir mismatch at len={len}");
+            assert_eq!(ir_val, legacy_val, "legacy/ir mismatch at len={len}");
+        }
     }
 
     // r[verify deser.postcard.seq]

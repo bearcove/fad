@@ -1911,6 +1911,17 @@ pub fn compile_decoder_via_ir_dyn(
     compile_linear_ir_decoder(&linear, decoder.supports_trusted_utf8_input())
 }
 
+// r[impl ir.regalloc.regressions]
+/// Build IR + linear form and run regalloc over it, returning total edit count.
+pub fn regalloc_edit_count_via_ir(shape: &'static Shape, ir_decoder: &dyn IrDecoder) -> usize {
+    let mut func = build_decoder_ir(shape, ir_decoder);
+    crate::ir_passes::run_default_passes(&mut func);
+    let linear = crate::linearize::linearize(&mut func);
+    let alloc = crate::regalloc_engine::allocate_linear_ir(&linear)
+        .unwrap_or_else(|err| panic!("regalloc2 allocation failed while counting edits: {err}"));
+    alloc.functions.iter().map(|f| f.edits.len()).sum()
+}
+
 pub(crate) fn build_decoder_ir(
     shape: &'static Shape,
     ir_decoder: &dyn IrDecoder,

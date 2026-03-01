@@ -7,6 +7,11 @@
 use std::fmt::Write as _;
 use std::io::BufRead as _;
 
+use facet::Facet;
+#[cfg(target_arch = "x86_64")]
+use yaxpeax_arch::LengthedInstruction;
+use yaxpeax_arch::{Decoder, U8Reader};
+
 fn main() {
     let stdin = std::io::stdin();
     let mut lines: Vec<String> = Vec::new();
@@ -68,9 +73,10 @@ fn main() {
     }
 
     let meta = Meta::collect();
-    let html = render(&sections, &meta);
-    let json = render_json(&sections, &meta);
-    let md = render_markdown(&sections, &meta);
+    let vec_signals = collect_vec_scalar_signals(&sections);
+    let html = render(&sections, &meta, &vec_signals);
+    let json = render_json(&sections, &meta, &vec_signals);
+    let md = render_markdown(&sections, &meta, &vec_signals);
     std::fs::create_dir_all("bench_report").unwrap();
     std::fs::write("bench_report/index.html", &html).unwrap();
     std::fs::write("bench_report/results.json", &json).unwrap();
@@ -152,6 +158,178 @@ struct Row {
     median_ns: f64,
     p5_ns: f64,
     p95_ns: f64,
+}
+
+#[derive(Clone, Copy)]
+struct AsmSignals {
+    frame_size_bytes: Option<u32>,
+    stack_mem_ops: usize,
+    regalloc_edits: Option<usize>,
+}
+
+struct VecScalarSignalsRow {
+    bench_name: &'static str,
+    legacy: AsmSignals,
+    ir: AsmSignals,
+}
+
+const VEC_SCALAR_BENCHES: [&str; 3] = ["vec_scalar_small", "vec_scalar_medium", "vec_scalar_large"];
+
+#[derive(Facet)]
+struct VecScalarSignalShape {
+    values: Vec<u32>,
+}
+
+fn collect_vec_scalar_signals(sections: &[Section]) -> Vec<VecScalarSignalsRow> {
+    let present: Vec<&'static str> = VEC_SCALAR_BENCHES
+        .iter()
+        .copied()
+        .filter(|name| has_postcard_deser_group(sections, name))
+        .collect();
+    if present.is_empty() {
+        return Vec::new();
+    }
+
+    // r[impl ir.regalloc.regressions]
+    let legacy =
+        fad::compile_decoder_legacy(VecScalarSignalShape::SHAPE, &fad::postcard::FadPostcard);
+    let ir = fad::compile_decoder_via_ir(VecScalarSignalShape::SHAPE, &fad::postcard::FadPostcard);
+
+    let legacy_signals = analyze_codegen_signals(legacy.code(), None);
+    let ir_edits =
+        fad::regalloc_edit_count_via_ir(VecScalarSignalShape::SHAPE, &fad::postcard::FadPostcard);
+    let ir_signals = analyze_codegen_signals(ir.code(), Some(ir_edits));
+
+    present
+        .into_iter()
+        .map(|bench_name| VecScalarSignalsRow {
+            bench_name,
+            legacy: legacy_signals,
+            ir: ir_signals,
+        })
+        .collect()
+}
+
+fn has_postcard_deser_group(sections: &[Section], group_name: &str) -> bool {
+    sections.iter().any(|section| {
+        section.label == "postcard deser" && section.groups.iter().any(|g| g.name == group_name)
+    })
+}
+
+fn analyze_codegen_signals(code: &[u8], regalloc_edits: Option<usize>) -> AsmSignals {
+    let insts = decode_instructions(code);
+    AsmSignals {
+        frame_size_bytes: detect_frame_size_bytes(&insts),
+        stack_mem_ops: insts.iter().filter(|inst| is_stack_mem_op(inst)).count(),
+        regalloc_edits,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn decode_instructions(code: &[u8]) -> Vec<String> {
+    use yaxpeax_arm::armv8::a64::InstDecoder;
+
+    let decoder = InstDecoder::default();
+    let mut reader = U8Reader::new(code);
+    let mut insts = Vec::new();
+    let mut offset = 0usize;
+    while offset + 4 <= code.len() {
+        match decoder.decode(&mut reader) {
+            Ok(inst) => insts.push(format!("{inst}")),
+            Err(_) => break,
+        }
+        offset += 4;
+    }
+    insts
+}
+
+#[cfg(target_arch = "x86_64")]
+fn decode_instructions(code: &[u8]) -> Vec<String> {
+    use yaxpeax_x86::amd64::InstDecoder;
+
+    let decoder = InstDecoder::default();
+    let mut reader = U8Reader::new(code);
+    let mut insts = Vec::new();
+    let mut offset = 0usize;
+    while offset < code.len() {
+        match decoder.decode(&mut reader) {
+            Ok(inst) => {
+                let len = inst.len().to_const() as usize;
+                if len == 0 {
+                    break;
+                }
+                insts.push(format!("{inst}"));
+                offset += len;
+            }
+            Err(_) => break,
+        }
+    }
+    insts
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+fn decode_instructions(_code: &[u8]) -> Vec<String> {
+    Vec::new()
+}
+
+fn detect_frame_size_bytes(insts: &[String]) -> Option<u32> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        for inst in insts {
+            if let Some(rest) = inst.strip_prefix("sub sp, sp, #") {
+                if let Some(bytes) = parse_imm_u32(rest) {
+                    return Some(bytes);
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        for inst in insts {
+            if let Some(rest) = inst.strip_prefix("sub rsp, ") {
+                if let Some(bytes) = parse_imm_u32(rest) {
+                    return Some(bytes);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_imm_u32(text: &str) -> Option<u32> {
+    let token = text
+        .trim()
+        .trim_start_matches('#')
+        .split([',', ' '])
+        .next()
+        .unwrap_or_default();
+    if token.is_empty() {
+        return None;
+    }
+    if let Some(hex) = token.strip_prefix("0x") {
+        return u32::from_str_radix(hex, 16).ok();
+    }
+    token.parse::<u32>().ok()
+}
+
+fn is_stack_mem_op(inst: &str) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        return inst.contains("[sp");
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mnemonic = inst.split_whitespace().next().unwrap_or_default();
+        if matches!(mnemonic, "push" | "pop") {
+            return true;
+        }
+        if mnemonic == "lea" {
+            return false;
+        }
+        return inst.contains("[rsp") || inst.contains("[rbp");
+    }
+    #[allow(unreachable_code)]
+    false
 }
 
 // ── Parser (NDJSON) ───────────────────────────────────────────────────────
@@ -366,7 +544,7 @@ fn find_row_for_impl<'a>(group: &'a Group, impl_name: &str, direction: &str) -> 
 
 // ── JSON ───────────────────────────────────────────────────────────────────
 
-fn render_json(sections: &[Section], meta: &Meta) -> String {
+fn render_json(sections: &[Section], meta: &Meta, vec_signals: &[VecScalarSignalsRow]) -> String {
     let mut j = String::new();
     j.push_str("{\n");
     write!(j, r#"  "datetime": "{}","#, meta.datetime).unwrap();
@@ -413,6 +591,40 @@ fn render_json(sections: &[Section], meta: &Meta) -> String {
         write!(j, "    }}{comma}").unwrap();
         j.push('\n');
     }
+
+    j.push_str("  ],\n");
+    j.push_str(r#"  "vec_scalar_signals": ["#);
+    j.push('\n');
+    for (i, row) in vec_signals.iter().enumerate() {
+        let comma = if i + 1 < vec_signals.len() { "," } else { "" };
+        let legacy_frame = row
+            .legacy
+            .frame_size_bytes
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        let ir_frame = row
+            .ir
+            .frame_size_bytes
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        let ir_edits = row
+            .ir
+            .regalloc_edits
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        write!(
+            j,
+            r#"    {{ "name": "{}", "legacy": {{ "frame_size_bytes": {}, "stack_mem_ops": {} }}, "ir": {{ "frame_size_bytes": {}, "stack_mem_ops": {}, "regalloc_edits": {} }} }}{comma}"#,
+            row.bench_name,
+            legacy_frame,
+            row.legacy.stack_mem_ops,
+            ir_frame,
+            row.ir.stack_mem_ops,
+            ir_edits
+        )
+        .unwrap();
+        j.push('\n');
+    }
     j.push_str("  ]\n");
     j.push_str("}\n");
     j
@@ -432,7 +644,11 @@ fn fmt_time(ns: f64) -> String {
     }
 }
 
-fn render_markdown(sections: &[Section], meta: &Meta) -> String {
+fn render_markdown(
+    sections: &[Section],
+    meta: &Meta,
+    vec_signals: &[VecScalarSignalsRow],
+) -> String {
     let mut m = String::new();
     writeln!(m, "# Bench Report").unwrap();
     writeln!(m).unwrap();
@@ -517,6 +733,59 @@ fn render_markdown(sections: &[Section], meta: &Meta) -> String {
         }
     }
 
+    if !vec_signals.is_empty() {
+        writeln!(m, "## Postcard Vec Scalar Signals").unwrap();
+        writeln!(m).unwrap();
+        writeln!(
+            m,
+            "| Benchmark | legacy frame | ir frame | legacy stack ops | ir stack ops | stack ratio (ir/legacy) | ir edits |"
+        )
+        .unwrap();
+        writeln!(
+            m,
+            "|-----------|--------------|----------|------------------|--------------|-------------------------|----------|"
+        )
+        .unwrap();
+        for row in vec_signals {
+            let legacy_frame = row
+                .legacy
+                .frame_size_bytes
+                .map(|v| format!("{v} B"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let ir_frame = row
+                .ir
+                .frame_size_bytes
+                .map(|v| format!("{v} B"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let stack_ratio = if row.legacy.stack_mem_ops > 0 {
+                format!(
+                    "{:.2}x",
+                    row.ir.stack_mem_ops as f64 / row.legacy.stack_mem_ops as f64
+                )
+            } else {
+                "n/a".to_string()
+            };
+            let ir_edits = row
+                .ir
+                .regalloc_edits
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".to_string());
+            writeln!(
+                m,
+                "| {} | {} | {} | {} | {} | {} | {} |",
+                row.bench_name,
+                legacy_frame,
+                ir_frame,
+                row.legacy.stack_mem_ops,
+                row.ir.stack_mem_ops,
+                stack_ratio,
+                ir_edits
+            )
+            .unwrap();
+        }
+        writeln!(m).unwrap();
+    }
+
     m
 }
 
@@ -538,7 +807,7 @@ fn ratio_to_fill(ratio: f64) -> f64 {
     ((r - 1.0) / 3.0 * 50.0_f64).min(50.0)
 }
 
-fn render(sections: &[Section], meta: &Meta) -> String {
+fn render(sections: &[Section], meta: &Meta, vec_signals: &[VecScalarSignalsRow]) -> String {
     let mut h = String::new();
 
     let active_sections: Vec<&Section> = sections.iter().collect();
@@ -635,6 +904,21 @@ body{
 .summary-cell .lhs-n{color:var(--lhs)}
 .summary-cell .rhs-n{color:var(--rhs)}
 .summary-cell .sep{color:var(--dim);margin:0 8px}
+.signals{
+  margin-top:16px;padding:10px 12px;
+  border:1px solid var(--border);background:var(--surface);
+}
+.signals h2{
+  font-family:var(--sans);font-size:13px;font-weight:700;color:var(--bright);
+  margin-bottom:8px;
+}
+.signals table{width:100%;border-collapse:collapse}
+.signals th,.signals td{
+  font-size:12px;padding:4px 6px;text-align:left;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.signals tr:last-child td{border-bottom:none}
+.signals th{color:var(--dim);font-weight:600}
 footer{
   margin-top:24px;padding-top:12px;
   border-top:1px solid var(--border);
@@ -797,6 +1081,48 @@ footer a:hover{text-decoration:underline}
         }
 
         h.push_str("</div>\n");
+    }
+
+    if !vec_signals.is_empty() {
+        h.push_str(r#"<section class="signals"><h2>Postcard Vec Scalar Signals</h2><table><thead><tr><th>benchmark</th><th>legacy frame</th><th>ir frame</th><th>legacy stack ops</th><th>ir stack ops</th><th>stack ratio</th><th>ir edits</th></tr></thead><tbody>"#);
+        for row in vec_signals {
+            let legacy_frame = row
+                .legacy
+                .frame_size_bytes
+                .map(|v| format!("{v} B"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let ir_frame = row
+                .ir
+                .frame_size_bytes
+                .map(|v| format!("{v} B"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let stack_ratio = if row.legacy.stack_mem_ops > 0 {
+                format!(
+                    "{:.2}x",
+                    row.ir.stack_mem_ops as f64 / row.legacy.stack_mem_ops as f64
+                )
+            } else {
+                "n/a".to_string()
+            };
+            let ir_edits = row
+                .ir
+                .regalloc_edits
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".to_string());
+            write!(
+                h,
+                r#"<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
+                esc(row.bench_name),
+                esc(&legacy_frame),
+                esc(&ir_frame),
+                row.legacy.stack_mem_ops,
+                row.ir.stack_mem_ops,
+                esc(&stack_ratio),
+                esc(&ir_edits),
+            )
+            .unwrap();
+        }
+        h.push_str("</tbody></table></section>\n");
     }
 
     h.push_str("<footer>");
