@@ -1070,6 +1070,9 @@ fn compile_linear_ir_aarch64(
                 return false;
             }
             let r = preg.hw_enc() as u8;
+            if r == 9 {
+                return true;
+            }
             dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, X(r));
             true
         }
@@ -1079,6 +1082,9 @@ fn compile_linear_ir_aarch64(
                 return false;
             }
             let r = preg.hw_enc() as u8;
+            if r == 9 {
+                return true;
+            }
             dynasm!(self.ectx.ops ; .arch aarch64 ; mov X(r), x9);
             true
         }
@@ -1321,7 +1327,9 @@ fn compile_linear_ir_aarch64(
                     reg.class()
                 );
                 let r = reg.hw_enc() as u8;
-                dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, X(r));
+                if r != 10 {
+                    dynasm!(self.ectx.ops ; .arch aarch64 ; mov x10, X(r));
+                }
                 return;
             }
             if let Some(slot) = alloc.as_stack() {
@@ -1427,8 +1435,20 @@ fn compile_linear_ir_aarch64(
         }
 
         fn emit_load_u64_x9(&mut self, value: u64) {
-            self.emit_load_u64_x10(value);
-            dynasm!(self.ectx.ops ; .arch aarch64 ; mov x9, x10);
+            let p0 = (value & 0xFFFF) as u32;
+            let p1 = ((value >> 16) & 0xFFFF) as u32;
+            let p2 = ((value >> 32) & 0xFFFF) as u32;
+            let p3 = ((value >> 48) & 0xFFFF) as u32;
+            dynasm!(self.ectx.ops ; .arch aarch64 ; movz x9, #p0);
+            if p1 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x9, #p1, LSL #16);
+            }
+            if p2 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x9, #p2, LSL #32);
+            }
+            if p3 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x9, #p3, LSL #48);
+            }
         }
 
         fn const_of(&self, v: crate::ir::VReg) -> Option<u64> {
