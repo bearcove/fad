@@ -773,6 +773,11 @@ fn resolve_term(
 
 // r[impl ir.passes.pre-regalloc.coalescing]
 fn coalesce_uncond_branch_tail_copies(block: &mut RaBlock) {
+    if block.term_linear_op_index.is_none() {
+        // Skip synthetic fallthrough edges; keep this optimization on explicit
+        // branch ops only where edge/value intent is unambiguous.
+        return;
+    }
     let RaTerminator::Branch { target } = block.term else {
         return;
     };

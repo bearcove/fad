@@ -254,6 +254,43 @@ impl<'a> Linearizer<'a> {
 
     // ─── Topological sort ────────────────────────────────────────────
 
+    fn collect_subregion_parent_deps(
+        &self,
+        region_id: RegionId,
+        node_pos: &HashMap<NodeId, usize>,
+        deps: &mut HashSet<usize>,
+    ) {
+        let region = &self.func.regions[region_id];
+        for &nid in &region.nodes {
+            let node = &self.func.nodes[nid];
+            for input in &node.inputs {
+                if let PortSource::Node(output_ref) = input.source
+                    && let Some(&dep_pos) = node_pos.get(&output_ref.node)
+                {
+                    deps.insert(dep_pos);
+                }
+            }
+            match &node.kind {
+                NodeKind::Gamma { regions } => {
+                    for &sub in regions {
+                        self.collect_subregion_parent_deps(sub, node_pos, deps);
+                    }
+                }
+                NodeKind::Theta { body } => {
+                    self.collect_subregion_parent_deps(*body, node_pos, deps);
+                }
+                _ => {}
+            }
+        }
+        for result in &region.results {
+            if let PortSource::Node(output_ref) = result.source
+                && let Some(&dep_pos) = node_pos.get(&output_ref.node)
+            {
+                deps.insert(dep_pos);
+            }
+        }
+    }
+
     // r[impl ir.linearize.schedule]
     /// Topologically sort a region's nodes respecting data + state edges.
     fn topo_sort(&self, region_id: RegionId) -> Vec<NodeId> {
@@ -261,11 +298,6 @@ impl<'a> Linearizer<'a> {
         if region.nodes.is_empty() {
             return Vec::new();
         }
-
-        // Build in-degree count for each node in this region.
-        // A node's in-degree = number of its inputs that come from other nodes
-        // in the same region.
-        let node_set: std::collections::HashSet<NodeId> = region.nodes.iter().copied().collect();
 
         // Map NodeId -> position in region.nodes for O(1) lookup.
         let mut node_pos: std::collections::HashMap<NodeId, usize> =
@@ -281,14 +313,31 @@ impl<'a> Linearizer<'a> {
 
         for (i, &nid) in region.nodes.iter().enumerate() {
             let node = &self.func.nodes[nid];
+            let mut deps_for_node = HashSet::new();
             for input in &node.inputs {
                 if let PortSource::Node(output_ref) = input.source
                     && let Some(&dep_pos) = node_pos.get(&output_ref.node)
-                    && node_set.contains(&output_ref.node)
                 {
-                    in_degree[i] += 1;
-                    dependents[dep_pos].push(i);
+                    deps_for_node.insert(dep_pos);
                 }
+            }
+            match &node.kind {
+                NodeKind::Gamma { regions } => {
+                    for &sub in regions {
+                        self.collect_subregion_parent_deps(sub, &node_pos, &mut deps_for_node);
+                    }
+                }
+                NodeKind::Theta { body } => {
+                    self.collect_subregion_parent_deps(*body, &node_pos, &mut deps_for_node);
+                }
+                _ => {}
+            }
+            for dep_pos in deps_for_node {
+                if dep_pos == i {
+                    continue;
+                }
+                in_degree[i] += 1;
+                dependents[dep_pos].push(i);
             }
         }
 

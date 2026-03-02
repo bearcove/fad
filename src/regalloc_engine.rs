@@ -743,7 +743,9 @@ pub fn allocate_linear_ir(
 mod tests {
     use super::*;
     use crate::compiler;
+    use crate::ir::IntrinsicRegistry;
     use crate::linearize::linearize;
+    use crate::ir_parse::parse_ir;
     use facet::Facet;
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Facet)]
@@ -783,6 +785,81 @@ mod tests {
         let lin = linearize(&mut func);
         let alloc = allocate_linear_ir(&lin).expect("regalloc2 should allocate gamma/theta");
         assert!(!alloc.functions.is_empty());
+    }
+
+    #[test]
+    fn regalloc2_allocates_textual_theta_invariant_fixture() {
+        let input = r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = Const(0x4) [] -> [v0]
+    n1 = Const(0x1) [] -> [v1]
+    n2 = theta [v0, v1, %cs:arg, %os:arg] {
+      region {
+        args: [arg0, arg1, %cs, %os]
+        n3 = Const(0x7) [] -> [v2]
+        n4 = Const(0x3) [] -> [v3]
+        n5 = Add [v2, v3] -> [v4]
+        n6 = Xor [v4, v3] -> [v5]
+        n7 = Sub [arg0, arg1] -> [v6]
+        n8 = Add [v5, v6] -> [v7]
+        results: [v6, v6, arg1, %cs:arg, %os:arg]
+      }
+    } -> [v8, v9, %cs, %os]
+    n9 = WriteToField(offset=0, W1) [v8, %os:n2] -> [%os]
+    results: [%cs:n2, %os:n9]
+  }
+}
+"#;
+
+        let registry = IntrinsicRegistry::empty();
+        let mut func = parse_ir(input, <u8 as Facet>::SHAPE, &registry).expect("fixture should parse");
+        let lin = linearize(&mut func);
+        let ra = crate::regalloc_mir::lower_linear_ir(&lin);
+        let _alloc = allocate_program(&ra).unwrap_or_else(|e| {
+            panic!(
+                "regalloc should allocate textual theta fixture: {e}\n--- linear ---\n{lin}\n--- ra-mir ---\n{ra}"
+            )
+        });
+    }
+
+    #[test]
+    fn regalloc2_allocates_textual_theta_invariant_fixture_after_passes() {
+        let input = r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = Const(0x4) [] -> [v0]
+    n1 = Const(0x1) [] -> [v1]
+    n2 = theta [v0, v1, %cs:arg, %os:arg] {
+      region {
+        args: [arg0, arg1, %cs, %os]
+        n3 = Const(0x7) [] -> [v2]
+        n4 = Const(0x3) [] -> [v3]
+        n5 = Add [v2, v3] -> [v4]
+        n6 = Xor [v4, v3] -> [v5]
+        n7 = Sub [arg0, arg1] -> [v6]
+        n8 = Add [v5, v6] -> [v7]
+        results: [v6, v6, arg1, %cs:arg, %os:arg]
+      }
+    } -> [v8, v9, %cs, %os]
+    n9 = WriteToField(offset=0, W1) [v8, %os:n2] -> [%os]
+    results: [%cs:n2, %os:n9]
+  }
+}
+"#;
+
+        let registry = IntrinsicRegistry::empty();
+        let mut func = parse_ir(input, <u8 as Facet>::SHAPE, &registry).expect("fixture should parse");
+        crate::ir_passes::run_default_passes(&mut func);
+        let lin = linearize(&mut func);
+        let ra = crate::regalloc_mir::lower_linear_ir(&lin);
+        let _alloc = allocate_program(&ra).unwrap_or_else(|e| {
+            panic!(
+                "regalloc should allocate textual theta fixture after passes: {e}\n--- linear ---\n{lin}\n--- ra-mir ---\n{ra}"
+            )
+        });
     }
 
     // r[verify ir.regalloc.engine]

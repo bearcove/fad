@@ -866,6 +866,84 @@ fn resolve_node(
                 .map(|o| resolve_output(o, max_vreg))
                 .collect();
 
+            // Theta invariant checks: textual IR must follow builder semantics.
+            // inputs: [loop_vars..., %cs, %os]
+            // body args: [loop_vars..., %cs, %os]
+            // body results: [pred, loop_vars..., %cs, %os]
+            // outputs: [loop_vars..., %cs, %os]
+            if resolved_inputs.len() < 2 {
+                return Err(ParseError {
+                    message: format!("theta n{id} must have at least %cs/%os inputs"),
+                });
+            }
+            if resolved_outputs.len() < 2 {
+                return Err(ParseError {
+                    message: format!("theta n{id} must have at least %cs/%os outputs"),
+                });
+            }
+
+            let body_region = &func.regions[body_id];
+            if body_region.args.len() != resolved_inputs.len() {
+                return Err(ParseError {
+                    message: format!(
+                        "theta n{id} body arg count mismatch: got {}, expected {}",
+                        body_region.args.len(),
+                        resolved_inputs.len()
+                    ),
+                });
+            }
+            if body_region.results.len() != resolved_outputs.len() + 1 {
+                return Err(ParseError {
+                    message: format!(
+                        "theta n{id} body result count mismatch: got {}, expected {} (predicate + outputs)",
+                        body_region.results.len(),
+                        resolved_outputs.len() + 1
+                    ),
+                });
+            }
+
+            let in_last = resolved_inputs.len() - 1;
+            let out_last = resolved_outputs.len() - 1;
+            let body_arg_last = body_region.args.len() - 1;
+            let body_res_last = body_region.results.len() - 1;
+
+            if resolved_inputs[in_last - 1].kind != PortKind::StateCursor
+                || resolved_inputs[in_last].kind != PortKind::StateOutput
+                || body_region.args[body_arg_last - 1].kind != PortKind::StateCursor
+                || body_region.args[body_arg_last].kind != PortKind::StateOutput
+                || resolved_outputs[out_last - 1].kind != PortKind::StateCursor
+                || resolved_outputs[out_last].kind != PortKind::StateOutput
+                || body_region.results[body_res_last - 1].kind != PortKind::StateCursor
+                || body_region.results[body_res_last].kind != PortKind::StateOutput
+            {
+                return Err(ParseError {
+                    message: format!(
+                        "theta n{id} must thread %cs/%os as trailing inputs/args/results/outputs"
+                    ),
+                });
+            }
+
+            if body_region.results[0].kind != PortKind::Data {
+                return Err(ParseError {
+                    message: format!("theta n{id} first body result must be predicate data"),
+                });
+            }
+
+            let loop_var_count = resolved_inputs.len() - 2;
+            for i in 0..loop_var_count {
+                if resolved_inputs[i].kind != PortKind::Data
+                    || body_region.args[i].kind != PortKind::Data
+                    || body_region.results[i + 1].kind != PortKind::Data
+                    || resolved_outputs[i].kind != PortKind::Data
+                {
+                    return Err(ParseError {
+                        message: format!(
+                            "theta n{id} loop-carried values must be data ports at index {i}"
+                        ),
+                    });
+                }
+            }
+
             let node_id = func.nodes.push(Node {
                 region: region_id,
                 inputs: resolved_inputs,
