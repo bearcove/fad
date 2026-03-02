@@ -77,10 +77,17 @@ fn main() {
     }
 }
 
+fn benches_prefix() -> PathBuf {
+    workspace_root().join("kajit").join("benches")
+}
+
+fn tests_prefix() -> PathBuf {
+    workspace_root().join("kajit").join("tests")
+}
+
 fn generate_synthetic() {
-    let root = workspace_root();
-    let bench_path = root.join("benches/synthetic.rs");
-    let test_path = root.join("tests/generated_synthetic.rs");
+    let bench_path = benches_prefix().join("synthetic.rs");
+    let test_path = tests_prefix().join("generated_synthetic.rs");
     write_file(&bench_path, &render_bench_file());
     write_file(&test_path, &render_test_file());
     println!(
@@ -91,22 +98,19 @@ fn generate_synthetic() {
 }
 
 fn generate_ir_opt_corpus() {
-    let root = workspace_root();
-    let test_path = root.join("tests/generated_ir_opt_corpus.rs");
+    let test_path = tests_prefix().join("generated_ir_opt_corpus.rs");
     write_file(&test_path, &render_ir_opt_test_file());
     println!("generated:\n- {}", test_path.display());
 }
 
 fn generate_ir_postreg_corpus() {
-    let root = workspace_root();
-    let test_path = root.join("tests/generated_ir_postreg_corpus.rs");
+    let test_path = tests_prefix().join("generated_ir_postreg_corpus.rs");
     write_file(&test_path, &render_ir_postreg_test_file());
     println!("generated:\n- {}", test_path.display());
 }
 
 fn generate_ir_behavior_corpus() {
-    let root = workspace_root();
-    let test_path = root.join("tests/generated_ir_behavior_corpus.rs");
+    let test_path = tests_prefix().join("generated_ir_behavior_corpus.rs");
     write_file(&test_path, &render_ir_behavior_test_file());
     println!("generated:\n- {}", test_path.display());
 }
