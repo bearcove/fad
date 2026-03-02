@@ -919,10 +919,10 @@ fn lower_inst(linear_op_index: usize, op: LinearOp) -> RaInst {
             };
         }
         LinearOp::CallPure { args, dst, .. } => {
-            for (i, &arg) in args.iter().enumerate() {
-                push_use(&mut operands, arg, Some(FixedReg::AbiArg(i as u8)));
+            for &arg in args {
+                push_use(&mut operands, arg, None);
             }
-            push_def(&mut operands, *dst, Some(FixedReg::AbiRet(0)));
+            push_def(&mut operands, *dst, None);
             clobbers = RaClobbers {
                 caller_saved_gpr: true,
                 caller_saved_simd: true,

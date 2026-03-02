@@ -1540,6 +1540,28 @@ pub unsafe extern "C" fn kajit_json_error_expected_tag_key(ctx: *mut DeserContex
     ctx.error.code = ErrorCode::ExpectedTagKey as u32;
 }
 
+/// Set UnknownField error.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kajit_json_error_unknown_field(ctx: *mut DeserContext) {
+    let ctx = unsafe { &mut *ctx };
+    ctx.error.code = ErrorCode::UnknownField as u32;
+}
+
+/// Set UnexpectedCharacter error.
+///
+/// # Safety
+///
+/// - `ctx` must be a valid, aligned, non-null pointer to a `DeserContext`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kajit_json_error_unexpected_character(ctx: *mut DeserContext) {
+    let ctx = unsafe { &mut *ctx };
+    ctx.error.code = ErrorCode::UnexpectedCharacter as u32;
+}
+
 // --- JSON array intrinsics ---
 
 /// Skip whitespace, then expect and consume ','.
@@ -2045,6 +2067,14 @@ pub fn known_intrinsics() -> Vec<(&'static str, crate::ir::IntrinsicFn)> {
         (
             "kajit_json_error_expected_tag_key",
             IntrinsicFn(kajit_json_error_expected_tag_key as *const () as usize),
+        ),
+        (
+            "kajit_json_error_unknown_field",
+            IntrinsicFn(kajit_json_error_unknown_field as *const () as usize),
+        ),
+        (
+            "kajit_json_error_unexpected_character",
+            IntrinsicFn(kajit_json_error_unexpected_character as *const () as usize),
         ),
         (
             "kajit_json_expect_comma",

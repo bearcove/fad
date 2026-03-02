@@ -330,6 +330,23 @@ fn compile_linear_ir_x64(ir: &LinearIr, _max_spillslots: usize) -> LinearBackend
             }
         }
 
+        fn emit_load_intrinsic_arg_rdi(&mut self, arg: IntrinsicArg) {
+            match arg {
+                IntrinsicArg::VReg(v) => {
+                    let off = self.vreg_off(v) as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; mov rdi, [rsp + off]);
+                }
+                IntrinsicArg::OutField(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rdi, [r14 + off]);
+                }
+                IntrinsicArg::OutStack(offset) => {
+                    let off = offset as i32;
+                    dynasm!(self.ectx.ops ; .arch x64 ; lea rdi, [rsp + off]);
+                }
+            }
+        }
+
         fn emit_load_intrinsic_arg_rdx(&mut self, arg: IntrinsicArg) {
             match arg {
                 IntrinsicArg::VReg(v) => {
@@ -540,6 +557,77 @@ fn compile_linear_ir_x64(ir: &LinearIr, _max_spillslots: usize) -> LinearBackend
                     self.emit_call_intrinsic_with_args(fn_ptr, &call_args);
                 }
             }
+        }
+
+        fn emit_call_pure(
+            &mut self,
+            func: crate::ir::IntrinsicFn,
+            args: &[crate::ir::VReg],
+            dst: crate::ir::VReg,
+        ) {
+            let fn_ptr = func.0 as i64;
+
+            #[cfg(not(windows))]
+            {
+                if args.len() > 6 {
+                    panic!(
+                        "unsupported CallPure arity in linear backend adapter: {} args",
+                        args.len()
+                    );
+                }
+                if let Some(&arg) = args.first() {
+                    self.emit_load_intrinsic_arg_rdi(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(1) {
+                    self.emit_load_intrinsic_arg_rsi(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(2) {
+                    self.emit_load_intrinsic_arg_rdx(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(3) {
+                    self.emit_load_intrinsic_arg_rcx(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(4) {
+                    self.emit_load_intrinsic_arg_r8(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(5) {
+                    self.emit_load_intrinsic_arg_r9(IntrinsicArg::VReg(arg));
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                if args.len() > 4 {
+                    panic!(
+                        "unsupported CallPure arity in linear backend adapter: {} args",
+                        args.len()
+                    );
+                }
+                if let Some(&arg) = args.first() {
+                    self.emit_load_intrinsic_arg_rcx(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(1) {
+                    self.emit_load_intrinsic_arg_rdx(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(2) {
+                    self.emit_load_intrinsic_arg_r8(IntrinsicArg::VReg(arg));
+                }
+                if let Some(&arg) = args.get(3) {
+                    self.emit_load_intrinsic_arg_r9(IntrinsicArg::VReg(arg));
+                }
+            }
+
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov rax, QWORD fn_ptr
+                ; call rax
+            );
+
+            let out_offset = self.vreg_off(dst) as i32;
+            dynasm!(self.ectx.ops
+                ; .arch x64
+                ; mov [rsp + out_offset], rax
+            );
         }
 
         fn emit_store_incoming_lambda_args(&mut self, data_args: &[crate::ir::VReg]) {
@@ -811,8 +899,8 @@ fn compile_linear_ir_x64(ir: &LinearIr, _max_spillslots: usize) -> LinearBackend
                     } => {
                         self.emit_call_intrinsic(*func, args, *dst, *field_offset);
                     }
-                    LinearOp::CallPure { .. } => {
-                        panic!("unsupported CallPure in linear backend adapter");
+                    LinearOp::CallPure { func, args, dst } => {
+                        self.emit_call_pure(*func, args, *dst);
                     }
 
                     LinearOp::ErrorExit { code } => {
@@ -2430,6 +2518,57 @@ fn compile_linear_ir_aarch64(
             }
         }
 
+        fn emit_call_pure_with_args(&mut self, fn_ptr: *const u8, args: &[IntrinsicArg]) {
+            if args.len() > 8 {
+                panic!(
+                    "unsupported CallPure arity in linear backend adapter: {} args",
+                    args.len()
+                );
+            }
+
+            self.flush_all_vregs();
+
+            for (i, arg) in args.iter().copied().enumerate() {
+                self.emit_set_abi_reg_from_intrinsic_arg(i as u8, arg);
+            }
+
+            let ptr = fn_ptr as u64;
+            let p0 = (ptr & 0xFFFF) as u32;
+            let p1 = ((ptr >> 16) & 0xFFFF) as u32;
+            let p2 = ((ptr >> 32) & 0xFFFF) as u32;
+            let p3 = ((ptr >> 48) & 0xFFFF) as u32;
+            dynasm!(self.ectx.ops ; .arch aarch64 ; movz x16, #p0);
+            if p1 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x16, #p1, LSL #16);
+            }
+            if p2 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x16, #p2, LSL #32);
+            }
+            if p3 != 0 {
+                dynasm!(self.ectx.ops ; .arch aarch64 ; movk x16, #p3, LSL #48);
+            }
+            dynasm!(self.ectx.ops ; .arch aarch64 ; blr x16);
+        }
+
+        fn emit_call_pure(
+            &mut self,
+            func: crate::ir::IntrinsicFn,
+            args: &[crate::ir::VReg],
+            dst: crate::ir::VReg,
+        ) {
+            let fn_ptr = func.0 as *const u8;
+            let dst_operand_index = args.len();
+            let call_args: Vec<IntrinsicArg> = args
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, _)| IntrinsicArg::VReg { operand_index: i })
+                .collect();
+            self.emit_call_pure_with_args(fn_ptr, &call_args);
+            self.emit_capture_abi_ret_to_allocation(0, dst_operand_index);
+            let _ = dst;
+        }
+
         fn emit_store_incoming_lambda_args(&mut self, data_args: &[crate::ir::VReg]) {
             const MAX_LAMBDA_DATA_ARGS: usize = 6;
             if data_args.len() > MAX_LAMBDA_DATA_ARGS {
@@ -3124,8 +3263,9 @@ fn compile_linear_ir_aarch64(
                                 self.set_const(*dst, None);
                             }
                         }
-                        LinearOp::CallPure { .. } => {
-                            panic!("unsupported CallPure in linear backend adapter");
+                        LinearOp::CallPure { func, args, dst } => {
+                            self.emit_call_pure(*func, args, *dst);
+                            self.set_const(*dst, None);
                         }
 
                         LinearOp::ErrorExit { code } => {

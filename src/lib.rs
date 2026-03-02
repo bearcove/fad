@@ -421,9 +421,49 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "JSON IR lower_struct_fields not yet implemented")]
-    fn compile_decoder_with_backend_ir_panics_for_json_struct_for_now() {
-        let _ = compile_decoder_with_backend(Friend::SHAPE, &json::KajitJson, DecoderBackend::Ir);
+    fn compile_decoder_with_backend_ir_supports_json_structs() {
+        let via_ir = compile_decoder_with_backend(Friend::SHAPE, &json::KajitJson, DecoderBackend::Ir);
+        let got: Friend = from_str(&via_ir, r#"{"name":"Alice","age":42}"#).unwrap();
+        assert_eq!(
+            got,
+            Friend {
+                age: 42,
+                name: "Alice".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn json_struct_ir_orders_key_read_before_key_compare() {
+        let mut func = compiler::build_decoder_ir(Friend::SHAPE, &json::KajitJson);
+        ir_passes::run_default_passes(&mut func);
+        let linear = linearize::linearize(&mut func);
+        let linear_text = format!("{linear}");
+
+        let read_key_pat = format!(
+            "call_intrinsic 0x{:x}",
+            json_intrinsics::kajit_json_read_key as *const () as usize
+        );
+        let key_eq_pat = format!(
+            "call_pure 0x{:x}",
+            json_intrinsics::kajit_json_key_equals as *const () as usize
+        );
+        let slot_read_pat = " = slot[0]";
+
+        let read_key_pos = linear_text
+            .find(&read_key_pat)
+            .unwrap_or_else(|| panic!("missing read_key call in linear IR:\n{linear_text}"));
+        let slot_read_pos = linear_text
+            .find(slot_read_pat)
+            .unwrap_or_else(|| panic!("missing slot read in linear IR:\n{linear_text}"));
+        let key_eq_pos = linear_text
+            .find(&key_eq_pat)
+            .unwrap_or_else(|| panic!("missing key_equals call in linear IR:\n{linear_text}"));
+
+        assert!(
+            read_key_pos < slot_read_pos && slot_read_pos < key_eq_pos,
+            "expected read_key -> slot_read -> key_compare order in linear IR:\n{linear_text}"
+        );
     }
 
     #[test]

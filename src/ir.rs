@@ -602,8 +602,6 @@ impl IrOp {
             | IrOp::ZigzagDecode { .. }
             | IrOp::SignExtend { .. }
             | IrOp::SlotAddr { .. }
-            | IrOp::WriteToSlot { .. }
-            | IrOp::ReadFromSlot { .. }
             | IrOp::CallPure { .. } => Effect::Pure,
 
             // Cursor ops
@@ -614,6 +612,8 @@ impl IrOp {
             | IrOp::BoundsCheck { .. }
             | IrOp::SaveCursor
             | IrOp::RestoreCursor
+            | IrOp::WriteToSlot { .. }
+            | IrOp::ReadFromSlot { .. }
             | IrOp::SimdStringScan
             | IrOp::SimdWhitespaceSkip
             | IrOp::ErrorExit { .. } => Effect::Cursor,
@@ -1172,6 +1172,42 @@ impl<'a> RegionBuilder<'a> {
         PortSource::Node(OutputRef { node, index: 0 })
     }
 
+    /// Write a value to an abstract stack slot.
+    pub fn write_to_slot(&mut self, slot: SlotId, src: PortSource) {
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs: vec![
+                InputPort {
+                    kind: PortKind::Data,
+                    source: src,
+                },
+                InputPort {
+                    kind: PortKind::StateCursor,
+                    source: self.cursor_state,
+                },
+            ],
+            outputs: vec![Self::cursor_output()],
+            kind: NodeKind::Simple(IrOp::WriteToSlot { slot }),
+        });
+        self.cursor_state = PortSource::Node(OutputRef { node, index: 0 });
+    }
+
+    /// Read a value from an abstract stack slot.
+    pub fn read_from_slot(&mut self, slot: SlotId) -> PortSource {
+        let data_out = self.data_output();
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs: vec![InputPort {
+                kind: PortKind::StateCursor,
+                source: self.cursor_state,
+            }],
+            outputs: vec![data_out, Self::cursor_output()],
+            kind: NodeKind::Simple(IrOp::ReadFromSlot { slot }),
+        });
+        self.cursor_state = PortSource::Node(OutputRef { node, index: 1 });
+        PortSource::Node(OutputRef { node, index: 0 })
+    }
+
     // ── Barrier operations (auto-threaded, all states) ──────────────
 
     /// Call an intrinsic. Full barrier: consumes and produces all state tokens.
@@ -1234,6 +1270,29 @@ impl<'a> RegionBuilder<'a> {
         } else {
             None
         }
+    }
+
+    /// Call a pure function. No state tokens are consumed or produced.
+    /// Returns the data result.
+    pub fn call_pure(&mut self, func: IntrinsicFn, args: &[PortSource]) -> PortSource {
+        let inputs: Vec<InputPort> = args
+            .iter()
+            .map(|&src| InputPort {
+                kind: PortKind::Data,
+                source: src,
+            })
+            .collect();
+        let out = self.data_output();
+        let node = self.add_node(Node {
+            region: self.region,
+            inputs,
+            outputs: vec![out],
+            kind: NodeKind::Simple(IrOp::CallPure {
+                func,
+                arg_count: args.len() as u8,
+            }),
+        });
+        PortSource::Node(OutputRef { node, index: 0 })
     }
 
     // ── Error ───────────────────────────────────────────────────────

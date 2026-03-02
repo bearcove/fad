@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## Development/debugging guide
+- For debugger workflows (LLDB/GDB), JIT symbolization, and step-by-step JIT debugging, see `/Users/amos/bearcove/kajit/DEVELOP.md`.
+
+## Compiler architecture principles
+- Expand backend capabilities to support required IR semantics; do not work around backend limitations in lowering or intrinsic selection.
+- Prefer explicit backend/ABI support (for example, dedicated pure-call ABI support) over adapters that hide contract mismatches.
+
 ## Test policy
 - Always run tests after making code changes.
 - Use `cargo nextest run` for Rust tests.

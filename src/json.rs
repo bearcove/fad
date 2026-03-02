@@ -1376,12 +1376,198 @@ impl Decoder for KajitJson {
 impl IrDecoder for KajitJson {
     fn lower_struct_fields(
         &self,
-        _builder: &mut RegionBuilder<'_>,
-        _fields: &[FieldLowerInfo],
-        _deny_unknown_fields: bool,
-        _lower_field: &mut dyn FnMut(&mut RegionBuilder<'_>, &FieldLowerInfo),
+        builder: &mut RegionBuilder<'_>,
+        fields: &[FieldLowerInfo],
+        deny_unknown_fields: bool,
+        lower_field: &mut dyn FnMut(&mut RegionBuilder<'_>, &FieldLowerInfo),
     ) {
-        panic!("JSON IR lower_struct_fields not yet implemented");
+        for field in fields {
+            assert!(
+                !field.has_default,
+                "JSON IR lowering does not support defaulted fields yet"
+            );
+            assert!(
+                field.required_index < 64,
+                "JSON IR lowering currently supports at most 64 fields"
+            );
+        }
+
+        let required_mask = fields.iter().fold(0u64, |mask, field| {
+            mask | (1u64 << field.required_index)
+        });
+
+        builder.call_intrinsic(ifn(json_intrinsics::kajit_json_expect_object_start as _), &[], 0, false);
+
+        let key_ptr_slot = builder.alloc_slot();
+        let key_len_slot = builder.alloc_slot();
+
+        let bitset0 = builder.const_val(0);
+        builder.call_intrinsic(ifn(json_intrinsics::kajit_json_skip_ws as _), &[], 0, false);
+        let first = builder.peek_byte();
+        let close = builder.const_val(b'}' as u64);
+        let has_entries = builder.binop(crate::ir::IrOp::CmpNe, first, close);
+
+        let out = builder.gamma(has_entries, &[bitset0], 2, |branch_idx, rb| {
+            let args = rb.region_args(1);
+            let bitset_in = args[0];
+            match branch_idx {
+                0 => {
+                    rb.advance_cursor(1);
+                    rb.set_results(&[bitset_in]);
+                }
+                1 => {
+                    let loop_out = rb.theta(&[bitset_in], |tb| {
+                        let args = tb.region_args(1);
+                        let mut bitset_iter = args[0];
+
+                        let key_ptr_out_addr = tb.slot_addr(key_ptr_slot);
+                        let key_len_out_addr = tb.slot_addr(key_len_slot);
+                        tb.call_intrinsic(
+                            ifn(json_intrinsics::kajit_json_read_key as _),
+                            &[key_ptr_out_addr, key_len_out_addr],
+                            0,
+                            false,
+                        );
+                        let key_ptr = tb.read_from_slot(key_ptr_slot);
+                        let key_len = tb.read_from_slot(key_len_slot);
+                        tb.call_intrinsic(ifn(json_intrinsics::kajit_json_expect_colon as _), &[], 0, false);
+
+                        let mut handled = tb.const_val(0);
+                        for field in fields {
+                            let expected_ptr = tb.const_val(field.name.as_ptr() as u64);
+                            let expected_len = tb.const_val(field.name.len() as u64);
+                            let eq = tb.call_pure(
+                                ifn(json_intrinsics::kajit_json_key_equals as _),
+                                &[key_ptr, key_len, expected_ptr, expected_len],
+                            );
+                            let one = tb.const_val(1);
+                            let not_handled = tb.binop(crate::ir::IrOp::CmpNe, handled, one);
+                            let should_handle = tb.binop(crate::ir::IrOp::And, eq, not_handled);
+
+                            let updated = tb.gamma(should_handle, &[bitset_iter, handled], 2, |idx, mb| {
+                                let pass = mb.region_args(2);
+                                let bitset_in = pass[0];
+                                let handled_in = pass[1];
+                                match idx {
+                                    0 => mb.set_results(&[bitset_in, handled_in]),
+                                    1 => {
+                                        lower_field(mb, field);
+                                        let mask = mb.const_val(1u64 << field.required_index);
+                                        let bitset_new =
+                                            mb.binop(crate::ir::IrOp::Or, bitset_in, mask);
+                                        let handled_yes = mb.const_val(1);
+                                        mb.set_results(&[bitset_new, handled_yes]);
+                                    }
+                                    _ => unreachable!(),
+                                }
+                            });
+                            bitset_iter = updated[0];
+                            handled = updated[1];
+                        }
+
+                        let after_unknown = tb.gamma(handled, &[bitset_iter], 2, |idx, ub| {
+                            let pass = ub.region_args(1);
+                            let bitset_in = pass[0];
+                            match idx {
+                                0 => {
+                                    if deny_unknown_fields {
+                                        ub.call_intrinsic(
+                                            ifn(json_intrinsics::kajit_json_error_unknown_field as _),
+                                            &[],
+                                            0,
+                                            false,
+                                        );
+                                    } else {
+                                        ub.call_intrinsic(
+                                            ifn(json_intrinsics::kajit_json_skip_value as _),
+                                            &[],
+                                            0,
+                                            false,
+                                        );
+                                    }
+                                    ub.set_results(&[bitset_in]);
+                                }
+                                1 => ub.set_results(&[bitset_in]),
+                                _ => unreachable!(),
+                            }
+                        });
+                        bitset_iter = after_unknown[0];
+
+                        tb.call_intrinsic(ifn(json_intrinsics::kajit_json_skip_ws as _), &[], 0, false);
+                        tb.bounds_check(1);
+                        let sep = tb.read_bytes(1);
+                        let comma = tb.const_val(b',' as u64);
+                        let sep_ne_comma = tb.binop(crate::ir::IrOp::CmpNe, sep, comma);
+
+                        let delim = tb.gamma(sep_ne_comma, &[bitset_iter, sep], 2, |idx, db| {
+                            let pass = db.region_args(2);
+                            let bitset_in = pass[0];
+                            let sep_val = pass[1];
+                            match idx {
+                                0 => {
+                                    let cont = db.const_val(1);
+                                    db.set_results(&[cont, bitset_in]);
+                                }
+                                1 => {
+                                    let close = db.const_val(b'}' as u64);
+                                    let sep_ne_close =
+                                        db.binop(crate::ir::IrOp::CmpNe, sep_val, close);
+                                    let close_out =
+                                        db.gamma(sep_ne_close, &[bitset_in], 2, |j, cb| {
+                                            let pass = cb.region_args(1);
+                                            let bitset_in = pass[0];
+                                            match j {
+                                                0 => {
+                                                    let stop = cb.const_val(0);
+                                                    cb.set_results(&[stop, bitset_in]);
+                                                }
+                                                1 => {
+                                                    cb.call_intrinsic(
+                                                        ifn(
+                                                            json_intrinsics::kajit_json_error_unexpected_character
+                                                                as _,
+                                                        ),
+                                                        &[],
+                                                        0,
+                                                        false,
+                                                    );
+                                                    let stop = cb.const_val(0);
+                                                    cb.set_results(&[stop, bitset_in]);
+                                                }
+                                                _ => unreachable!(),
+                                            }
+                                        });
+                                    db.set_results(&[close_out[0], close_out[1]]);
+                                }
+                                _ => unreachable!(),
+                            }
+                        });
+
+                        tb.set_results(&[delim[0], delim[1]]);
+                    });
+
+                    rb.set_results(&[loop_out[0]]);
+                }
+                _ => unreachable!(),
+            }
+        });
+
+        let seen_mask = out[0];
+        if required_mask != 0 {
+            let required = builder.const_val(required_mask);
+            let present = builder.binop(crate::ir::IrOp::And, seen_mask, required);
+            let missing = builder.binop(crate::ir::IrOp::CmpNe, present, required);
+            builder.gamma(missing, &[], 2, |idx, rb| {
+                match idx {
+                    0 => rb.set_results(&[]),
+                    1 => {
+                        rb.error_exit(ErrorCode::MissingRequiredField);
+                        rb.set_results(&[]);
+                    }
+                    _ => unreachable!(),
+                }
+            });
+        }
     }
 
     fn lower_read_scalar(
