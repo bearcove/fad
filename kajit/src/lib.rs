@@ -3667,6 +3667,7 @@ mod tests {
 
     #[derive(Facet, Debug, PartialEq)]
     struct BoxedString {
+        #[allow(clippy::box_collection)]
         name: Box<String>,
     }
 
@@ -3768,6 +3769,7 @@ mod tests {
 
     #[derive(Facet, Debug, PartialEq)]
     struct VecBox {
+        #[allow(clippy::vec_box)]
         items: Vec<Box<u32>>,
     }
 

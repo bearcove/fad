@@ -1119,6 +1119,7 @@ fn optimize_linear_ops(ops: &mut Vec<LinearOp>) {
     for (bi, block) in blocks.iter().enumerate() {
         let mut uses = HashSet::new();
         let mut defs = HashSet::new();
+        #[allow(clippy::needless_range_loop)]
         for i in block.start..block.end {
             let op_uses = op_uses(&ops[i], func_end_uses.get(&i).map(Vec::as_slice));
             for u in op_uses {
