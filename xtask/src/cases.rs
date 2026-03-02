@@ -1,68 +1,74 @@
 //! Deser/ser cases
 
 use crate::Case;
+use proc_macro2::TokenStream;
+use quote::quote;
 
-pub(crate) const TYPES_RS: &str = r#"
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct Friend {
-    age: u32,
-    name: String,
+pub(crate) fn types_rs() -> TokenStream {
+    quote! {
+        use serde::{Serialize, Deserialize};
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct Friend {
+            age: u32,
+            name: String,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct Address {
+            city: String,
+            zip: u32,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct Person {
+            name: String,
+            age: u32,
+            address: Address,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct Inner {
+            x: u32,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct Middle {
+            inner: Inner,
+            y: u32,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct Outer {
+            middle: Middle,
+            z: u32,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct AllIntegers {
+            a_u8: u8,
+            a_u16: u16,
+            a_u32: u32,
+            a_u64: u64,
+            a_i8: i8,
+            a_i16: i16,
+            a_i32: i32,
+            a_i64: i64,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct BoolField {
+            value: bool,
+        }
+
+        #[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
+        struct ScalarVec {
+            values: Vec<u32>,
+        }
+
+        type Pair = (u32, String);
+    }
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct Address {
-    city: String,
-    zip: u32,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct Person {
-    name: String,
-    age: u32,
-    address: Address,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct Inner {
-    x: u32,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct Middle {
-    inner: Inner,
-    y: u32,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct Outer {
-    middle: Middle,
-    z: u32,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct AllIntegers {
-    a_u8: u8,
-    a_u16: u16,
-    a_u32: u32,
-    a_u64: u64,
-    a_i8: i8,
-    a_i16: i16,
-    a_i32: i32,
-    a_i64: i64,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct BoolField {
-    value: bool,
-}
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
-struct ScalarVec {
-    values: Vec<u32>,
-}
-
-type Pair = (u32, String);
-"#;
 
 pub(crate) const CASES: &[Case] = &[
     Case {

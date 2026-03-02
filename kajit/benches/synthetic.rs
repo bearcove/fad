@@ -10,43 +10,38 @@ use facet::Facet;
 use std::hint::black_box;
 use std::sync::LazyLock;
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+use serde::{Serialize, Deserialize};
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct Friend {
     age: u32,
     name: String,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct Address {
     city: String,
     zip: u32,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct Person {
     name: String,
     age: u32,
     address: Address,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct Inner {
     x: u32,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct Middle {
     inner: Inner,
     y: u32,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct Outer {
     middle: Middle,
     z: u32,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct AllIntegers {
     a_u8: u8,
     a_u16: u16,
@@ -57,17 +52,14 @@ struct AllIntegers {
     a_i32: i32,
     a_i64: i64,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct BoolField {
     value: bool,
 }
-
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Facet)]
 struct ScalarVec {
     values: Vec<u32>,
 }
-
 type Pair = (u32, String);
 
 fn main() {
