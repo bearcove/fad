@@ -37,6 +37,187 @@ struct IrPostRegCase {
     expected: u8,
 }
 
+struct BehaviorVector {
+    input: &'static [u8],
+    expected: u8,
+}
+
+struct IrBehaviorCase {
+    name: &'static str,
+    ir: &'static str,
+    vectors: &'static [BehaviorVector],
+}
+
+const IR_BEHAVIOR_CASES: &[IrBehaviorCase] = &[
+    IrBehaviorCase {
+        name: "enum_like_gamma_tag_branch",
+        ir: r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = ReadBytes(1) [%cs:n0] -> [v0, %cs]
+    n2 = Const(0x0) [] -> [v1]
+    n3 = CmpNe [v0, v1] -> [v2]
+    n4 = gamma [
+      pred: v2
+      in0: %cs:n1
+      in1: %os:arg
+    ] {
+      branch 0:
+        region {
+          args: [%cs, %os]
+          n5 = Const(0x2a) [] -> [v3]
+          results: [v3, %cs:arg, %os:arg]
+        }
+      branch 1:
+        region {
+          args: [%cs, %os]
+          n6 = Const(0x63) [] -> [v4]
+          results: [v4, %cs:arg, %os:arg]
+        }
+    } -> [v5, %cs, %os]
+    n7 = WriteToField(offset=0, W1) [v5, %os:n4] -> [%os]
+    results: [%cs:n4, %os:n7]
+  }
+}
+"#,
+        vectors: &[
+            BehaviorVector {
+                input: &[0],
+                expected: 42,
+            },
+            BehaviorVector {
+                input: &[1],
+                expected: 99,
+            },
+            BehaviorVector {
+                input: &[255],
+                expected: 99,
+            },
+        ],
+    },
+    IrBehaviorCase {
+        name: "theta_countdown_accumulate",
+        ir: r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = ReadBytes(1) [%cs:n0] -> [v0, %cs]
+    n2 = Const(0x0) [] -> [v1]
+    n3 = Const(0x1) [] -> [v2]
+    n4 = theta [v0, v1, v2, %cs:n1, %os:arg] {
+      region {
+        args: [arg0, arg1, arg2, %cs, %os]
+        n5 = Add [arg1, arg2] -> [v3]
+        n6 = Sub [arg0, arg2] -> [v4]
+        results: [v4, v4, v3, arg2, %cs:arg, %os:arg]
+      }
+    } -> [v5, v6, v7, %cs, %os]
+    n8 = WriteToField(offset=0, W1) [v6, %os:n4] -> [%os]
+    results: [%cs:n4, %os:n8]
+  }
+}
+"#,
+        vectors: &[
+            BehaviorVector {
+                input: &[1],
+                expected: 1,
+            },
+            BehaviorVector {
+                input: &[3],
+                expected: 3,
+            },
+            BehaviorVector {
+                input: &[7],
+                expected: 7,
+            },
+        ],
+    },
+    IrBehaviorCase {
+        name: "and_cmpne_branch_surface",
+        ir: r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(2) [%cs:arg] -> [%cs]
+    n1 = ReadBytes(1) [%cs:n0] -> [v0, %cs]
+    n2 = ReadBytes(1) [%cs:n1] -> [v1, %cs]
+    n3 = Const(0x0) [] -> [v2]
+    n4 = CmpNe [v0, v2] -> [v3]
+    n5 = CmpNe [v1, v2] -> [v4]
+    n6 = And [v3, v4] -> [v5]
+    n7 = gamma [
+      pred: v5
+      in0: %cs:n2
+      in1: %os:arg
+    ] {
+      branch 0:
+        region {
+          args: [%cs, %os]
+          n8 = Const(0x4) [] -> [v6]
+          results: [v6, %cs:arg, %os:arg]
+        }
+      branch 1:
+        region {
+          args: [%cs, %os]
+          n9 = Const(0x9) [] -> [v7]
+          results: [v7, %cs:arg, %os:arg]
+        }
+    } -> [v8, %cs, %os]
+    n10 = WriteToField(offset=0, W1) [v8, %os:n7] -> [%os]
+    results: [%cs:n7, %os:n10]
+  }
+}
+"#,
+        vectors: &[
+            BehaviorVector {
+                input: &[1, 1],
+                expected: 9,
+            },
+            BehaviorVector {
+                input: &[1, 0],
+                expected: 4,
+            },
+            BehaviorVector {
+                input: &[0, 1],
+                expected: 4,
+            },
+            BehaviorVector {
+                input: &[0, 0],
+                expected: 4,
+            },
+        ],
+    },
+    IrBehaviorCase {
+        name: "boundscheck_peek_read_chain",
+        ir: r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = PeekByte [%cs:n0] -> [v0, %cs]
+    n2 = BoundsCheck(1) [%cs:n1] -> [%cs]
+    n3 = ReadBytes(1) [%cs:n2] -> [v1, %cs]
+    n4 = WriteToField(offset=0, W1) [v1, %os:arg] -> [%os]
+    results: [%cs:n3, %os:n4]
+  }
+}
+"#,
+        vectors: &[
+            BehaviorVector {
+                input: &[7],
+                expected: 7,
+            },
+            BehaviorVector {
+                input: &[200],
+                expected: 200,
+            },
+        ],
+    },
+];
+
 const IR_POSTREG_CASES: &[IrPostRegCase] = &[
     IrPostRegCase {
         name: "cmpne_gamma_branch",
@@ -385,9 +566,10 @@ fn main() {
         Some("generate-synthetic") => generate_synthetic(),
         Some("generate-ir-opt-corpus") => generate_ir_opt_corpus(),
         Some("generate-ir-postreg-corpus") => generate_ir_postreg_corpus(),
+        Some("generate-ir-behavior-corpus") => generate_ir_behavior_corpus(),
         _ => {
             eprintln!(
-                "usage: cargo run --manifest-path xtask/Cargo.toml -- <generate-synthetic|generate-ir-opt-corpus|generate-ir-postreg-corpus>"
+                "usage: cargo run --manifest-path xtask/Cargo.toml -- <generate-synthetic|generate-ir-opt-corpus|generate-ir-postreg-corpus|generate-ir-behavior-corpus>"
             );
             std::process::exit(2);
         }
@@ -421,6 +603,13 @@ fn generate_ir_postreg_corpus() {
     println!("generated:\n- {}", test_path.display());
 }
 
+fn generate_ir_behavior_corpus() {
+    let root = workspace_root();
+    let test_path = root.join("tests/generated_ir_behavior_corpus.rs");
+    write_file(&test_path, &render_ir_behavior_test_file());
+    println!("generated:\n- {}", test_path.display());
+}
+
 fn render_bench_file() -> String {
     let mut out = String::new();
     out.push_str("// @generated by xtask generate-synthetic. Do not edit manually.\n");
@@ -446,6 +635,66 @@ fn render_bench_file() -> String {
         out.push_str(");\n");
     }
     out.push_str("\n    harness::run_benchmarks(v);\n}\n");
+    out
+}
+
+fn render_ir_behavior_test_file() -> String {
+    let mut out = String::new();
+    out.push_str("// @generated by xtask generate-ir-behavior-corpus. Do not edit manually.\n");
+    out.push_str("use facet::Facet;\n\n");
+    out.push_str("fn parse_case(ir: &str) -> kajit::ir::IrFunc {\n");
+    out.push_str("    let registry = kajit::ir::IntrinsicRegistry::empty();\n");
+    out.push_str("    kajit::ir_parse::parse_ir(ir, <u8 as Facet>::SHAPE, &registry)\n");
+    out.push_str("        .expect(\"text IR should parse\")\n");
+    out.push_str("}\n\n");
+    out.push_str("fn run_exec(ir: &str, input: &[u8], with_passes: bool) -> u8 {\n");
+    out.push_str("    let mut func = parse_case(ir);\n");
+    out.push_str("    if with_passes {\n");
+    out.push_str("        kajit::ir_passes::run_default_passes(&mut func);\n");
+    out.push_str("    }\n");
+    out.push_str("    let linear = kajit::linearize::linearize(&mut func);\n");
+    out.push_str("    let dec = kajit::compile_decoder_linear_ir(&linear, false);\n");
+    out.push_str("    kajit::deserialize::<u8>(&dec, input).expect(\"decoder should execute\")\n");
+    out.push_str("}\n\n");
+
+    for case in IR_BEHAVIOR_CASES {
+        let test_name = format!("ir_behavior_{}", case.name);
+        write!(
+            out,
+            "#[test]\nfn {test_name}() {{\n",
+            test_name = test_name
+        )
+        .unwrap();
+        out.push_str("    let ir = r#\"");
+        out.push_str(case.ir);
+        out.push_str("\"#;\n");
+        for vec in case.vectors {
+            out.push_str("    {\n");
+            out.push_str("        let input: &[u8] = &[");
+            for (idx, b) in vec.input.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&b.to_string());
+            }
+            out.push_str("];\n");
+            out.push_str(&format!("        let expected: u8 = {};\n", vec.expected));
+            out.push_str("        let baseline = run_exec(ir, input, false);\n");
+            out.push_str("        let optimized = run_exec(ir, input, true);\n");
+            out.push_str(
+                "        assert_eq!(baseline, expected, \"baseline output mismatch\");\n",
+            );
+            out.push_str(
+                "        assert_eq!(optimized, expected, \"optimized output mismatch\");\n",
+            );
+            out.push_str(
+                "        assert_eq!(optimized, baseline, \"optimized and baseline outputs diverged\");\n",
+            );
+            out.push_str("    }\n");
+        }
+        out.push_str("}\n\n");
+    }
+
     out
 }
 
