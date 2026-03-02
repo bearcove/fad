@@ -1,0 +1,5 @@
+---
+source: tests/postreg_vec_hotpath_corpus.rs
+expression: "format!(\"{edits}\")"
+---
+50
