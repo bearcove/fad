@@ -100,7 +100,7 @@ ra_func @0 {
     term: error_exit(NumberOutOfRange)
     succs: (none)
   block b14 [params: v33, v44, v46, v48, v80, v82, v84] (preds: b12):
-    store([24:W4]) v33:gpr
+    store([0:W4]) v33:gpr
     bounds_check(1)
     v43:gpr = read_bytes(1)
     v45:gpr = And v43:gpr, v44:gpr
@@ -185,7 +185,7 @@ ra_func @0 {
     term: error_exit(NumberOutOfRange)
     succs: (none)
   block b28 [params: v76] (preds: b26):
-    call_intrinsic(0x<ptr>, fo=0) v76:gpr !gpr,simd
+    call_intrinsic(0x<ptr>, fo=8) v76:gpr !gpr,simd
     term: return
     succs: (none)
 }

@@ -74,13 +74,13 @@ fn main() {
     let mut v: Vec<harness::Bench> = Vec::new();
 
     bench!(v, flat_struct, Friend, Friend { age: 42, name: "Alice".into() }, +ser, +ir);
-    bench!(v, nested_struct, Person, Person { name: "Alice".into(), age: 30, address: Address { city: "Portland".into(), zip: 97201 } }, +ser);
+    bench!(v, nested_struct, Person, Person { name: "Alice".into(), age: 30, address: Address { city: "Portland".into(), zip: 97201 } }, +ser, +ir);
     bench!(v, deep_struct, Outer, Outer { middle: Middle { inner: Inner { x: 1 }, y: 2 }, z: 3 }, +ser, +ir);
-    bench!(v, all_integers, AllIntegers, AllIntegers { a_u8: 255, a_u16: 65535, a_u32: 1_000_000, a_u64: 1_000_000_000_000, a_i8: -128, a_i16: -32768, a_i32: -1_000_000, a_i64: -1_000_000_000_000 }, +ser);
-    bench!(v, bool_field, BoolField, BoolField { value: true }, +ser);
-    bench!(v, tuple_pair, Pair, (42u32, "Alice".to_string()));
-    bench!(v, vec_scalar_small, ScalarVec, ScalarVec { values: (0..16).map(|i| i as u32).collect() }, +ir);
-    bench!(v, vec_scalar_large, ScalarVec, ScalarVec { values: (0..2048).map(|i| i as u32).collect() }, +ir);
+    bench!(v, all_integers, AllIntegers, AllIntegers { a_u8: 255, a_u16: 65535, a_u32: 1_000_000, a_u64: 1_000_000_000_000, a_i8: -128, a_i16: -32768, a_i32: -1_000_000, a_i64: -1_000_000_000_000 }, +ser, +ir);
+    bench!(v, bool_field, BoolField, BoolField { value: true }, +ser, +ir);
+    bench!(v, tuple_pair, Pair, (42u32, "Alice".to_string()), +ser, +ir);
+    bench!(v, vec_scalar_small, ScalarVec, ScalarVec { values: (0..16).map(|i| i as u32).collect() }, +ser, +ir);
+    bench!(v, vec_scalar_large, ScalarVec, ScalarVec { values: (0..2048).map(|i| i as u32).collect() }, +ser, +ir);
 
     harness::run_benchmarks(v);
 }

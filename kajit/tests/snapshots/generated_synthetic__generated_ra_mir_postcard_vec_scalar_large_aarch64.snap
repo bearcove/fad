@@ -1,5 +1,5 @@
 ---
-source: tests/generated_synthetic.rs
+source: kajit/tests/generated_synthetic.rs
 expression: ra_text
 ---
 ra_func @0 {
@@ -41,7 +41,7 @@ ra_func @0 {
     v117:gpr = copy v9:gpr
     v118:gpr = copy v10:gpr
     term: branch b4
-    succs: b4 [v13, v17, v19, v21, v23, v25, v37, v39, v41, v116, v117, v10]
+    succs: b4 [v13, v17, v19, v21, v23, v25, v37, v39, v41, v116, v117, v118]
   block b4 [params: v13, v17, v19, v21, v23, v25, v37, v39, v41, v116, v117, v118] (preds: b3, b4):
     bounds_check(1)
     v18:gpr = Add v117:gpr, v17:gpr
@@ -65,7 +65,7 @@ ra_func @0 {
     v33:gpr = copy v116:gpr
     v36:gpr = copy v120:gpr
     term: branch b6
-    succs: b6 [v33, v120, v37, v39, v41]
+    succs: b6 [v33, v36, v37, v39, v41]
   block b6 [params: v33, v36, v37, v39, v41] (preds: b2, b5):
     v38:gpr = CmpNe v36:gpr, v37:gpr
     v40:gpr = Shr v33:gpr, v39:gpr
@@ -160,7 +160,7 @@ ra_func @0 {
     v126:gpr = copy v58:gpr
     v127:gpr = copy v59:gpr
     term: branch b22
-    succs: b22 [v33, v47, v48, v50, v52, v54, v62, v66, v68, v70, v72, v74, v86, v88, v90, v92, v93, v94, v95, v125, v126, v59]
+    succs: b22 [v33, v47, v48, v50, v52, v54, v62, v66, v68, v70, v72, v74, v86, v88, v90, v92, v93, v94, v95, v125, v126, v127]
   block b22 [params: v33, v47, v48, v50, v52, v54, v62, v66, v68, v70, v72, v74, v86, v88, v90, v92, v93, v94, v95, v125, v126, v127] (preds: b21, b22):
     bounds_check(1)
     v67:gpr = Add v126:gpr, v66:gpr
@@ -184,7 +184,7 @@ ra_func @0 {
     v82:gpr = copy v125:gpr
     v85:gpr = copy v129:gpr
     term: branch b24
-    succs: b24 [v33, v47, v48, v50, v52, v54, v82, v129, v86, v88, v90, v92, v93, v94, v95]
+    succs: b24 [v33, v47, v48, v50, v52, v54, v82, v85, v86, v88, v90, v92, v93, v94, v95]
   block b24 [params: v33, v47, v48, v50, v52, v54, v82, v85, v86, v88, v90, v92, v93, v94, v95] (preds: b20, b23):
     v87:gpr = CmpNe v85:gpr, v86:gpr
     v89:gpr = Shr v82:gpr, v88:gpr
@@ -268,7 +268,7 @@ ra_func @1 {
     v101:gpr = copy v9:gpr
     v102:gpr = copy v10:gpr
     term: branch b4
-    succs: b4 [v13, v17, v19, v21, v23, v25, v37, v39, v41, v100, v101, v10]
+    succs: b4 [v13, v17, v19, v21, v23, v25, v37, v39, v41, v100, v101, v102]
   block b4 [params: v13, v17, v19, v21, v23, v25, v37, v39, v41, v100, v101, v102] (preds: b3, b4):
     bounds_check(1)
     v18:gpr = Add v101:gpr, v17:gpr
@@ -292,7 +292,7 @@ ra_func @1 {
     v33:gpr = copy v100:gpr
     v36:gpr = copy v104:gpr
     term: branch b6
-    succs: b6 [v33, v104, v37, v39, v41]
+    succs: b6 [v33, v36, v37, v39, v41]
   block b6 [params: v33, v36, v37, v39, v41] (preds: b2, b5):
     v38:gpr = CmpNe v36:gpr, v37:gpr
     v40:gpr = Shr v33:gpr, v39:gpr
@@ -387,7 +387,7 @@ ra_func @1 {
     v110:gpr = copy v58:gpr
     v111:gpr = copy v59:gpr
     term: branch b22
-    succs: b22 [v33, v47, v48, v50, v52, v54, v62, v66, v68, v70, v72, v74, v86, v88, v90, v92, v93, v94, v95, v109, v110, v59]
+    succs: b22 [v33, v47, v48, v50, v52, v54, v62, v66, v68, v70, v72, v74, v86, v88, v90, v92, v93, v94, v95, v109, v110, v111]
   block b22 [params: v33, v47, v48, v50, v52, v54, v62, v66, v68, v70, v72, v74, v86, v88, v90, v92, v93, v94, v95, v109, v110, v111] (preds: b21, b22):
     bounds_check(1)
     v67:gpr = Add v110:gpr, v66:gpr
@@ -411,7 +411,7 @@ ra_func @1 {
     v82:gpr = copy v109:gpr
     v85:gpr = copy v113:gpr
     term: branch b24
-    succs: b24 [v33, v47, v48, v50, v52, v54, v82, v113, v86, v88, v90, v92, v93, v94, v95]
+    succs: b24 [v33, v47, v48, v50, v52, v54, v82, v85, v86, v88, v90, v92, v93, v94, v95]
   block b24 [params: v33, v47, v48, v50, v52, v54, v82, v85, v86, v88, v90, v92, v93, v94, v95] (preds: b20, b23):
     v87:gpr = CmpNe v85:gpr, v86:gpr
     v89:gpr = Shr v82:gpr, v88:gpr

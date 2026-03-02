@@ -12,22 +12,10 @@ mod ir_behavior_cases;
 mod ir_opt_cases;
 mod ir_postreg_cases;
 
-#[derive(Clone, Copy)]
-enum BenchMode {
-    Default,
-    Ser,
-    Ir,
-    SerIr,
-}
-
 struct Case {
     name: &'static str,
     ty: &'static str,
     value: &'static str,
-    mode: BenchMode,
-    json_test: bool,
-    postcard_test: bool,
-    postcard_ir_test: bool,
 }
 
 struct IrOptCase {
@@ -127,17 +115,10 @@ fn render_bench_file() -> String {
     for case in CASES {
         write!(
             out,
-            "    bench!(v, {}, {}, {}",
+            "    bench!(v, {}, {}, {}, +ser, +ir);\n",
             case.name, case.ty, case.value
         )
         .unwrap();
-        match case.mode {
-            BenchMode::Default => {}
-            BenchMode::Ser => out.push_str(", +ser"),
-            BenchMode::Ir => out.push_str(", +ir"),
-            BenchMode::SerIr => out.push_str(", +ser, +ir"),
-        }
-        out.push_str(");\n");
     }
     out.push_str("\n    harness::run_benchmarks(v);\n}\n");
     out
@@ -457,28 +438,22 @@ fn render_test_file() -> String {
     out.push_str("}\n\n");
 
     for case in CASES {
-        if case.json_test {
-            write!(
-                out,
-                "#[test]\nfn generated_json_{}() {{\n    let value: {} = {};\n    assert_json_case(value);\n}}\n\n",
-                case.name, case.ty, case.value
-            )
-            .unwrap();
-        }
-        if case.postcard_test {
-            write!(
-                out,
-                "#[test]\nfn generated_postcard_{}() {{\n    let value: {} = {};\n    assert_postcard_case(value, {});\n    if {} {{\n        assert_ir_ra_snapshots(\"{}\", \"postcard\", <{}>::SHAPE, &kajit::postcard::KajitPostcard);\n    }}\n}}\n\n",
-                case.name,
-                case.ty,
-                case.value,
-                if case.postcard_ir_test { "true" } else { "false" },
-                if case.postcard_ir_test { "true" } else { "false" },
-                case.name,
-                case.ty
-            )
-            .unwrap();
-        }
+        write!(
+            out,
+            "#[test]\nfn generated_json_{}() {{\n    let value: {} = {};\n    assert_json_case(value);\n}}\n\n",
+            case.name, case.ty, case.value
+        )
+        .unwrap();
+        write!(
+            out,
+            "#[test]\nfn generated_postcard_{}() {{\n    let value: {} = {};\n    assert_postcard_case(value, true);\n    assert_ir_ra_snapshots(\"{}\", \"postcard\", <{}>::SHAPE, &kajit::postcard::KajitPostcard);\n}}\n\n",
+            case.name,
+            case.ty,
+            case.value,
+            case.name,
+            case.ty
+        )
+        .unwrap();
     }
 
     out
