@@ -1,3 +1,5 @@
+#![allow(clippy::approx_constant)]
+
 pub mod arch;
 pub mod compiler;
 pub mod context;
@@ -152,7 +154,8 @@ fn scrub_hex_after_prefix(input: &str, prefix: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        if i + prefix_bytes.len() <= bytes.len() && &bytes[i..i + prefix_bytes.len()] == prefix_bytes
+        if i + prefix_bytes.len() <= bytes.len()
+            && &bytes[i..i + prefix_bytes.len()] == prefix_bytes
         {
             out.push_str(prefix);
             i += prefix_bytes.len();
@@ -422,7 +425,8 @@ mod tests {
 
     #[test]
     fn compile_decoder_with_backend_ir_supports_json_structs() {
-        let via_ir = compile_decoder_with_backend(Friend::SHAPE, &json::KajitJson, DecoderBackend::Ir);
+        let via_ir =
+            compile_decoder_with_backend(Friend::SHAPE, &json::KajitJson, DecoderBackend::Ir);
         let got: Friend = from_str(&via_ir, r#"{"name":"Alice","age":42}"#).unwrap();
         assert_eq!(
             got,
@@ -686,7 +690,9 @@ mod tests {
             a_i64: -1_000_000_000_000,
             a_i128: -18_446_744_073_709_551_621i128,
             a_isize: -12345,
+            #[allow(clippy::approx_constant)]
             a_f32: 3.14,
+            #[allow(clippy::approx_constant)]
             a_f64: 2.718281828459045,
             a_char: 'ß',
             a_name: "hello".into(),
@@ -886,6 +892,7 @@ mod tests {
             // Simple decimals
             (br#"{"x":0.5}"#, 0.5),
             (br#"{"x":1.0}"#, 1.0),
+            #[allow(clippy::approx_constant)]
             (br#"{"x":3.14}"#, 3.14),
             (br#"{"x":2.718281828459045}"#, 2.718281828459045),
             // Negative values
@@ -4106,7 +4113,9 @@ mod tests {
             a_i64: -1_000_000_000_000,
             a_i128: -99999999999999999999,
             a_isize: -42,
+            #[allow(clippy::approx_constant)]
             a_f32: 3.14,
+            #[allow(clippy::approx_constant)]
             a_f64: 2.718281828,
             a_char: 'ß',
             a_name: "hello".into(),
@@ -4128,6 +4137,8 @@ mod tests {
             a_i128: -99999999999999999999,
             a_isize: -42,
             a_f32: 3.14,
+            #[allow(clippy::approx_constant)]
+            #[allow(clippy::approx_constant)]
             a_f64: 2.718281828,
             a_char: 'ß',
             a_name: "hello".into(),
