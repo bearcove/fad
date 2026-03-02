@@ -849,7 +849,6 @@ fn coalesce_uncond_branch_tail_copies(block: &mut RaBlock) {
         }
     }
     if !rewrote {
-        return;
     }
     // Keep instruction/operand indexing fully stable for backend/regalloc.
     // We coalesce by rewriting edge args only; the original tail copy remains

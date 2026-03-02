@@ -999,12 +999,12 @@ fn resolve_source(
         AstSource::VReg(v) => {
             // Find which node output has this vreg. We need to search for it.
             // Look through all known nodes.
-            for (_, &node_id) in node_map {
+            for &node_id in node_map.values() {
                 let node = &func.nodes[node_id];
                 for (idx, out) in node.outputs.iter().enumerate() {
-                    if out.kind == PortKind::Data {
-                        if let Some(vreg) = out.vreg {
-                            if vreg.index() == *v as usize {
+                    if out.kind == PortKind::Data
+                        && let Some(vreg) = out.vreg
+                            && vreg.index() == *v as usize {
                                 return (
                                     PortSource::Node(OutputRef {
                                         node: node_id,
@@ -1013,8 +1013,6 @@ fn resolve_source(
                                     PortKind::Data,
                                 );
                             }
-                        }
-                    }
                 }
             }
             // Fallback: might be referencing a region arg with a vreg.

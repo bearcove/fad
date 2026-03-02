@@ -702,7 +702,7 @@ mod tests {
         let deser = compile_decoder(AllScalars::SHAPE, &postcard::KajitPostcard);
         let result: AllScalars = deserialize(&deser, &encoded).unwrap();
 
-        assert_eq!(result.a_bool, true);
+        assert!(result.a_bool);
         assert_eq!(result.a_u8, 200);
         assert_eq!(result.a_u16, 1000);
         assert_eq!(result.a_u32, 70000);
@@ -749,7 +749,7 @@ mod tests {
         let deser = compile_decoder(AllScalars::SHAPE, &json::KajitJson);
         let result: AllScalars = deserialize(&deser, input).unwrap();
 
-        assert_eq!(result.a_bool, true);
+        assert!(result.a_bool);
         assert_eq!(result.a_u8, 200);
         assert_eq!(result.a_u16, 1000);
         assert_eq!(result.a_u32, 70000);
@@ -780,8 +780,8 @@ mod tests {
         let input = br#"{"a": true, "b": false}"#;
         let deser = compile_decoder(Bools::SHAPE, &json::KajitJson);
         let result: Bools = deserialize(&deser, input).unwrap();
-        assert_eq!(result.a, true);
-        assert_eq!(result.b, false);
+        assert!(result.a);
+        assert!(!result.b);
     }
 
     // r[verify deser.postcard.scalar.bool]
@@ -797,8 +797,8 @@ mod tests {
         let input = [1u8, 0u8];
         let deser = compile_decoder(Bools::SHAPE, &postcard::KajitPostcard);
         let result: Bools = deserialize(&deser, &input).unwrap();
-        assert_eq!(result.a, true);
-        assert_eq!(result.b, false);
+        assert!(result.a);
+        assert!(!result.b);
     }
 
     // r[verify deser.json.scalar.integer]

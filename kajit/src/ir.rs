@@ -1924,11 +1924,10 @@ impl IrFunc {
         func: IntrinsicFn,
         registry: Option<&IntrinsicRegistry>,
     ) -> fmt::Result {
-        if let Some(reg) = registry {
-            if let Some(name) = reg.name_of(func) {
+        if let Some(reg) = registry
+            && let Some(name) = reg.name_of(func) {
                 return write!(f, "@{name}");
             }
-        }
         write!(f, "{func}")
     }
 

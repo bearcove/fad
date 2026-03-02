@@ -477,11 +477,10 @@ impl AdapterFunction {
                     clobbers.union_from(caller_saved_simd());
                 }
                 for operand in &operands {
-                    if let OperandConstraint::FixedReg(preg) = operand.constraint() {
-                        if operand.kind() == OperandKind::Def {
+                    if let OperandConstraint::FixedReg(preg) = operand.constraint()
+                        && operand.kind() == OperandKind::Def {
                             clobbers.remove(preg);
                         }
-                    }
                 }
                 adapter_insts.push(AdapterInst {
                     operands,

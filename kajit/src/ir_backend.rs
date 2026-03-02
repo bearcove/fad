@@ -1298,10 +1298,10 @@ fn compile_linear_ir_aarch64(
             for op in &ir.ops {
                 match op {
                     LinearOp::FuncStart { lambda_id, .. } => {
-                        lambda_max = lambda_max.max(lambda_id.index() as usize);
+                        lambda_max = lambda_max.max(lambda_id.index());
                     }
                     LinearOp::CallLambda { target, .. } => {
-                        lambda_max = lambda_max.max(target.index() as usize);
+                        lambda_max = lambda_max.max(target.index());
                     }
                     _ => {}
                 }
@@ -1430,7 +1430,7 @@ fn compile_linear_ir_aarch64(
         }
 
         fn label(&self, label: LabelId) -> DynamicLabel {
-            self.labels[label.index() as usize]
+            self.labels[label.index()]
         }
 
         fn emit_mov_x9_from_preg(&mut self, preg: regalloc2::PReg) -> bool {
@@ -1843,8 +1843,8 @@ fn compile_linear_ir_aarch64(
         }
 
         fn emit_load_u32_w10(&mut self, value: u32) {
-            let lo = (value & 0xFFFF) as u32;
-            let hi = ((value >> 16) & 0xFFFF) as u32;
+            let lo = value & 0xFFFF;
+            let hi = (value >> 16) & 0xFFFF;
             dynasm!(self.ectx.ops ; .arch aarch64 ; movz w10, #lo);
             if value > 0xFFFF {
                 dynasm!(self.ectx.ops ; .arch aarch64 ; movk w10, #hi, LSL #16);
@@ -2752,7 +2752,7 @@ fn compile_linear_ir_aarch64(
                             ..
                         } => {
                             self.flush_all_vregs();
-                            let label = self.lambda_labels[lambda_id.index() as usize];
+                            let label = self.lambda_labels[lambda_id.index()];
                             self.ectx.bind_label(label);
                             let (entry_offset, error_exit) = self.ectx.begin_func();
                             if lambda_id.index() == 0 {
@@ -3284,7 +3284,7 @@ fn compile_linear_ir_aarch64(
                             args,
                             results,
                         } => {
-                            let label = self.lambda_labels[target.index() as usize];
+                            let label = self.lambda_labels[target.index()];
                             self.emit_call_lambda(label, args, results);
                             for &r in results {
                                 self.set_const(r, None);
@@ -3458,19 +3458,18 @@ mod tests {
     }
 
     fn normalize_inst(text: &str) -> String {
-        if let Some(rest) = text.strip_prefix("mov ") {
-            if let Some((reg, imm)) = rest.split_once(", 0x") {
+        if let Some(rest) = text.strip_prefix("mov ")
+            && let Some((reg, imm)) = rest.split_once(", 0x") {
                 let hex_len = imm.len();
                 if reg.starts_with('r') && hex_len >= 10 {
                     return format!("mov {reg}, 0x<imm>");
                 }
             }
-        }
 
         for op in ["mov", "movk"] {
             let op_prefix = format!("{op} ");
-            if let Some(rest) = text.strip_prefix(&op_prefix) {
-                if let Some((reg, imm_tail)) = rest.split_once(", #") {
+            if let Some(rest) = text.strip_prefix(&op_prefix)
+                && let Some((reg, imm_tail)) = rest.split_once(", #") {
                     if !reg.starts_with('x') {
                         continue;
                     }
@@ -3479,7 +3478,6 @@ mod tests {
                     }
                     return format!("{op_prefix}{reg}, #<imm>");
                 }
-            }
         }
 
         text.to_owned()

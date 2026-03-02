@@ -86,7 +86,7 @@ fn error_code<'src>() -> impl Parser<'src, &'src str, ErrorCode, Extra<'src>> + 
 fn vreg<'src>() -> impl Parser<'src, &'src str, VReg, Extra<'src>> + Clone {
     just("v")
         .ignore_then(uint32())
-        .map(|v| VReg::new(v))
+        .map(VReg::new)
 }
 
 fn block_id<'src>() -> impl Parser<'src, &'src str, BlockId, Extra<'src>> + Clone {
@@ -606,7 +606,7 @@ fn resolve_inst(
             }
         }
         AstRaOp::UnaryOp(kind) => LinearOp::UnaryOp {
-            op: kind.clone(),
+            op: *kind,
             dst: dst.unwrap(),
             src: src.unwrap(),
         },
