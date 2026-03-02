@@ -1,4 +1,6 @@
 /target
+xtask/target/
+xtask/Cargo.lock
 .claude
 callgrind.out.*
 perf.data*

@@ -122,6 +122,59 @@ pub fn compile_decoder_linear_ir(
     compiler::compile_linear_ir_decoder(ir, trusted_utf8_input)
 }
 
+/// Build decoder IR (after default pre-regalloc passes) and return textual RVSDG + RA-MIR dumps.
+///
+/// Intended for snapshot tests and debugging.
+pub fn debug_ir_and_ra_mir_text(
+    shape: &'static facet::Shape,
+    ir_decoder: &dyn format::IrDecoder,
+) -> (String, String) {
+    let mut func = compiler::build_decoder_ir(shape, ir_decoder);
+    ir_passes::run_default_passes(&mut func);
+    let ir_text = scrub_volatile_intrinsic_addrs(&format!("{func}"));
+    let linear = linearize::linearize(&mut func);
+    let ra = regalloc_mir::lower_linear_ir(&linear);
+    let ra_text = scrub_volatile_intrinsic_addrs(&format!("{ra}"));
+    (ir_text, ra_text)
+}
+
+fn scrub_volatile_intrinsic_addrs(text: &str) -> String {
+    // Display dumps include intrinsic function pointer addresses which are process-local and
+    // unstable across runs. Replace only those pointer fields to keep snapshots deterministic.
+    let text = scrub_hex_after_prefix(text, "CallIntrinsic(0x");
+    scrub_hex_after_prefix(&text, "call_intrinsic(0x")
+}
+
+fn scrub_hex_after_prefix(input: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let prefix_bytes = prefix.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if i + prefix_bytes.len() <= bytes.len() && &bytes[i..i + prefix_bytes.len()] == prefix_bytes
+        {
+            out.push_str(prefix);
+            i += prefix_bytes.len();
+
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+
+            if i > start {
+                out.push_str("<ptr>");
+            }
+            continue;
+        }
+
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
+}
+
 /// Compile an encoder (serializer) for the given shape and format.
 pub fn compile_encoder(
     shape: &'static facet::Shape,

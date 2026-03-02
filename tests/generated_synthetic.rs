@@ -88,6 +88,33 @@ where
     }
 }
 
+fn assert_ir_ra_snapshots(
+    case: &str,
+    format_label: &str,
+    shape: &'static facet::Shape,
+    decoder: &dyn kajit::format::IrDecoder,
+) {
+    let (ir_text, ra_text) = kajit::debug_ir_and_ra_mir_text(shape, decoder);
+    insta::assert_snapshot!(
+        format!(
+            "generated_rvsdg_{}_{}_{}",
+            format_label,
+            case,
+            std::env::consts::ARCH
+        ),
+        ir_text
+    );
+    insta::assert_snapshot!(
+        format!(
+            "generated_ra_mir_{}_{}_{}",
+            format_label,
+            case,
+            std::env::consts::ARCH
+        ),
+        ra_text
+    );
+}
+
 #[test]
 fn generated_json_flat_struct() {
     let value: Friend = Friend { age: 42, name: "Alice".into() };
@@ -98,6 +125,9 @@ fn generated_json_flat_struct() {
 fn generated_postcard_flat_struct() {
     let value: Friend = Friend { age: 42, name: "Alice".into() };
     assert_postcard_case(value, true);
+    if true {
+        assert_ir_ra_snapshots("flat_struct", "postcard", <Friend>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -110,6 +140,9 @@ fn generated_json_nested_struct() {
 fn generated_postcard_nested_struct() {
     let value: Person = Person { name: "Alice".into(), age: 30, address: Address { city: "Portland".into(), zip: 97201 } };
     assert_postcard_case(value, false);
+    if false {
+        assert_ir_ra_snapshots("nested_struct", "postcard", <Person>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -122,6 +155,9 @@ fn generated_json_deep_struct() {
 fn generated_postcard_deep_struct() {
     let value: Outer = Outer { middle: Middle { inner: Inner { x: 1 }, y: 2 }, z: 3 };
     assert_postcard_case(value, true);
+    if true {
+        assert_ir_ra_snapshots("deep_struct", "postcard", <Outer>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -134,6 +170,9 @@ fn generated_json_all_integers() {
 fn generated_postcard_all_integers() {
     let value: AllIntegers = AllIntegers { a_u8: 255, a_u16: 65535, a_u32: 1_000_000, a_u64: 1_000_000_000_000, a_i8: -128, a_i16: -32768, a_i32: -1_000_000, a_i64: -1_000_000_000_000 };
     assert_postcard_case(value, false);
+    if false {
+        assert_ir_ra_snapshots("all_integers", "postcard", <AllIntegers>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -146,6 +185,9 @@ fn generated_json_bool_field() {
 fn generated_postcard_bool_field() {
     let value: BoolField = BoolField { value: true };
     assert_postcard_case(value, false);
+    if false {
+        assert_ir_ra_snapshots("bool_field", "postcard", <BoolField>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -158,6 +200,9 @@ fn generated_json_tuple_pair() {
 fn generated_postcard_tuple_pair() {
     let value: Pair = (42u32, "Alice".to_string());
     assert_postcard_case(value, false);
+    if false {
+        assert_ir_ra_snapshots("tuple_pair", "postcard", <Pair>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -170,6 +215,9 @@ fn generated_json_vec_scalar_small() {
 fn generated_postcard_vec_scalar_small() {
     let value: ScalarVec = ScalarVec { values: (0..16).map(|i| i as u32).collect() };
     assert_postcard_case(value, true);
+    if true {
+        assert_ir_ra_snapshots("vec_scalar_small", "postcard", <ScalarVec>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 
 #[test]
@@ -182,5 +230,8 @@ fn generated_json_vec_scalar_large() {
 fn generated_postcard_vec_scalar_large() {
     let value: ScalarVec = ScalarVec { values: (0..2048).map(|i| i as u32).collect() };
     assert_postcard_case(value, true);
+    if true {
+        assert_ir_ra_snapshots("vec_scalar_large", "postcard", <ScalarVec>::SHAPE, &kajit::postcard::KajitPostcard);
+    }
 }
 

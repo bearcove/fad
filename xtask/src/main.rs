@@ -244,6 +244,33 @@ fn render_test_file() -> String {
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
+    out.push_str("fn assert_ir_ra_snapshots(\n");
+    out.push_str("    case: &str,\n");
+    out.push_str("    format_label: &str,\n");
+    out.push_str("    shape: &'static facet::Shape,\n");
+    out.push_str("    decoder: &dyn kajit::format::IrDecoder,\n");
+    out.push_str(") {\n");
+    out.push_str("    let (ir_text, ra_text) = kajit::debug_ir_and_ra_mir_text(shape, decoder);\n");
+    out.push_str("    insta::assert_snapshot!(\n");
+    out.push_str("        format!(\n");
+    out.push_str("            \"generated_rvsdg_{}_{}_{}\",\n");
+    out.push_str("            format_label,\n");
+    out.push_str("            case,\n");
+    out.push_str("            std::env::consts::ARCH\n");
+    out.push_str("        ),\n");
+    out.push_str("        ir_text\n");
+    out.push_str("    );\n");
+    out.push_str("    insta::assert_snapshot!(\n");
+    out.push_str("        format!(\n");
+    out.push_str("            \"generated_ra_mir_{}_{}_{}\",\n");
+    out.push_str("            format_label,\n");
+    out.push_str("            case,\n");
+    out.push_str("            std::env::consts::ARCH\n");
+    out.push_str("        ),\n");
+    out.push_str("        ra_text\n");
+    out.push_str("    );\n");
+    out.push_str("}\n\n");
+
     for case in CASES {
         if case.json_test {
             write!(
@@ -256,11 +283,14 @@ fn render_test_file() -> String {
         if case.postcard_test {
             write!(
                 out,
-                "#[test]\nfn generated_postcard_{}() {{\n    let value: {} = {};\n    assert_postcard_case(value, {});\n}}\n\n",
+                "#[test]\nfn generated_postcard_{}() {{\n    let value: {} = {};\n    assert_postcard_case(value, {});\n    if {} {{\n        assert_ir_ra_snapshots(\"{}\", \"postcard\", <{}>::SHAPE, &kajit::postcard::KajitPostcard);\n    }}\n}}\n\n",
                 case.name,
                 case.ty,
                 case.value,
-                if case.postcard_ir_test { "true" } else { "false" }
+                if case.postcard_ir_test { "true" } else { "false" },
+                if case.postcard_ir_test { "true" } else { "false" },
+                case.name,
+                case.ty
             )
             .unwrap();
         }
