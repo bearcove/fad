@@ -1,0 +1,46 @@
+[package]
+name = "kajit"
+version = "0.1.0"
+edition = "2024"
+authors = ["Amos Wenger <amos@bearcove.eu>"]
+description = "Fast deserialization in Rust, based on facet reflection"
+repository = "https://github.com/bearcove/kajit"
+license = "MIT OR Apache-2.0"
+keywords = ["deserialization", "facet", "reflection", "fast"]
+categories = ["encoding", "data-structures"]
+readme = "README.md"
+
+[dependencies]
+facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
+dynasmrt = "5"
+dynasm = "5"
+itoa = "1"
+zmij = "1"
+regalloc2 = "0.15"
+chumsky = "1.0.0-alpha.8"
+
+[dev-dependencies]
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+yaxpeax-arm = { version = "0.4", default-features = false, features = ["std", "fmt"] }
+yaxpeax-x86 = { version = "2", default-features = false, features = ["std", "fmt"] }
+yaxpeax-arch = { version = "0.3", default-features = false, features = ["std"] }
+brotli = "8"
+insta = "1"
+
+[[bench]]
+name = "synthetic"
+harness = false
+
+[[bench]]
+name = "canada"
+harness = false
+
+[[bench]]
+name = "twitter"
+harness = false
+
+[[bench]]
+name = "citm_catalog"
+harness = false

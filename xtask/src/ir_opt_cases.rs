@@ -1,6 +1,8 @@
 //! IR optimization test cases.
 
-const IR_OPT_CASES: &[IrOptCase] = &[
+use crate::IrOptCase;
+
+pub(crate) const IR_OPT_CASES: &[IrOptCase] = &[
     IrOptCase {
         name: "theta_invariant_tree_hoist",
         ir: r#"

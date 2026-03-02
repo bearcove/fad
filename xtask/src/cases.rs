@@ -1,6 +1,8 @@
 //! Deser/ser cases
 
-const TYPES_RS: &str = r#"
+use crate::{BenchMode, Case};
+
+pub(crate) const TYPES_RS: &str = r#"
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Facet)]
 struct Friend {
     age: u32,
@@ -62,7 +64,7 @@ struct ScalarVec {
 type Pair = (u32, String);
 "#;
 
-const CASES: &[Case] = &[
+pub(crate) const CASES: &[Case] = &[
     Case {
         name: "flat_struct",
         ty: "Friend",

@@ -1,6 +1,8 @@
 // IR post-register allocation cases
 
-const IR_POSTREG_CASES: &[IrPostRegCase] = &[
+use crate::IrPostRegCase;
+
+pub(crate) const IR_POSTREG_CASES: &[IrPostRegCase] = &[
     IrPostRegCase {
         name: "cmpne_gamma_branch",
         ir: r#"

@@ -2,6 +2,11 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::cases::{CASES, TYPES_RS};
+use crate::ir_behavior_cases::IR_BEHAVIOR_CASES;
+use crate::ir_opt_cases::IR_OPT_CASES;
+use crate::ir_postreg_cases::IR_POSTREG_CASES;
+
 mod cases;
 mod ir_behavior_cases;
 mod ir_opt_cases;
@@ -57,10 +62,12 @@ fn main() {
     let mut args = std::env::args();
     let _bin = args.next();
     match args.next().as_deref() {
-        Some("generate-synthetic") => generate_synthetic(),
-        Some("generate-ir-opt-corpus") => generate_ir_opt_corpus(),
-        Some("generate-ir-postreg-corpus") => generate_ir_postreg_corpus(),
-        Some("generate-ir-behavior-corpus") => generate_ir_behavior_corpus(),
+        Some("gen") => {
+            generate_synthetic();
+            generate_ir_behavior_corpus();
+            generate_ir_opt_corpus();
+            generate_ir_postreg_corpus();
+        }
         _ => {
             eprintln!(
                 "usage: cargo run --manifest-path xtask/Cargo.toml -- <generate-synthetic|generate-ir-opt-corpus|generate-ir-postreg-corpus|generate-ir-behavior-corpus>"
@@ -239,9 +246,9 @@ fn render_ir_postreg_test_file() -> String {
         )
         .unwrap();
         for needle in case.must_contain_linear {
-            write!(
+            writeln!(
                 out,
-                "    assert!(linear.contains(r#\"{needle}\"#), \"expected linear artifact to contain: {{}}\", r#\"{needle}\"#);\n",
+                "    assert!(linear.contains(r#\"{needle}\"#), \"expected linear artifact to contain: {{}}\", r#\"{needle}\"#);",
                 needle = needle
             )
             .unwrap();
@@ -330,17 +337,17 @@ fn render_ir_opt_test_file() -> String {
         )
         .unwrap();
         for needle in case.must_not_contain_after {
-            write!(
+            writeln!(
                 out,
-                "    assert!(!after.contains(r#\"{needle}\"#), \"expected to hoist/remove: {{}}\", r#\"{needle}\"#);\n",
+                "    assert!(!after.contains(r#\"{needle}\"#), \"expected to hoist/remove: {{}}\", r#\"{needle}\"#);",
                 needle = needle
             )
             .unwrap();
         }
         for needle in case.must_contain_after {
-            write!(
+            writeln!(
                 out,
-                "    assert!(after.contains(r#\"{needle}\"#), \"expected to keep/preserve: {{}}\", r#\"{needle}\"#);\n",
+                "    assert!(after.contains(r#\"{needle}\"#), \"expected to keep/preserve: {{}}\", r#\"{needle}\"#);",
                 needle = needle
             )
             .unwrap();

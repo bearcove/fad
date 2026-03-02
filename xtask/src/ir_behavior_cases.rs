@@ -1,6 +1,8 @@
 //! IR behavior cases
 
-const IR_BEHAVIOR_CASES: &[IrBehaviorCase] = &[
+use crate::{BehaviorVector, IrBehaviorCase};
+
+pub(crate) const IR_BEHAVIOR_CASES: &[IrBehaviorCase] = &[
     IrBehaviorCase {
         name: "enum_like_gamma_tag_branch",
         ir: r#"
