@@ -87,23 +87,21 @@ fn disasm_bytes(code: &[u8], marker_offset: Option<usize>) -> String {
 }
 
 fn normalize_inst(text: &str) -> String {
-    if let Some(rest) = text.strip_prefix("mov ") {
-        if let Some((reg, imm)) = rest.split_once(", 0x") {
+    if let Some(rest) = text.strip_prefix("mov ")
+        && let Some((reg, imm)) = rest.split_once(", 0x") {
             let hex_len = imm.len();
             if reg.starts_with('r') && hex_len >= 10 {
                 return format!("mov {reg}, 0x<imm>");
             }
         }
-    }
 
-    if let Some(rest) = text.strip_prefix("adrp ") {
-        if let Some((reg, imm)) = rest.split_once(", 0x") {
+    if let Some(rest) = text.strip_prefix("adrp ")
+        && let Some((reg, imm)) = rest.split_once(", 0x") {
             let hex_len = imm.len();
             if reg.starts_with('x') && hex_len >= 6 {
                 return format!("adrp {reg}, 0x<imm>");
             }
         }
-    }
 
     text.to_string()
 }

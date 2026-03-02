@@ -1,3 +1,5 @@
+#![allow(clippy::useless_conversion)]
+
 use dynasmrt::AssemblyOffset;
 
 use crate::linearize::LinearIr;
@@ -3415,9 +3417,9 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         {
             use std::fmt::Write;
+            use yaxpeax_arch::LengthedInstruction;
             use yaxpeax_arch::{Decoder, U8Reader};
             use yaxpeax_x86::amd64::InstDecoder;
-            use yaxpeax_arch::LengthedInstruction;
 
             let decoder = InstDecoder::default();
             let mut reader = U8Reader::new(code);
