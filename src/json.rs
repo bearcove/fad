@@ -4,8 +4,10 @@ use facet::{MapDef, ScalarType, Type, UserType};
 use crate::arch::{BASE_FRAME, EmitCtx};
 use crate::context::ErrorCode;
 use crate::format::{
-    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, VariantEmitInfo, VariantKind,
+    Decoder, Encoder, FieldEmitInfo, FieldEncodeInfo, FieldLowerInfo, IrDecoder, VariantEmitInfo,
+    VariantKind,
 };
+use crate::ir::{IntrinsicFn, RegionBuilder};
 use crate::intrinsics;
 use crate::json_intrinsics;
 use crate::malum::VecOffsets;
@@ -36,6 +38,10 @@ pub(crate) const KEY_LEN_OFFSET: u32 = BASE_FRAME + 16;
 pub(crate) const RESULT_BYTE_OFFSET: u32 = BASE_FRAME + 24;
 pub(crate) const SAVED_CURSOR_OFFSET: u32 = BASE_FRAME + 32;
 pub(crate) const CANDIDATES_OFFSET: u32 = BASE_FRAME + 40;
+
+fn ifn(f: *const u8) -> IntrinsicFn {
+    IntrinsicFn(f as usize)
+}
 
 /// Emit an inline key read using the vectorized string scan.
 ///
@@ -92,6 +98,10 @@ impl Decoder for KajitJson {
 
     fn supports_trusted_utf8_input(&self) -> bool {
         true
+    }
+
+    fn as_ir_decoder(&self) -> Option<&dyn IrDecoder> {
+        Some(self)
     }
 
     // r[impl deser.deny-unknown-fields.json]
@@ -1360,6 +1370,72 @@ impl Decoder for KajitJson {
         ectx.bind_label(after_loop);
 
         emit_default_or_required_check(ectx, fields);
+    }
+}
+
+impl IrDecoder for KajitJson {
+    fn lower_struct_fields(
+        &self,
+        _builder: &mut RegionBuilder<'_>,
+        _fields: &[FieldLowerInfo],
+        _deny_unknown_fields: bool,
+        _lower_field: &mut dyn FnMut(&mut RegionBuilder<'_>, &FieldLowerInfo),
+    ) {
+        panic!("JSON IR lower_struct_fields not yet implemented");
+    }
+
+    fn lower_read_scalar(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        offset: usize,
+        scalar_type: ScalarType,
+    ) {
+        let offset = offset as u32;
+        if scalar_type == ScalarType::Unit {
+            builder.call_intrinsic(ifn(json_intrinsics::kajit_json_skip_value as _), &[], 0, false);
+            return;
+        }
+
+        let func = match scalar_type {
+            ScalarType::U8 => ifn(json_intrinsics::kajit_json_read_u8 as _),
+            ScalarType::U16 => ifn(json_intrinsics::kajit_json_read_u16 as _),
+            ScalarType::U32 => ifn(json_intrinsics::kajit_json_read_u32 as _),
+            ScalarType::U64 => ifn(json_intrinsics::kajit_json_read_u64 as _),
+            ScalarType::U128 => ifn(json_intrinsics::kajit_json_read_u128 as _),
+            ScalarType::USize => ifn(json_intrinsics::kajit_json_read_usize as _),
+            ScalarType::I8 => ifn(json_intrinsics::kajit_json_read_i8 as _),
+            ScalarType::I16 => ifn(json_intrinsics::kajit_json_read_i16 as _),
+            ScalarType::I32 => ifn(json_intrinsics::kajit_json_read_i32 as _),
+            ScalarType::I64 => ifn(json_intrinsics::kajit_json_read_i64 as _),
+            ScalarType::I128 => ifn(json_intrinsics::kajit_json_read_i128 as _),
+            ScalarType::ISize => ifn(json_intrinsics::kajit_json_read_isize as _),
+            ScalarType::F32 => ifn(json_intrinsics::kajit_json_read_f32 as _),
+            ScalarType::F64 => ifn(json_intrinsics::kajit_json_read_f64 as _),
+            ScalarType::Bool => ifn(json_intrinsics::kajit_json_read_bool as _),
+            ScalarType::Char => ifn(json_intrinsics::kajit_json_read_char as _),
+            _ => panic!("unsupported JSON scalar in IR lowering: {:?}", scalar_type),
+        };
+
+        builder.call_intrinsic(func, &[], offset, false);
+    }
+
+    fn lower_read_string(
+        &self,
+        builder: &mut RegionBuilder<'_>,
+        offset: usize,
+        scalar_type: ScalarType,
+    ) {
+        let func = match scalar_type {
+            ScalarType::String => ifn(json_intrinsics::kajit_json_read_string_value as _),
+            ScalarType::Str => ifn(json_intrinsics::kajit_json_read_str_value as _),
+            ScalarType::CowStr => ifn(json_intrinsics::kajit_json_read_cow_str_value as _),
+            _ => panic!(
+                "unsupported JSON string scalar in IR lowering: {:?}",
+                scalar_type
+            ),
+        };
+
+        builder.call_intrinsic(func, &[], offset as u32, false);
     }
 }
 

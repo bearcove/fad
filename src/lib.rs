@@ -410,8 +410,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "IR backend requested")]
-    fn compile_decoder_with_backend_ir_panics_for_non_ir_format() {
+    fn compile_decoder_with_backend_ir_supports_json_scalars() {
+        let via_ir = compile_decoder_with_backend(
+            <u32 as facet::Facet>::SHAPE,
+            &json::KajitJson,
+            DecoderBackend::Ir,
+        );
+        let got: u32 = from_str(&via_ir, "42").unwrap();
+        assert_eq!(got, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "JSON IR lower_struct_fields not yet implemented")]
+    fn compile_decoder_with_backend_ir_panics_for_json_struct_for_now() {
         let _ = compile_decoder_with_backend(Friend::SHAPE, &json::KajitJson, DecoderBackend::Ir);
     }
 
