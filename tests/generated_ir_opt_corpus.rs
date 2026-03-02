@@ -137,3 +137,172 @@ lambda @0 (shape: "u8") {
     assert_eq!(after_out, before_out);
 }
 
+#[test]
+fn ir_opt_snapshot_theta_loop_variant_not_hoisted() {
+    let (before, after) = run_pass(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = Const(0x4) [] -> [v0]
+    n1 = Const(0x1) [] -> [v1]
+    n2 = theta [v0, v1, %cs:arg, %os:arg] {
+      region {
+        args: [arg0, arg1, %cs, %os]
+        n3 = Add [arg0, arg1] -> [v2]
+        n4 = Sub [arg0, arg1] -> [v3]
+        results: [v3, v3, arg1, %cs:arg, %os:arg]
+      }
+    } -> [v4, v5, %cs, %os]
+    n5 = WriteToField(offset=0, W1) [v4, %os:n2] -> [%os]
+    results: [%cs:n2, %os:n5]
+  }
+}
+"#);
+    insta::assert_snapshot!("generated_ir_opt_before_theta_loop_variant_not_hoisted", before);
+    insta::assert_snapshot!("generated_ir_opt_after_theta_loop_variant_not_hoisted", after);
+}
+
+#[test]
+fn ir_opt_asserts_theta_loop_variant_not_hoisted() {
+    let (_before, after) = run_pass(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = Const(0x4) [] -> [v0]
+    n1 = Const(0x1) [] -> [v1]
+    n2 = theta [v0, v1, %cs:arg, %os:arg] {
+      region {
+        args: [arg0, arg1, %cs, %os]
+        n3 = Add [arg0, arg1] -> [v2]
+        n4 = Sub [arg0, arg1] -> [v3]
+        results: [v3, v3, arg1, %cs:arg, %os:arg]
+      }
+    } -> [v4, v5, %cs, %os]
+    n5 = WriteToField(offset=0, W1) [v4, %os:n2] -> [%os]
+    results: [%cs:n2, %os:n5]
+  }
+}
+"#);
+    assert!(after.contains(r#"n3 = Add [arg0, arg1] -> [v2]"#), "expected to keep/preserve: {}", r#"n3 = Add [arg0, arg1] -> [v2]"#);
+}
+
+#[test]
+fn ir_opt_exec_theta_loop_variant_not_hoisted() {
+    let before_out = run_exec(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = Const(0x4) [] -> [v0]
+    n1 = Const(0x1) [] -> [v1]
+    n2 = theta [v0, v1, %cs:arg, %os:arg] {
+      region {
+        args: [arg0, arg1, %cs, %os]
+        n3 = Add [arg0, arg1] -> [v2]
+        n4 = Sub [arg0, arg1] -> [v3]
+        results: [v3, v3, arg1, %cs:arg, %os:arg]
+      }
+    } -> [v4, v5, %cs, %os]
+    n5 = WriteToField(offset=0, W1) [v4, %os:n2] -> [%os]
+    results: [%cs:n2, %os:n5]
+  }
+}
+"#, &[]);
+    let mut optimized = parse_case(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = Const(0x4) [] -> [v0]
+    n1 = Const(0x1) [] -> [v1]
+    n2 = theta [v0, v1, %cs:arg, %os:arg] {
+      region {
+        args: [arg0, arg1, %cs, %os]
+        n3 = Add [arg0, arg1] -> [v2]
+        n4 = Sub [arg0, arg1] -> [v3]
+        results: [v3, v3, arg1, %cs:arg, %os:arg]
+      }
+    } -> [v4, v5, %cs, %os]
+    n5 = WriteToField(offset=0, W1) [v4, %os:n2] -> [%os]
+    results: [%cs:n2, %os:n5]
+  }
+}
+"#);
+    kajit::ir_passes::run_default_passes(&mut optimized);
+    let linear = kajit::linearize::linearize(&mut optimized);
+    let dec = kajit::compile_decoder_linear_ir(&linear, false);
+    let after_out = kajit::deserialize::<u8>(&dec, &[]).expect("optimized decoder should execute");
+    assert_eq!(after_out, before_out);
+}
+
+#[test]
+fn ir_opt_snapshot_bounds_check_chain_coalesce() {
+    let (before, after) = run_pass(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = PeekByte [%cs:n0] -> [v0, %cs]
+    n2 = BoundsCheck(1) [%cs:n1] -> [%cs]
+    n3 = ReadBytes(1) [%cs:n2] -> [v1, %cs]
+    n4 = WriteToField(offset=0, W1) [v1, %os:arg] -> [%os]
+    results: [%cs:n3, %os:n4]
+  }
+}
+"#);
+    insta::assert_snapshot!("generated_ir_opt_before_bounds_check_chain_coalesce", before);
+    insta::assert_snapshot!("generated_ir_opt_after_bounds_check_chain_coalesce", after);
+}
+
+#[test]
+fn ir_opt_asserts_bounds_check_chain_coalesce() {
+    let (_before, after) = run_pass(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = PeekByte [%cs:n0] -> [v0, %cs]
+    n2 = BoundsCheck(1) [%cs:n1] -> [%cs]
+    n3 = ReadBytes(1) [%cs:n2] -> [v1, %cs]
+    n4 = WriteToField(offset=0, W1) [v1, %os:arg] -> [%os]
+    results: [%cs:n3, %os:n4]
+  }
+}
+"#);
+    assert!(!after.contains(r#"n2 = BoundsCheck(1) [%cs:n1] -> [%cs]"#), "expected to hoist/remove: {}", r#"n2 = BoundsCheck(1) [%cs:n1] -> [%cs]"#);
+    assert!(after.contains(r#"BoundsCheck(1) [%cs:arg] -> [%cs]"#), "expected to keep/preserve: {}", r#"BoundsCheck(1) [%cs:arg] -> [%cs]"#);
+}
+
+#[test]
+fn ir_opt_exec_bounds_check_chain_coalesce() {
+    let before_out = run_exec(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = PeekByte [%cs:n0] -> [v0, %cs]
+    n2 = BoundsCheck(1) [%cs:n1] -> [%cs]
+    n3 = ReadBytes(1) [%cs:n2] -> [v1, %cs]
+    n4 = WriteToField(offset=0, W1) [v1, %os:arg] -> [%os]
+    results: [%cs:n3, %os:n4]
+  }
+}
+"#, &[7]);
+    let mut optimized = parse_case(r#"
+lambda @0 (shape: "u8") {
+  region {
+    args: [%cs, %os]
+    n0 = BoundsCheck(1) [%cs:arg] -> [%cs]
+    n1 = PeekByte [%cs:n0] -> [v0, %cs]
+    n2 = BoundsCheck(1) [%cs:n1] -> [%cs]
+    n3 = ReadBytes(1) [%cs:n2] -> [v1, %cs]
+    n4 = WriteToField(offset=0, W1) [v1, %os:arg] -> [%os]
+    results: [%cs:n3, %os:n4]
+  }
+}
+"#);
+    kajit::ir_passes::run_default_passes(&mut optimized);
+    let linear = kajit::linearize::linearize(&mut optimized);
+    let dec = kajit::compile_decoder_linear_ir(&linear, false);
+    let after_out = kajit::deserialize::<u8>(&dec, &[7]).expect("optimized decoder should execute");
+    assert_eq!(after_out, before_out);
+}
+
